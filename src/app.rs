@@ -1,21 +1,23 @@
 //! Window shell: git check, browser-like tabs, the start page and cloning.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 
-use egui::{Align2, CornerRadius, Key, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Align2, Key, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::git;
 use crate::icons;
 use crate::repo::RepoTab;
 use crate::settings::Settings;
+use crate::tab_look::{self, TabLook};
 use crate::theme::{self, ThemeKind, Tokens};
 use crate::update;
 
 const MAX_RECENT: usize = 12;
-const TAB_H: f32 = 34.0;
+const TAB_H: f32 = 40.0;
 
 /// Set by `main` when the window was closed maximized: it opens restored and is maximized once
 /// it shows its first frame. Created maximized, winit shows the hidden window for an instant
@@ -36,6 +38,8 @@ struct Saved {
     update_checked: i64,
     /// A release the user chose to skip.
     skipped_version: String,
+    /// Repository tabs given their own icon or colour.
+    tab_looks: BTreeMap<PathBuf, TabLook>,
 }
 
 enum Tab {
@@ -77,6 +81,7 @@ pub struct App {
     update_rx: Option<Receiver<Result<update::Release, String>>>,
     update_checked: i64,
     skipped_version: String,
+    tab_looks: BTreeMap<PathBuf, TabLook>,
     settings: Settings,
     settings_open: bool,
     manual_open: bool,
@@ -149,6 +154,7 @@ impl App {
             update_rx: None,
             update_checked: saved.update_checked,
             skipped_version: saved.skipped_version,
+            tab_looks: saved.tab_looks,
         };
         if saved.settings.check_updates && git::now() - saved.update_checked > update::INTERVAL {
             let (tx, rx) = channel();
@@ -176,6 +182,11 @@ impl App {
             app.open_repo(&path, ctx);
         }
         app
+    }
+
+    /// Opens `path` as the start page's "Open" button does (for `examples/ui_shot.rs`).
+    pub fn open_tab(&mut self, path: &Path, ctx: &egui::Context) {
+        self.open_repo(path, ctx);
     }
 
     /// Opens `path` in the active tab if it's a start page, otherwise in a new tab.
@@ -299,6 +310,8 @@ impl App {
         let mut select = None;
         let mut close = None;
         let mut add = false;
+        let mut restyle = None;
+        let default_look = TabLook::default();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 1.0;
             for (i, tab) in self.tabs.iter().enumerate() {
@@ -321,37 +334,44 @@ impl App {
                 let w = (galley.size().x + 66.0).clamp(110.0, 260.0);
                 let (rect, resp) = ui.allocate_exact_size(vec2(w, TAB_H), Sense::click());
                 let hovered = resp.hovered();
-                let p = ui.painter();
-                let shape = CornerRadius {
-                    nw: t.radius as u8,
-                    ne: t.radius as u8,
-                    sw: 0,
-                    se: 0,
+                let look = match tab {
+                    Tab::Repo(r) => self.tab_looks.get(&r.path).unwrap_or(&default_look),
+                    Tab::Home => &default_look,
                 };
+                let accent = look.color.color(&t);
+                let p = ui.painter();
                 if active {
-                    p.rect_filled(rect, shape, t.chrome);
+                    p.rect_filled(rect, 0.0, t.chrome);
                     p.line_segment(
                         [
-                            rect.left_top() + vec2(2.0, 0.5),
-                            rect.right_top() + vec2(-2.0, 0.5),
+                            rect.left_top() + vec2(0.0, 1.0),
+                            rect.right_top() + vec2(0.0, 1.0),
                         ],
-                        Stroke::new(2.0, t.accent),
+                        Stroke::new(2.0, accent),
                     );
                 } else if hovered {
-                    p.rect_filled(rect, shape, t.hover.gamma_multiply(0.6));
+                    p.rect_filled(rect, 0.0, t.hover.gamma_multiply(0.6));
                 }
                 let y = rect.center().y;
                 let icon = if matches!(tab, Tab::Home) {
                     "plus"
                 } else {
-                    "folder-git-2"
+                    look.icon()
+                };
+                // A chosen colour also marks the tab when it is in the background.
+                let icon_tint = if active {
+                    accent
+                } else if look.color != tab_look::TabColor::default() {
+                    accent.gamma_multiply(0.75)
+                } else {
+                    t.text_faint
                 };
                 icons::paint(
                     ui,
                     Rect::from_center_size(pos2(rect.left() + 18.0, y), vec2(16.0, 16.0)),
                     icon,
                     14.0,
-                    if active { t.accent } else { t.text_faint },
+                    icon_tint,
                 );
                 let text_clip = Rect::from_min_max(
                     pos2(rect.left() + 32.0, rect.top()),
@@ -383,6 +403,15 @@ impl App {
                         close = Some(i);
                     }
                     c.on_hover_text("Close tab (Ctrl+W)");
+                }
+                if let Tab::Repo(r) = tab {
+                    egui::Popup::context_menu(&resp)
+                        .style(crate::theme::menu_style)
+                        .show(|ui| {
+                            if let Some(new) = tab_look::menu(ui, look) {
+                                restyle = Some((r.path.clone(), new));
+                            }
+                        });
                 }
                 let resp = resp.on_hover_text(tooltip);
                 if resp.clicked() && close.is_none() {
@@ -460,6 +489,13 @@ impl App {
         });
         if let Some(i) = select {
             self.active = i;
+        }
+        if let Some((path, look)) = restyle {
+            if look == TabLook::default() {
+                self.tab_looks.remove(&path);
+            } else {
+                self.tab_looks.insert(path, look);
+            }
         }
         if let Some(i) = close {
             self.close_tab(i);
@@ -877,7 +913,7 @@ impl eframe::App for App {
                     .inner_margin(egui::Margin {
                         left: 6,
                         right: 6,
-                        top: 6,
+                        top: 0,
                         bottom: 0,
                     }),
             )
@@ -951,6 +987,7 @@ impl eframe::App for App {
             settings: self.settings.clone(),
             update_checked: self.update_checked,
             skipped_version: self.skipped_version.clone(),
+            tab_looks: self.tab_looks.clone(),
         };
         eframe::set_value(storage, eframe::APP_KEY, &saved);
     }
@@ -1424,7 +1461,43 @@ fn notify(text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{fuzzy, window_icon};
+    use super::{Saved, fuzzy, window_icon};
+    use crate::tab_look::{TabColor, TabLook};
+
+    /// A storage that keeps strings in memory, as eframe's own does on disk.
+    #[derive(Default)]
+    struct Memory(std::collections::HashMap<String, String>);
+
+    impl eframe::Storage for Memory {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+        fn remove_string(&mut self, key: &str) {
+            self.0.remove(key);
+        }
+        fn flush(&mut self) {}
+    }
+
+    #[test]
+    fn tab_looks_survive_a_restart() {
+        let look = TabLook {
+            icon: Some("rocket".to_owned()),
+            color: TabColor::Purple,
+        };
+        let mut saved = Saved::default();
+        saved.tab_looks.insert("C:/code/app".into(), look.clone());
+        let mut storage = Memory::default();
+        eframe::set_value(&mut storage, eframe::APP_KEY, &saved);
+        let back: Option<Saved> = eframe::get_value(&storage, eframe::APP_KEY);
+        assert!(
+            back.is_some_and(
+                |b| b.tab_looks.get(std::path::Path::new("C:/code/app")) == Some(&look)
+            )
+        );
+    }
 
     #[test]
     fn window_icon_decodes() {

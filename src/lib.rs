@@ -11,6 +11,7 @@ mod manual;
 mod repo;
 mod settings;
 mod shell_path;
+mod tab_look;
 mod terminal;
 mod theme;
 mod update;

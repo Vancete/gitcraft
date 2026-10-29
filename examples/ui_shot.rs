@@ -4,7 +4,7 @@
 //! `cargo run --example ui_shot -- <repo> <out-prefix> [step]...`
 //!
 //! Steps (coordinates in points, window is 1400×860):
-//! `click:x,y`, `dclick:x,y`, `rclick:x,y`, `hover:x,y`, `drag:x1,y1,x2,y2`, `leave` (pointer off the window), `key:Escape`, `ckey:P` (Ctrl/Cmd+key), `type:text`, `wait:ms`, `shot`.
+//! `click:x,y`, `dclick:x,y`, `rclick:x,y`, `hover:x,y`, `drag:x1,y1,x2,y2`, `leave` (pointer off the window), `open:path` (a repository in a new tab), `key:Escape`, `ckey:P` (Ctrl/Cmd+key), `type:text`, `wait:ms`, `shot`.
 //! Each `shot` writes `<out-prefix>-<n>.png`.
 
 use std::time::{Duration, Instant};
@@ -79,6 +79,14 @@ fn main() {
                     }
                 }
                 settle(&mut harness, 600);
+            }
+            // `open:path`: another repository, in a new tab.
+            "open" => {
+                let ctx = harness.ctx.clone();
+                harness
+                    .state_mut()
+                    .open_tab(std::path::Path::new(arg), &ctx);
+                settle(&mut harness, 1500);
             }
             "leave" => {
                 harness.remove_cursor();

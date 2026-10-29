@@ -1,6 +1,6 @@
 # gitcraft
 
-A visual git client: a simplified take yet powerful on the usual graph-based git GUIs.
+A visual git client: a simplified yet powerful take on the usual graph-based git GUIs.
 Rust + [egui/eframe](https://github.com/emilk/egui), the same technical stack of the ArtCraft suite, so it builds on Windows, Linux and macOS and stays light and fast. It drives the installed `git` command line,
 so your config, credentials and hooks apply as usual.
 
@@ -106,7 +106,7 @@ so your config, credentials and hooks apply as usual.
   Cached on disk; can be turned off.
 - Settings: zoom, branch column width, graph columns, avatars, notifications, update check,
   background fetch, editor command, default shell and terminal font size, saved identities.
-- Checks GitHub once a day for a newer release and shows a pill to download it (can be turned
+- Checks GitHub every 12 hours for a newer release and shows a pill to download it (can be turned
   off).
 - Toasts, and a desktop notification when a long operation ends while the window is in the
   background.
@@ -160,6 +160,7 @@ cargo run --example ui_shot -- path/to/repo /tmp/shot click:500,266 shot key:Esc
 
 Steps: `click:x,y`, `dclick:x,y`, `rclick:x,y`, `cclick:x,y` (with Ctrl / Cmd), `sclick:x,y`
 (with Shift), `drag:x1,y1,x2,y2`, `hover:x,y`, `wheel:x,y,dy` (negative scrolls down), `leave`,
+`open:path` (another repository in a new tab),
 `key:Name`, `ckey:Name` (with Ctrl / Cmd), `type:text`, `wait:ms`, `shot`. The README screenshot
 was made this way, on a demo repository.
 

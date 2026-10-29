@@ -3,7 +3,7 @@
 
 use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
 
-use super::widgets::{self, ROW_H};
+use super::widgets;
 use super::{
     Action, Dialog, Refresh, RepoTab, Undo, compare_action, fast_forward_action, merge_action, ops,
     rebase_action,
@@ -11,6 +11,9 @@ use super::{
 use crate::git::{self, Branch};
 use crate::icons;
 use crate::theme::{self, Tokens};
+
+/// The pane's rows: a little taller than the file lists', 2 px more above and below.
+const ROW_H: f32 = widgets::ROW_H + 4.0;
 
 impl RepoTab {
     pub(super) fn sidebar(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {

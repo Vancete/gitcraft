@@ -1,4 +1,4 @@
-//! Asks GitHub whether a newer gitcraft release exists (at most once a day, can be turned off).
+//! Asks GitHub whether a newer gitcraft release exists (at most every 12 hours, can be turned off).
 
 use std::time::Duration;
 
@@ -9,7 +9,7 @@ pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 /// (VPNs, offices) use up.
 const LATEST: &str = "https://github.com/Vancete/gitcraft/releases/latest";
 /// Seconds between two checks.
-pub const INTERVAL: i64 = 24 * 3600;
+pub const INTERVAL: i64 = 12 * 3600;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Release {

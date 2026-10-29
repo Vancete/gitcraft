@@ -20,13 +20,14 @@ const FEATURES: &[(&str, &[&str])] = &[
         &[
             "Open, create or clone a repository from the start page; recent ones are listed there.",
             "One tab per repository. Changes made elsewhere (editor, terminal) show up by themselves.",
+            "Right-click a tab to give it its own icon and highlight colour.",
         ],
     ),
     (
         "Graph",
         &[
             "Every branch with its pill on its latest commit: solid for the checked-out one, a laptop when it is local, a cloud when a remote has it.",
-            "Double-click a pill to check that branch out; hover +N to see every branch of the commit.",
+            "Double-click a pill to check that branch out (and pull it when its remote is ahead); hover +N to see every branch of the commit, and right-click any of them.",
             "Right-click a commit or a pill for branches, tags, merge, rebase, cherry-pick, revert, reset and more.",
             "Search messages, authors and hashes, or switch to Code to find the commits that added or removed some text.",
             "Interactive rebase: reorder, reword, squash, fix up or drop commits, then start it.",

@@ -2,8 +2,7 @@
 //! older history loaded as you scroll.
 
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Key, Pos2, Rect, Response, Sense, Stroke, Ui,
-    epaint::CubicBezierShape, pos2, vec2,
+    Align2, Color32, CornerRadius, FontId, Key, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2,
 };
 
 use super::widgets;
@@ -17,7 +16,13 @@ use crate::settings::Settings;
 use crate::theme::{self, Tokens};
 
 const ROW_H: f32 = 28.0;
+/// Space between rows, which the graph's lines cross.
+const ROW_GAP: f32 = 2.0;
+/// From one row to the next.
+const ROW_PITCH: f32 = ROW_H + ROW_GAP;
 const LANE_W: f32 = 16.0;
+/// Radius of the corner where a line from a dot turns into another lane.
+const CORNER_R: f32 = 7.0;
 const MAX_LANES_SHOWN: usize = 24;
 /// How much darker the pills that are not checked out are (0 = same colour, 1 = black).
 const DIMMED: f32 = 0.4;
@@ -142,28 +147,28 @@ impl RepoTab {
         let offset_id = ui.id().with("graph_offset");
         if let Some(row) = self.scroll_to.take() {
             let view_h = ui.available_height();
-            let top = row as f32 * ROW_H;
+            let top = row as f32 * ROW_PITCH;
             // Only scroll if the row is outside the visible part.
             let offset = ui.data(|d| d.get_temp::<f32>(offset_id)).unwrap_or(0.0);
-            if top < offset || top + ROW_H > offset + view_h {
+            if top < offset || top + ROW_PITCH > offset + view_h {
                 scroll = scroll.vertical_scroll_offset((top - view_h / 2.0).max(0.0));
             }
         }
 
-        // `show_rows` sizes rows as ROW_H + item spacing, so the spacing must be zero here.
+        // `show_rows` sizes rows as ROW_PITCH + item spacing, so the spacing must be zero here.
         ui.spacing_mut().item_spacing.y = 0.0;
         let idle = self.busy_op.is_none();
         let now = git::now();
         let total = self.commits.len() + usize::from(self.has_more);
-        let out = scroll.show_rows(ui, ROW_H, total, |ui, range| {
+        let out = scroll.show_rows(ui, ROW_PITCH, total, |ui, range| {
             // Near the end: fetch the next page of history.
             if range.end + 40 >= self.commits.len() && self.has_more && !self.loading_more {
                 acts.push(Action::LoadMore);
             }
             for i in range {
                 if i >= self.commits.len() {
-                    let (rect, _) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
+                    let (rect, _) = ui
+                        .allocate_exact_size(vec2(ui.available_width(), ROW_PITCH), Sense::hover());
                     ui.painter().text(
                         rect.center(),
                         Align2::CENTER_CENTER,
@@ -252,6 +257,29 @@ impl RepoTab {
         let Some(commit) = self.commits.get(i) else {
             return;
         };
+        // The branch whose pill was right-clicked, if any.
+        let pill: Option<String> = resp
+            .ctx
+            .data(|d| d.get_temp::<Option<String>>(pill_menu_id(&commit.hash)))
+            .flatten();
+        egui::Popup::context_menu(resp)
+            .style(crate::theme::menu_style)
+            .show(|ui| self.commit_menu_items(ui, i, pill, idle, acts));
+    }
+
+    /// The entries of a commit's menu; `pill` is the branch whose pill was right-clicked, whose
+    /// actions go on top.
+    fn commit_menu_items(
+        &self,
+        ui: &mut Ui,
+        i: usize,
+        pill: Option<String>,
+        idle: bool,
+        acts: &mut Vec<Action>,
+    ) {
+        let Some(commit) = self.commits.get(i) else {
+            return;
+        };
         let hash = commit.hash.clone();
         let short = hash.get(..8).unwrap_or(&hash).to_owned();
         let summary = commit.summary.clone();
@@ -263,11 +291,7 @@ impl RepoTab {
             .iter()
             .filter(|b| b.target == hash)
             .collect();
-        // The branch whose pill was right-clicked, else the commit's first branch for copying.
-        let pill: Option<String> = resp
-            .ctx
-            .data(|d| d.get_temp::<Option<String>>(pill_menu_id(&hash)))
-            .flatten();
+        // The right-clicked branch, else the commit's first branch, for copying.
         let branch_name = pill.clone().or_else(|| {
             badges(&commit.refs, &self.refs)
                 .into_iter()
@@ -279,165 +303,166 @@ impl RepoTab {
             .current
             .clone()
             .unwrap_or_else(|| "HEAD".to_owned());
-        egui::Popup::context_menu(resp).style(crate::theme::menu_style).show(|ui| {
-            if let Some(branch) = &pill
-                && self.refs.current.as_deref() != Some(branch.as_str())
+        if let Some(branch) = &pill
+            && self.refs.current.as_deref() != Some(branch.as_str())
+        {
+            if ui
+                .add_enabled(idle, egui::Button::new(format!("Check out {branch}")))
+                .clicked()
             {
+                let local = self.refs.local.iter().any(|b| &b.name == branch);
+                acts.push(if local {
+                    Action::Checkout(branch.clone())
+                } else {
+                    Action::CheckoutRemote(branch.clone())
+                });
+            }
+            if let Some(current) = self.refs.current.as_deref() {
                 if ui
-                    .add_enabled(idle, egui::Button::new(format!("Check out {branch}")))
+                    .add_enabled(
+                        idle,
+                        egui::Button::new(format!("Fast-forward {current} to {branch}")),
+                    )
                     .clicked()
                 {
-                    let local = self.refs.local.iter().any(|b| &b.name == branch);
-                    acts.push(if local {
-                        Action::Checkout(branch.clone())
-                    } else {
-                        Action::CheckoutRemote(branch.clone())
+                    acts.push(fast_forward_action(branch, current));
+                }
+                if ui
+                    .add_enabled(
+                        idle,
+                        egui::Button::new(format!("Merge {branch} into {current}")),
+                    )
+                    .clicked()
+                {
+                    acts.push(merge_action(branch, current));
+                }
+                if ui
+                    .add_enabled(
+                        idle,
+                        egui::Button::new(format!("Rebase {current} onto {branch}")),
+                    )
+                    .clicked()
+                {
+                    acts.push(rebase_action(branch, current));
+                }
+                if ui
+                    .add_enabled(
+                        idle,
+                        egui::Button::new(format!("Interactive rebase {current} onto {branch}…")),
+                    )
+                    .clicked()
+                {
+                    acts.push(Action::InteractiveRebase {
+                        onto: branch.clone(),
+                        label: branch.clone(),
                     });
                 }
-                if let Some(current) = self.refs.current.as_deref() {
-                    if ui
-                        .add_enabled(
-                            idle,
-                            egui::Button::new(format!("Fast-forward {current} to {branch}")),
-                        )
-                        .clicked()
-                    {
-                        acts.push(fast_forward_action(branch, current));
-                    }
-                    if ui
-                        .add_enabled(
-                            idle,
-                            egui::Button::new(format!("Merge {branch} into {current}")),
-                        )
-                        .clicked()
-                    {
-                        acts.push(merge_action(branch, current));
-                    }
-                    if ui
-                        .add_enabled(
-                            idle,
-                            egui::Button::new(format!("Rebase {current} onto {branch}")),
-                        )
-                        .clicked()
-                    {
-                        acts.push(rebase_action(branch, current));
-                    }
-                    if ui
-                        .add_enabled(
-                            idle,
-                            egui::Button::new(format!(
-                                "Interactive rebase {current} onto {branch}…"
-                            )),
-                        )
-                        .clicked()
-                    {
-                        acts.push(Action::InteractiveRebase {
-                            onto: branch.clone(),
-                            label: branch.clone(),
-                        });
-                    }
-                    ui.separator();
-                    compare_items(ui, acts, branch, current);
-                }
                 ui.separator();
-            }
-            for b in &here {
-                ui.menu_button(format!("Branch {}", b.name), |ui| {
-                    self.branch_menu_items(ui, acts, b, idle);
-                });
-            }
-            if !here.is_empty() {
-                ui.separator();
-            }
-            if ui.button("Create branch here…").clicked() {
-                acts.push(Action::Dialog(Dialog::create_branch(&hash, &short)));
-            }
-            if ui.button("Create tag here…").clicked() {
-                acts.push(Action::Dialog(Dialog::tag(&hash, &short, self.default_remote())));
-            }
-            if ui
-                .add_enabled(
-                    idle && !is_head,
-                    egui::Button::new("Check out this commit (detached)"),
-                )
-                .clicked()
-            {
-                acts.push(Action::Checkout(hash.clone()));
+                compare_items(ui, acts, branch, current);
             }
             ui.separator();
-            if let Some(compare) = self
+        }
+        for b in &here {
+            ui.menu_button(format!("Branch {}", b.name), |ui| {
+                self.branch_menu_items(ui, acts, b, idle);
+            });
+        }
+        if !here.is_empty() {
+            ui.separator();
+        }
+        if ui.button("Create branch here…").clicked() {
+            acts.push(Action::Dialog(Dialog::create_branch(&hash, &short)));
+        }
+        if ui.button("Create tag here…").clicked() {
+            acts.push(Action::Dialog(Dialog::tag(
+                &hash,
+                &short,
+                self.default_remote(),
+            )));
+        }
+        if ui
+            .add_enabled(
+                idle && !is_head,
+                egui::Button::new("Check out this commit (detached)"),
+            )
+            .clicked()
+        {
+            acts.push(Action::Checkout(hash.clone()));
+        }
+        ui.separator();
+        if let Some(compare) = self
+            .selected
+            .filter(|&s| s != i)
+            .and_then(|s| self.compare_rows(s, i))
+        {
+            let other = self
                 .selected
-                .filter(|&s| s != i)
-                .and_then(|s| self.compare_rows(s, i))
-            {
-                let other = self
-                    .selected
-                    .and_then(|s| self.commits.get(s))
-                    .map(|c| {
-                        if c.hash == WIP_HASH {
-                            "the working tree".to_owned()
-                        } else {
-                            super::short(&c.hash).to_owned()
-                        }
-                    })
-                    .unwrap_or_default();
-                if ui
-                    .button(format!("Compare with {other}"))
-                    .on_hover_text("Also Ctrl+click on a commit")
-                    .clicked()
-                {
-                    acts.push(compare);
-                }
-            }
-            if ui.button("Compare with the working tree").clicked() {
-                acts.push(Action::Compare {
-                    base: hash.clone(),
-                    base_label: short.clone(),
-                    target: None,
-                    target_label: "working tree".to_owned(),
-                    since_fork: false,
-                });
-            }
-            ui.separator();
+                .and_then(|s| self.commits.get(s))
+                .map(|c| {
+                    if c.hash == WIP_HASH {
+                        "the working tree".to_owned()
+                    } else {
+                        super::short(&c.hash).to_owned()
+                    }
+                })
+                .unwrap_or_default();
             if ui
-                .add_enabled(
-                    idle && !is_head,
-                    egui::Button::new(format!("Interactive rebase {target} onto this commit…")),
-                )
-                .on_hover_text("Reorder, reword, squash or drop the commits after this one")
+                .button(format!("Compare with {other}"))
+                .on_hover_text("Also Ctrl+click on a commit")
                 .clicked()
             {
-                acts.push(Action::InteractiveRebase {
-                    onto: hash.clone(),
-                    label: short.clone(),
-                });
+                acts.push(compare);
             }
-            if ui
-                .add_enabled(
-                    idle && !is_head,
-                    egui::Button::new("Cherry-pick onto current branch"),
-                )
-                .clicked()
-            {
-                acts.push(Action::UndoableOps {
-                    label: format!("Cherry-pick {short}"),
-                    ops: ops(&[&["cherry-pick", &hash]]),
-                    refresh: Refresh::All,
-                    undo: Undo::HeadMove { mode: "--keep" },
-                });
-            }
-            if ui
-                .add_enabled(idle, egui::Button::new("Revert commit"))
-                .clicked()
-            {
-                acts.push(Action::UndoableOps {
-                    label: format!("Revert {short}"),
-                    ops: ops(&[&["revert", "--no-edit", &hash]]),
-                    refresh: Refresh::All,
-                    undo: Undo::HeadMove { mode: "--keep" },
-                });
-            }
-            ui.add_enabled_ui(idle && !is_head, |ui| {
+        }
+        if ui.button("Compare with the working tree").clicked() {
+            acts.push(Action::Compare {
+                base: hash.clone(),
+                base_label: short.clone(),
+                target: None,
+                target_label: "working tree".to_owned(),
+                since_fork: false,
+            });
+        }
+        ui.separator();
+        if ui
+            .add_enabled(
+                idle && !is_head,
+                egui::Button::new(format!("Interactive rebase {target} onto this commit…")),
+            )
+            .on_hover_text("Reorder, reword, squash or drop the commits after this one")
+            .clicked()
+        {
+            acts.push(Action::InteractiveRebase {
+                onto: hash.clone(),
+                label: short.clone(),
+            });
+        }
+        if ui
+            .add_enabled(
+                idle && !is_head,
+                egui::Button::new("Cherry-pick onto current branch"),
+            )
+            .clicked()
+        {
+            acts.push(Action::UndoableOps {
+                label: format!("Cherry-pick {short}"),
+                ops: ops(&[&["cherry-pick", &hash]]),
+                refresh: Refresh::All,
+                undo: Undo::HeadMove { mode: "--keep" },
+            });
+        }
+        if ui
+            .add_enabled(idle, egui::Button::new("Revert commit"))
+            .clicked()
+        {
+            acts.push(Action::UndoableOps {
+                label: format!("Revert {short}"),
+                ops: ops(&[&["revert", "--no-edit", &hash]]),
+                refresh: Refresh::All,
+                undo: Undo::HeadMove { mode: "--keep" },
+            });
+        }
+        ui.add_enabled_ui(idle && !is_head, |ui| {
                 ui.menu_button(format!("Reset {target} to here"), |ui| {
                     for (mode, undo_mode, label, explain) in [
                         ("--soft", "--soft", "Soft", "Keeps every change, staged."),
@@ -459,29 +484,41 @@ impl RepoTab {
                     }
                 });
             });
-            ui.separator();
-            if ui.button("Copy commit hash").clicked() {
-                ui.ctx().copy_text(hash.clone());
-            }
-            if ui.button("Copy message").clicked() {
-                ui.ctx().copy_text(summary.clone());
-            }
-            if let Some(name) = &branch_name
-                && ui.button(format!("Copy branch name ({name})")).clicked()
-            {
-                ui.ctx().copy_text(name.clone());
-            }
-        });
+        ui.separator();
+        if ui.button("Copy commit hash").clicked() {
+            ui.ctx().copy_text(hash.clone());
+        }
+        if ui.button("Copy message").clicked() {
+            ui.ctx().copy_text(summary.clone());
+        }
+        if let Some(name) = &branch_name
+            && ui.button(format!("Copy branch name ({name})")).clicked()
+        {
+            ui.ctx().copy_text(name.clone());
+        }
     }
 
     /// What double-clicking a pill does: check out that branch (a tracking branch for one only on
-    /// a remote) or tag. Nothing for the checked-out one or while an operation runs.
+    /// a remote, and pulling a local one behind its upstream) or tag. Nothing for the checked-out
+    /// one or while an operation runs.
     fn pill_checkout(&self, badge: &Badge) -> Option<Action> {
         if badge.head || self.busy_op.is_some() {
             return None;
         }
         match badge.kind {
-            BadgeKind::Branch if badge.local => Some(Action::Checkout(badge.label.clone())),
+            BadgeKind::Branch if badge.local => {
+                let behind = self
+                    .refs
+                    .local
+                    .iter()
+                    .find(|b| b.name == badge.label)
+                    .is_some_and(|b| matches!(b.ahead_behind(), (0, behind) if behind > 0));
+                Some(if behind {
+                    Action::CheckoutPull(badge.label.clone())
+                } else {
+                    Action::Checkout(badge.label.clone())
+                })
+            }
             BadgeKind::Branch => badge
                 .remotes
                 .first()
@@ -508,10 +545,14 @@ impl RepoTab {
         let t = Tokens::get(ui.ctx());
         let id = ui.id().with(("ref_stack", i));
         let last: Option<Rect> = ui.data(|d| d.get_temp(id));
-        let open = ui
-            .ctx()
-            .pointer_hover_pos()
-            .is_some_and(|p| more.contains(p) || last.is_some_and(|r| r.expand(2.0).contains(p)));
+        let slot_id = |n: usize| id.with(("slot", n));
+        // A pill's menu keeps the list up while the pointer is on the menu.
+        let menu_open =
+            (0..badges.len()).any(|n| egui::Popup::is_id_open(ui.ctx(), slot_id(n).with("popup")));
+        let open = menu_open
+            || ui.ctx().pointer_hover_pos().is_some_and(|p| {
+                more.contains(p) || last.is_some_and(|r| r.expand(2.0).contains(p))
+            });
         if !open {
             ui.data_mut(|d| d.remove::<Rect>(id));
             return false;
@@ -525,10 +566,14 @@ impl RepoTab {
                     .inner_margin(egui::Margin::same(6))
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 4.0;
-                        for b in badges {
-                            let (slot, resp) =
-                                ui.allocate_exact_size(vec2(slot_w, 20.0), Sense::click());
-                            if resp.hovered() {
+                        for (n, b) in badges.iter().enumerate() {
+                            let (slot, _) =
+                                ui.allocate_exact_size(vec2(slot_w, 20.0), Sense::hover());
+                            let resp = ui.interact(slot, slot_id(n), Sense::click());
+                            if resp.hovered()
+                                || menu_open
+                                    && egui::Popup::is_id_open(ui.ctx(), slot_id(n).with("popup"))
+                            {
                                 ui.painter().rect_filled(
                                     slot.expand(2.0),
                                     CornerRadius::same(t.radius as u8),
@@ -551,6 +596,19 @@ impl RepoTab {
                             } else if resp.clicked() {
                                 acts.push(Action::Select(i));
                             }
+                            // The same menu as right-clicking the row's own pill.
+                            let branch = (b.kind == BadgeKind::Branch).then(|| b.git_ref());
+                            egui::Popup::context_menu(&resp)
+                                .style(crate::theme::menu_style)
+                                .show(|ui| {
+                                    self.commit_menu_items(
+                                        ui,
+                                        i,
+                                        branch,
+                                        self.busy_op.is_none(),
+                                        acts,
+                                    )
+                                });
                         }
                     });
             });
@@ -658,24 +716,26 @@ impl RepoTab {
     ) -> Response {
         let t = Tokens::get(ui.ctx());
         let (rect, resp) =
-            ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+            ui.allocate_exact_size(vec2(ui.available_width(), ROW_PITCH), Sense::click());
         let Some(commit) = self.commits.get(i) else {
             return resp;
         };
         let painter = ui.painter_at(rect);
         let is_wip = commit.hash == WIP_HASH;
         let is_match = self.search.matches.contains(&commit.hash);
+        // The row's own band, without the gap.
+        let band = rect.shrink2(vec2(0.0, ROW_GAP / 2.0));
 
         if self.selected == Some(i) {
-            painter.rect_filled(rect, 0.0, t.row_selected);
+            painter.rect_filled(band, 0.0, t.row_selected);
         } else if resp.hovered() {
-            painter.rect_filled(rect, 0.0, t.hover);
+            painter.rect_filled(band, 0.0, t.hover);
         } else if is_match {
-            painter.rect_filled(rect, 0.0, t.warning.gamma_multiply(0.10));
+            painter.rect_filled(band, 0.0, t.warning.gamma_multiply(0.10));
         }
         if is_match {
             painter.rect_filled(
-                Rect::from_min_size(rect.min, vec2(3.0, ROW_H)),
+                Rect::from_min_size(band.min, vec2(3.0, ROW_H)),
                 0.0,
                 t.warning,
             );
@@ -692,7 +752,7 @@ impl RepoTab {
             });
         if compared {
             painter.rect_stroke(
-                rect.shrink(1.0),
+                band.shrink(1.0),
                 0.0,
                 Stroke::new(1.0, t.accent),
                 egui::StrokeKind::Inside,
@@ -814,9 +874,10 @@ impl RepoTab {
 
         // Graph.
         if let Some(row) = self.graph.rows.get(i) {
-            let gp = painter.with_clip_rect(
-                rect.intersect(Rect::from_min_size(pos2(gx, top), vec2(cols.graph, ROW_H))),
-            );
+            let gp = painter.with_clip_rect(rect.intersect(Rect::from_min_size(
+                pos2(gx, top),
+                vec2(cols.graph, rect.height()),
+            )));
             let node = pos2(x(row.col), mid);
             let width = 2.0;
 
@@ -829,11 +890,11 @@ impl RepoTab {
                 }
             }
             for &lane in &row.incoming {
-                curve(&gp, pos2(x(lane), top), node, t.lane(lane), width);
+                edge(&gp, node, pos2(x(lane), top), t.lane(lane), width);
             }
             for &lane in &row.outgoing {
                 let color = if is_wip { t.text_faint } else { t.lane(lane) };
-                curve(&gp, node, pos2(x(lane), bottom), color, width);
+                edge(&gp, node, pos2(x(lane), bottom), color, width);
             }
 
             if is_wip {
@@ -1237,18 +1298,28 @@ fn circle_points(center: Pos2, radius: f32, n: usize) -> Vec<Pos2> {
         .collect()
 }
 
-fn curve(p: &egui::Painter, from: Pos2, to: Pos2, color: Color32, width: f32) {
-    if (from.x - to.x).abs() < 0.5 {
-        p.line_segment([from, to], Stroke::new(width, color));
-    } else {
-        let midy = (from.y + to.y) / 2.0;
-        p.add(CubicBezierShape::from_points_stroke(
-            [from, pos2(from.x, midy), pos2(to.x, midy), to],
-            false,
-            Color32::TRANSPARENT,
-            Stroke::new(width, color),
-        ));
+/// Joins a commit's dot to another lane at `end` (the row's top or bottom): straight across
+/// the row from the dot, a small rounded corner, then straight along the lane.
+fn edge(p: &egui::Painter, node: Pos2, end: Pos2, color: Color32, width: f32) {
+    let stroke = Stroke::new(width, color);
+    let dx = end.x - node.x;
+    if dx.abs() < 0.5 {
+        p.line_segment([node, end], stroke);
+        return;
     }
+    let dy = end.y - node.y;
+    let r = CORNER_R.min(dx.abs()).min(dy.abs());
+    let (sx, sy) = (dx.signum(), dy.signum());
+    // The corner's centre: inside the turn, `r` before the lane and `r` past the dot's row.
+    let c = pos2(end.x - sx * r, node.y + sy * r);
+    let mut points = vec![node];
+    const STEPS: usize = 8;
+    for k in 0..=STEPS {
+        let a = k as f32 / STEPS as f32 * std::f32::consts::FRAC_PI_2;
+        points.push(c + vec2(sx * r * a.sin(), -sy * r * a.cos()));
+    }
+    points.push(end);
+    p.add(egui::Shape::line(points, stroke));
 }
 
 #[cfg(test)]

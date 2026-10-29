@@ -36,7 +36,7 @@ pub struct Settings {
     pub editor: String,
     /// Desktop notifications when a long operation ends while the window is in the background.
     pub notifications: bool,
-    /// Ask GitHub once a day whether a newer release exists.
+    /// Ask GitHub every 12 hours whether a newer release exists.
     pub check_updates: bool,
     /// Colour code in diffs and blame with VS Code's current theme, when it has one.
     pub vscode_colors: bool,
@@ -152,7 +152,7 @@ impl Settings {
                 ui.end_row();
             }
             ui.label("Updates");
-            ui.checkbox(&mut self.check_updates, "Check GitHub for a new version once a day");
+            ui.checkbox(&mut self.check_updates, "Check GitHub for a new version every 12 hours");
             ui.end_row();
         });
 

@@ -239,6 +239,8 @@ pub(crate) enum Action {
         undo: Undo,
     },
     Checkout(String),
+    /// Checks out a local branch behind its upstream, then fast-forwards it.
+    CheckoutPull(String),
     CheckoutRemote(String),
     Dialog(Dialog),
     Commit,
@@ -1020,6 +1022,40 @@ impl RepoTab {
         );
     }
 
+    /// Checkout and `pull --ff-only`; undoing goes back and puts the branch where it was.
+    fn checkout_pull(&mut self, branch: &str, ctx: &egui::Context) {
+        let previous = self
+            .refs
+            .current
+            .clone()
+            .unwrap_or_else(|| self.refs.head.clone());
+        let Some(was) = self
+            .refs
+            .local
+            .iter()
+            .find(|b| b.name == branch)
+            .map(|b| b.target.clone())
+        else {
+            return self.checkout(branch, ctx);
+        };
+        let run = ops(&[&["checkout", branch], &["pull", "--ff-only"]]);
+        let undo = if previous.is_empty() {
+            Undo::None
+        } else {
+            Undo::Custom {
+                undo: ops(&[&["checkout", &previous], &["branch", "-f", branch, &was]]),
+                redo: run.clone(),
+            }
+        };
+        self.run_undoable(
+            &format!("Checkout and pull {branch}"),
+            run,
+            Refresh::All,
+            undo,
+            ctx,
+        );
+    }
+
     fn checkout_remote(&mut self, remote_branch: &str, ctx: &egui::Context) {
         // `origin/feature` → local `feature` tracking it (or just switch if it exists).
         let local = remote_branch
@@ -1609,6 +1645,7 @@ impl RepoTab {
                 undo,
             } => self.run_undoable(&label, ops, refresh, undo, ctx),
             Action::Checkout(name) => self.checkout(&name, ctx),
+            Action::CheckoutPull(name) => self.checkout_pull(&name, ctx),
             Action::CheckoutRemote(name) => self.checkout_remote(&name, ctx),
             Action::Dialog(dialog) => self.dialog = Some(dialog),
             Action::Commit => self.commit(ctx),
