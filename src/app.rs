@@ -432,36 +432,6 @@ impl App {
                 if icons::bar_button(ui, "settings", "Settings").clicked() {
                     self.settings_open = true;
                 }
-                if let Some(release) = self.update.clone() {
-                    let pill = ui.add(
-                        egui::Button::new(
-                            RichText::new(format!("v{} available", release.version))
-                                .color(t.accent_text)
-                                .font(theme::medium(11.5)),
-                        )
-                        .fill(t.accent)
-                        .corner_radius(10.0),
-                    );
-                    egui::Popup::menu(&pill)
-                        .style(crate::theme::menu_style)
-                        .show(|ui| {
-                            ui.label(
-                                RichText::new(format!(
-                                    "gitcraft {} is out (you have {}).",
-                                    release.version,
-                                    update::CURRENT
-                                ))
-                                .color(t.text_dim),
-                            );
-                            if ui.button("Open the release page").clicked() {
-                                let _ = open::that_detached(&release.url);
-                            }
-                            if ui.button("Skip this version").clicked() {
-                                self.skipped_version = release.version.clone();
-                                self.update = None;
-                            }
-                        });
-                }
                 if icons::bar_button(ui, "command", "Command palette (Ctrl+P)").clicked() {
                     self.open_palette();
                 }
@@ -484,6 +454,49 @@ impl App {
                     .clicked()
                 {
                     self.manual_open = true;
+                }
+                // A newer release: first in the row, before the icons.
+                if let Some(release) = self.update.clone() {
+                    ui.add_space(4.0);
+                    let pill = ui.add(
+                        egui::Button::new(
+                            RichText::new(format!("v{} available", release.version))
+                                .color(t.accent_text)
+                                .font(theme::medium(11.5)),
+                        )
+                        .fill(t.accent)
+                        .corner_radius(10.0),
+                    );
+                    egui::Popup::menu(&pill)
+                        .style(crate::theme::menu_style)
+                        .show(|ui| {
+                            // Menus have no side margin (their buttons pad themselves); the
+                            // text gets the buttons' own.
+                            egui::Frame::new()
+                                .inner_margin(egui::Margin {
+                                    left: 16,
+                                    right: 16,
+                                    top: 4,
+                                    bottom: 8,
+                                })
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "gitcraft {} is out (you have {}).",
+                                            release.version,
+                                            update::CURRENT
+                                        ))
+                                        .color(t.text_dim),
+                                    );
+                                });
+                            if ui.button("Open the release page").clicked() {
+                                let _ = open::that_detached(&release.url);
+                            }
+                            if ui.button("Skip this version").clicked() {
+                                self.skipped_version = release.version.clone();
+                                self.update = None;
+                            }
+                        });
                 }
             });
         });

@@ -370,6 +370,10 @@ pub struct CommitDetail {
     pub commit_date: String,
     pub message: String,
     pub files: Vec<ChangedFile>,
+    /// Whether the checked-out branch (HEAD) contains it, so its message can be edited.
+    pub in_head: bool,
+    /// Whether HEAD has merges after it, which rewording it by a rebase would flatten.
+    pub merges_after: bool,
 }
 
 pub fn commit_detail(repo: &Path, hash: &str) -> Result<CommitDetail, String> {
@@ -412,6 +416,13 @@ pub fn commit_detail(repo: &Path, hash: &str) -> Result<CommitDetail, String> {
         }
     }
 
+    let in_head = run(Some(repo), &["merge-base", "--is-ancestor", h, "HEAD"]).is_ok();
+    let merges_after = in_head
+        && run(
+            Some(repo),
+            &["rev-list", "--merges", "--count", &format!("{h}..HEAD")],
+        )
+        .is_ok_and(|n| n.trim() != "0");
     Ok(CommitDetail {
         hash: h.to_owned(),
         parents: parents.split_whitespace().map(str::to_owned).collect(),
@@ -422,6 +433,8 @@ pub fn commit_detail(repo: &Path, hash: &str) -> Result<CommitDetail, String> {
         commit_date: cdate.to_owned(),
         message: message.trim_end().to_owned(),
         files,
+        in_head,
+        merges_after,
     })
 }
 

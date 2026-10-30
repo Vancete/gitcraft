@@ -499,11 +499,23 @@ impl RepoTab {
     }
 
     /// What double-clicking a pill does: check out that branch (a tracking branch for one only on
-    /// a remote, and pulling a local one behind its upstream) or tag. Nothing for the checked-out
-    /// one or while an operation runs.
+    /// a remote, and pulling a local one behind its upstream) or tag; pull when it is the
+    /// checked-out branch's remote, further on. Nothing for the checked-out one or while an
+    /// operation runs.
     fn pill_checkout(&self, badge: &Badge) -> Option<Action> {
         if badge.head || self.busy_op.is_some() {
             return None;
+        }
+        // The checked-out branch's remote pill, further on than the branch: pull.
+        let current = self.refs.current.as_deref() == Some(badge.label.as_str());
+        if badge.kind == BadgeKind::Branch && !badge.local && current {
+            let behind = self
+                .refs
+                .local
+                .iter()
+                .find(|b| b.name == badge.label)
+                .is_some_and(|b| b.ahead_behind().1 > 0);
+            return behind.then_some(Action::Pull);
         }
         match badge.kind {
             BadgeKind::Branch if badge.local => {
@@ -583,10 +595,10 @@ impl RepoTab {
                             let pr = b.kind == BadgeKind::Branch
                                 && self.prs.iter().any(|p| p.branch == b.label);
                             ref_pill(ui, ui.painter(), slot.left_center(), b, lane, slot_w, pr);
-                            let hint = if b.head {
-                                "checked out"
-                            } else {
-                                "double-click to check out"
+                            let hint = match self.pill_checkout(b) {
+                                _ if b.head => "checked out",
+                                Some(Action::Pull) => "double-click to pull",
+                                _ => "double-click to check out",
                             };
                             let resp = resp.on_hover_text(format!("{} ({hint})", b.describe()));
                             if resp.double_clicked() {

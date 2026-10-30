@@ -4,7 +4,7 @@ use egui::{Align2, Key, RichText, Sense, Ui, pos2, vec2};
 
 use super::diff::unstage_args;
 use super::widgets::{self, RowExtra};
-use super::{Action, Dialog, DiffKey, DiffView, Refresh, RepoTab, abort_action, ops};
+use super::{Action, Dialog, DiffKey, DiffView, Refresh, RepoTab, Reword, abort_action, ops};
 use crate::git::{Area, ChangedFile, StatusFile};
 use crate::icons;
 use crate::theme::{self, Tokens};
@@ -85,6 +85,9 @@ impl RepoTab {
             return;
         };
 
+        // Taken out while the pane borrows `self`; put back after it.
+        let mut reword = self.reword.take();
+        let head = self.refs.head.clone();
         egui::ScrollArea::vertical()
             .id_salt("detail_scroll")
             .auto_shrink(false)
@@ -97,13 +100,71 @@ impl RepoTab {
                             .split_once('\n')
                             .map(|(s, b)| (s, b.trim()))
                             .unwrap_or((detail.message.as_str(), ""));
-                        ui.add(
-                            egui::Label::new(RichText::new(subject).font(theme::semibold(15.0)))
-                                .wrap(),
-                        );
-                        if !body.is_empty() {
-                            ui.add_space(2.0);
-                            ui.add(egui::Label::new(RichText::new(body).color(t.text_dim)).wrap());
+                        let mut close = false;
+                        match reword.as_mut().filter(|r| r.hash == detail.hash) {
+                            Some(r) => {
+                                if let Some(save) = reword_editor(ui, r) {
+                                    let message = r.message();
+                                    if save && message != detail.message.trim() {
+                                        acts.push(Action::Reword {
+                                            hash: detail.hash.clone(),
+                                            message,
+                                        });
+                                    }
+                                    close = true;
+                                }
+                            }
+                            None => {
+                                // A commit of the checked-out branch: double-click its message to
+                                // edit it (the root commit has no parent to rebase from).
+                                let editable = idle
+                                    && detail.in_head
+                                    && (detail.hash == head || !detail.merges_after)
+                                    && (detail.hash == head || !detail.parents.is_empty());
+                                let sense = if editable {
+                                    Sense::click()
+                                } else {
+                                    Sense::hover()
+                                };
+                                let summary = ui.add(
+                                    egui::Label::new(
+                                        RichText::new(subject).font(theme::semibold(15.0)),
+                                    )
+                                    .wrap()
+                                    .sense(sense),
+                                );
+                                let mut clicked = if editable {
+                                    summary.on_hover_text("Double-click to edit the message")
+                                } else if detail.in_head && detail.merges_after {
+                                    summary.on_hover_text(
+                                        "Merges came after this commit: editing its message would flatten them",
+                                    )
+                                } else {
+                                    summary
+                                }
+                                .double_clicked();
+                                if !body.is_empty() {
+                                    ui.add_space(2.0);
+                                    clicked |= ui
+                                        .add(
+                                            egui::Label::new(RichText::new(body).color(t.text_dim))
+                                                .wrap()
+                                                .sense(sense),
+                                        )
+                                        .double_clicked();
+                                }
+                                if clicked && editable {
+                                    reword = Some(Reword {
+                                        hash: detail.hash.clone(),
+                                        subject: subject.to_owned(),
+                                        body: body.to_owned(),
+                                        focus: true,
+                                    });
+                                }
+                            }
+                        }
+                        if close {
+                            reword = None;
                         }
                         ui.add_space(12.0);
 
@@ -190,6 +251,7 @@ impl RepoTab {
                     }
                 });
             });
+        self.reword = reword;
     }
 
     /// Changed files, each opening its diff (`key`) when clicked; `rev`: where the files are,
@@ -766,4 +828,67 @@ fn empty_hint(ui: &mut Ui, text: &str) {
         egui::FontId::proportional(11.5),
         t.text_faint,
     );
+}
+
+impl Reword {
+    /// The summary, then the description after a blank line.
+    fn message(&self) -> String {
+        let (subject, body) = (self.subject.trim(), self.body.trim());
+        if body.is_empty() {
+            subject.to_owned()
+        } else {
+            format!("{subject}\n\n{body}")
+        }
+    }
+}
+
+/// The summary and description being edited, with Save and Cancel: `Some(true)` to save,
+/// `Some(false)` to cancel.
+fn reword_editor(ui: &mut Ui, reword: &mut Reword) -> Option<bool> {
+    let t = Tokens::get(ui.ctx());
+    let summary = ui.add(
+        egui::TextEdit::singleline(&mut reword.subject)
+            .font(theme::semibold(14.0))
+            .hint_text("Summary")
+            .desired_width(f32::INFINITY),
+    );
+    if reword.focus {
+        summary.request_focus();
+        reword.focus = false;
+    }
+    ui.add_space(4.0);
+    ui.add(
+        egui::TextEdit::multiline(&mut reword.body)
+            .hint_text("Description (optional)")
+            .desired_rows(4)
+            .desired_width(f32::INFINITY),
+    );
+    ui.add_space(6.0);
+    let can_save = !reword.subject.trim().is_empty();
+    let (save_keys, cancel_keys) = ui.input(|i| {
+        (
+            i.modifiers.command && i.key_pressed(Key::Enter),
+            i.key_pressed(Key::Escape),
+        )
+    });
+    let mut out = None;
+    ui.horizontal(|ui| {
+        if widgets::primary_button(ui, "Save message", can_save, 110.0).clicked() {
+            out = Some(true);
+        }
+        if ui.button("Cancel").clicked() {
+            out = Some(false);
+        }
+        ui.label(
+            RichText::new("Ctrl+Enter saves · Esc cancels")
+                .small()
+                .color(t.text_faint),
+        );
+    });
+    if save_keys && can_save {
+        out = Some(true);
+    } else if cancel_keys {
+        out = Some(false);
+    }
+    out
 }

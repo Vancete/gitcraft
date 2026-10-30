@@ -58,6 +58,12 @@ enum Msg {
     /// A comparison's files, for the request numbered so.
     Compare(u64, Result<CompareData, String>),
     Prs(Result<Vec<PullRequest>, String>),
+    /// The commits to replay when rewording `hash`.
+    RewordCommits {
+        hash: String,
+        message: String,
+        result: Result<Vec<git::RebaseCommit>, String>,
+    },
     OpDone {
         label: String,
         result: Result<String, String>,
@@ -160,6 +166,15 @@ impl DiffView {
             anchor: None,
         }
     }
+}
+
+/// A commit's message being edited in the right pane (double-click on it).
+pub(crate) struct Reword {
+    pub hash: String,
+    pub subject: String,
+    pub body: String,
+    /// Put the cursor in the summary on the next frame.
+    pub focus: bool,
 }
 
 /// Two points of history side by side in the right pane: a branch against another, a commit
@@ -288,6 +303,12 @@ pub(crate) enum Action {
     },
     CloseFileView,
     /// Open the interactive rebase editor for the commits after `onto`.
+    /// Gives a commit of the checked-out branch a new message: amending the latest, rebasing
+    /// for an older one.
+    Reword {
+        hash: String,
+        message: String,
+    },
     InteractiveRebase {
         onto: String,
         label: String,
@@ -362,6 +383,8 @@ pub struct RepoTab {
     compare_requests: u64,
     file_view: Option<file_view::FileView>,
     rebase: Option<rebase::RebaseEditor>,
+    /// The selected commit's message, being edited in the right pane.
+    reword: Option<Reword>,
     /// HTTPS credentials typed in this session, used for every later git command of the tab.
     credentials: Option<git::Credentials>,
     /// The last operation started, to run again after signing in.
@@ -455,6 +478,7 @@ impl RepoTab {
             compare_requests: 0,
             file_view: None,
             rebase: None,
+            reword: None,
             credentials: None,
             last_op: None,
             avatars_hinted: false,
@@ -734,6 +758,7 @@ impl RepoTab {
 
     fn load_detail(&mut self, hash: String, ctx: &egui::Context) {
         self.detail = None;
+        self.reword = None;
         self.detail_error = None;
         self.detail_hash = Some(hash.clone());
         let path = self.path.clone();
@@ -1054,6 +1079,46 @@ impl RepoTab {
             undo,
             ctx,
         );
+    }
+
+    /// The latest commit is amended (its message only, whatever is staged); an older one is
+    /// reworded by an interactive rebase from its parent.
+    fn reword_commit(&mut self, hash: String, message: String, ctx: &egui::Context) {
+        if self.busy_op.is_some() {
+            return;
+        }
+        self.reword = None;
+        if hash == self.refs.head {
+            let (subject, body) = message.split_once("\n\n").unwrap_or((&message, ""));
+            let mut amend = vec![
+                "commit",
+                "--amend",
+                "--only",
+                "--allow-empty",
+                "-m",
+                subject,
+            ];
+            if !body.is_empty() {
+                amend.extend(["-m", body]);
+            }
+            self.run_undoable(
+                &format!("Edit the message of {}", short(&hash)),
+                ops(&[&amend]),
+                Refresh::All,
+                Undo::HeadMove { mode: "--keep" },
+                ctx,
+            );
+            return;
+        }
+        let path = self.path.clone();
+        spawn(&self.tx, ctx, move || {
+            let result = git::rebase_commits(&path, &format!("{hash}^"));
+            Msg::RewordCommits {
+                hash,
+                message,
+                result,
+            }
+        });
     }
 
     fn checkout_remote(&mut self, remote_branch: &str, ctx: &egui::Context) {
@@ -1467,6 +1532,38 @@ impl RepoTab {
                 }
                 Err(e) => self.status = Some((format!("Interactive rebase: {e}"), true)),
             },
+            Msg::RewordCommits {
+                hash,
+                message,
+                result,
+            } => {
+                let result = result.and_then(|commits| {
+                    let onto = format!("{hash}^");
+                    let mut editor =
+                        rebase::RebaseEditor::new(onto, short(&hash).to_owned(), commits);
+                    let entry = editor
+                        .entries
+                        .iter_mut()
+                        .find(|e| e.commit.hash == hash)
+                        .ok_or("only commits of the checked-out branch can be edited")?;
+                    entry.step = rebase::Step::Reword;
+                    entry.message = message;
+                    if let Some(problem) = editor.problem() {
+                        return Err(problem);
+                    }
+                    editor.command()
+                });
+                match result {
+                    Ok(command) => self.run_undoable(
+                        &format!("Edit the message of {}", short(&hash)),
+                        vec![command],
+                        Refresh::All,
+                        Undo::HeadMove { mode: "--keep" },
+                        ctx,
+                    ),
+                    Err(e) => self.status = Some((format!("Edit message: {e}"), true)),
+                }
+            }
             Msg::FileHistory(path, result) => {
                 if let Some(view) = &mut self.file_view
                     && view.path == path
@@ -1774,6 +1871,7 @@ impl RepoTab {
                     }
                 });
             }
+            Action::Reword { hash, message } => self.reword_commit(hash, message, ctx),
             Action::RunRebase => {
                 let Some(editor) = &self.rebase else { return };
                 if editor.problem().is_some() || self.busy_op.is_some() {

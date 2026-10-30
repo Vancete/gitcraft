@@ -27,7 +27,7 @@ const FEATURES: &[(&str, &[&str])] = &[
         "Graph",
         &[
             "Every branch with its pill on its latest commit: solid for the checked-out one, a laptop when it is local, a cloud when a remote has it.",
-            "Double-click a pill to check that branch out (and pull it when its remote is ahead); hover +N to see every branch of the commit, and right-click any of them.",
+            "Double-click a pill to check that branch out (and pull it when its remote is ahead; on the checked-out branch's remote pill, just pull); hover +N to see every branch of the commit, and right-click any of them.",
             "Right-click a commit or a pill for branches, tags, merge, rebase, cherry-pick, revert, reset and more.",
             "Search messages, authors and hashes, or switch to Code to find the commits that added or removed some text.",
             "Interactive rebase: reorder, reword, squash, fix up or drop commits, then start it.",
@@ -46,6 +46,7 @@ const FEATURES: &[(&str, &[&str])] = &[
             "Stage, unstage or discard whole files from the right pane.",
             "In a file's diff, stage, unstage or discard one hunk, or click the lines you want and act on only those.",
             "Write the summary and description and commit; amend the last commit; pick the identity you commit as.",
+            "Double-click a commit's message in the right pane to edit it (any commit of the checked-out branch with no merges after it).",
             "Undo and redo commits, merges, rebases, resets, checkouts, branches, tags and stashes.",
         ],
     ),
