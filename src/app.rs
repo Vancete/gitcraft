@@ -46,6 +46,7 @@ enum Tab {
     /// The start page ("new tab"): open, create or clone a repository.
     Home,
     Repo(Box<RepoTab>),
+    Settings,
 }
 
 struct CloneForm {
@@ -83,11 +84,23 @@ pub struct App {
     skipped_version: String,
     tab_looks: BTreeMap<PathBuf, TabLook>,
     settings: Settings,
-    settings_open: bool,
     manual_open: bool,
     palette: Option<Palette>,
     toasts: Vec<Toast>,
+    tab_drag: Option<TabDrag>,
 }
+
+/// A tab being dragged along the strip.
+#[derive(Clone, Copy)]
+struct TabDrag {
+    /// Its index when the drag started.
+    from: usize,
+    /// Where the pointer holds it, from its left edge.
+    grab: f32,
+}
+
+/// Seconds tabs take to slide into their place.
+const TAB_SLIDE: f32 = 0.15;
 
 /// The command palette (Ctrl+P): type to filter, Enter runs.
 struct Palette {
@@ -141,10 +154,10 @@ impl App {
             theme: saved.theme,
             clone_parent: saved.clone_parent,
             settings: saved.settings.clone(),
-            settings_open: false,
             manual_open: false,
             palette: None,
             toasts: Vec::new(),
+            tab_drag: None,
             error: None,
             was_focused: true,
             clone_form: None,
@@ -294,6 +307,24 @@ impl App {
         }
     }
 
+    /// Moves tab `from` to index `to`; the same tab stays active.
+    fn move_tab(&mut self, from: usize, to: usize) {
+        if from >= self.tabs.len() || to >= self.tabs.len() || from == to {
+            return;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = if self.active == from {
+            to
+        } else if from < self.active && to >= self.active {
+            self.active - 1
+        } else if from > self.active && to <= self.active {
+            self.active + 1
+        } else {
+            self.active
+        };
+    }
+
     fn new_tab(&mut self) {
         self.tabs.push(Tab::Home);
         self.active = self.tabs.len() - 1;
@@ -305,6 +336,7 @@ impl App {
     }
 
     /// PhotoCraft-style document tabs on a dark strip, `+` after them, the theme menu at the end.
+    /// A tab can be dragged along the strip, the others sliding out of its way.
     fn tab_strip(&mut self, ui: &mut Ui) {
         let t = Tokens::get(ui.ctx());
         let mut select = None;
@@ -312,34 +344,124 @@ impl App {
         let mut add = false;
         let mut restyle = None;
         let default_look = TabLook::default();
+        let mut moved = None;
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 1.0;
-            for (i, tab) in self.tabs.iter().enumerate() {
+            const GAP: f32 = 1.0;
+            ui.spacing_mut().item_spacing.x = GAP;
+            let ctx = ui.ctx().clone();
+            let n = self.tabs.len();
+            // Each tab's title and width.
+            let titles: Vec<_> = self
+                .tabs
+                .iter()
+                .enumerate()
+                .map(|(i, tab)| {
+                    let active = i == self.active;
+                    let title = match tab {
+                        Tab::Home => "New tab".to_owned(),
+                        Tab::Repo(r) => r.name.clone(),
+                        Tab::Settings => "Settings".to_owned(),
+                    };
+                    let font = if active {
+                        theme::medium(12.5)
+                    } else {
+                        egui::FontId::proportional(12.5)
+                    };
+                    let color = if active { t.text } else { t.text_dim };
+                    let galley = ui.painter().layout_no_wrap(title, font, color);
+                    let w = (galley.size().x + 66.0).clamp(110.0, 260.0);
+                    (galley, color, w)
+                })
+                .collect();
+            let width = |i: usize| titles.get(i).map_or(0.0, |g| g.2);
+            let total: f32 = titles.iter().map(|g| g.2 + GAP).sum::<f32>() - GAP;
+            let (strip, _) = ui.allocate_exact_size(vec2(total.max(0.0), TAB_H), Sense::hover());
+
+            // The dragged tab follows the pointer; the slot it would drop into is where its
+            // middle is among the others.
+            let dragged = self.tab_drag.filter(|d| d.from < n).and_then(|d| {
+                let x = ctx.pointer_interact_pos()?.x - d.grab;
+                let max = (strip.right() - width(d.from)).max(strip.left());
+                Some((d.from, x.clamp(strip.left(), max)))
+            });
+            let mut order: Vec<usize> = (0..n).collect();
+            if let Some((from, x)) = dragged {
+                let middle = x + width(from) / 2.0;
+                let mut left = strip.left();
+                let mut slot = 0;
+                for j in (0..n).filter(|&j| j != from) {
+                    if left + width(j) / 2.0 < middle {
+                        slot += 1;
+                    }
+                    left += width(j) + GAP;
+                }
+                order.retain(|&j| j != from);
+                order.insert(slot, from);
+                if !ctx.input(|i| i.pointer.primary_down()) {
+                    moved = Some((from, slot));
+                }
+            }
+            let mut place = vec![strip.left(); n];
+            let mut x = strip.left();
+            for &j in &order {
+                if let Some(p) = place.get_mut(j) {
+                    *p = x;
+                }
+                x += width(j) + GAP;
+            }
+
+            // The dragged tab is drawn last, over the others.
+            let dragging = dragged.map(|(from, _)| from);
+            let paint_order = (0..n).filter(|&j| Some(j) != dragging).chain(dragging);
+            let mut homes = 0;
+            let ids: Vec<egui::Id> = self
+                .tabs
+                .iter()
+                .map(|tab| match tab {
+                    Tab::Repo(r) => egui::Id::new(("tab", &r.path)),
+                    Tab::Home => {
+                        homes += 1;
+                        egui::Id::new(("tab-home", homes))
+                    }
+                    Tab::Settings => egui::Id::new("tab-settings"),
+                })
+                .collect();
+            for i in paint_order {
+                let (Some(tab), Some((galley, color, w)), Some(&id)) =
+                    (self.tabs.get(i), titles.get(i), ids.get(i))
+                else {
+                    continue;
+                };
+                let (galley, color, w) = (galley.clone(), *color, *w);
                 let active = i == self.active;
-                let (title, tooltip, busy) = match tab {
-                    Tab::Home => (
-                        "New tab".to_owned(),
-                        "Open, create or clone a repository".to_owned(),
-                        false,
+                let (tooltip, busy) = match tab {
+                    Tab::Home => ("Open, create or clone a repository".to_owned(), false),
+                    Tab::Repo(r) => (r.path.display().to_string(), r.is_busy()),
+                    Tab::Settings => ("Settings".to_owned(), false),
+                };
+                let x = match dragged {
+                    Some((from, x)) if from == i => {
+                        ctx.animate_value_with_time(id.with("x"), x, 0.0)
+                    }
+                    _ => ctx.animate_value_with_time(
+                        id.with("x"),
+                        place.get(i).copied().unwrap_or(strip.left()),
+                        TAB_SLIDE,
                     ),
-                    Tab::Repo(r) => (r.name.clone(), r.path.display().to_string(), r.is_busy()),
                 };
-                let font = if active {
-                    theme::medium(12.5)
-                } else {
-                    egui::FontId::proportional(12.5)
-                };
-                let color = if active { t.text } else { t.text_dim };
-                let galley = ui.painter().layout_no_wrap(title, font, color);
-                let w = (galley.size().x + 66.0).clamp(110.0, 260.0);
-                let (rect, resp) = ui.allocate_exact_size(vec2(w, TAB_H), Sense::click());
-                let hovered = resp.hovered();
+                let rect = Rect::from_min_size(pos2(x, strip.top()), vec2(w, TAB_H));
+                let resp = ui.interact(rect, id, Sense::click_and_drag());
+                let hovered = resp.hovered() && dragging.is_none();
                 let look = match tab {
                     Tab::Repo(r) => self.tab_looks.get(&r.path).unwrap_or(&default_look),
-                    Tab::Home => &default_look,
+                    Tab::Home | Tab::Settings => &default_look,
                 };
                 let accent = look.color.color(&t);
                 let p = ui.painter();
+                if dragging == Some(i) && !active {
+                    // Opaque, so the tabs it passes over don't show through.
+                    p.rect_filled(rect, 0.0, t.hover);
+                }
                 if active {
                     p.rect_filled(rect, 0.0, t.chrome);
                     p.line_segment(
@@ -353,10 +475,10 @@ impl App {
                     p.rect_filled(rect, 0.0, t.hover.gamma_multiply(0.6));
                 }
                 let y = rect.center().y;
-                let icon = if matches!(tab, Tab::Home) {
-                    "plus"
-                } else {
-                    look.icon()
+                let icon = match tab {
+                    Tab::Home => "plus",
+                    Tab::Settings => "settings",
+                    Tab::Repo(_) => look.icon(),
                 };
                 // A chosen colour also marks the tab when it is in the background.
                 let icon_tint = if active {
@@ -402,7 +524,18 @@ impl App {
                     if c.clicked() {
                         close = Some(i);
                     }
-                    c.on_hover_text("Close tab (Ctrl+W)");
+                    if dragging.is_none() {
+                        c.on_hover_text("Close tab (Ctrl+W)");
+                    }
+                }
+                if resp.drag_started_by(egui::PointerButton::Primary)
+                    && let Some(origin) = ctx.input(|i| i.pointer.press_origin())
+                {
+                    self.tab_drag = Some(TabDrag {
+                        from: i,
+                        grab: origin.x - rect.left(),
+                    });
+                    select = Some(i);
                 }
                 if let Tab::Repo(r) = tab {
                     egui::Popup::context_menu(&resp)
@@ -413,13 +546,18 @@ impl App {
                             }
                         });
                 }
-                let resp = resp.on_hover_text(tooltip);
+                if dragging.is_none() {
+                    resp.clone().on_hover_text(tooltip);
+                }
                 if resp.clicked() && close.is_none() {
                     select = Some(i);
                 }
                 if resp.middle_clicked() {
                     close = Some(i);
                 }
+            }
+            if !ctx.input(|i| i.pointer.primary_down()) {
+                self.tab_drag = None;
             }
             ui.add_space(4.0);
             if icons::small_button(ui, "plus", "New tab (Ctrl+T)").clicked() {
@@ -430,7 +568,7 @@ impl App {
                 ui.add_space(4.0);
                 ui.spacing_mut().item_spacing.x = 6.0;
                 if icons::bar_button(ui, "settings", "Settings").clicked() {
-                    self.settings_open = true;
+                    self.open_settings();
                 }
                 if icons::bar_button(ui, "command", "Command palette (Ctrl+P)").clicked() {
                     self.open_palette();
@@ -502,6 +640,9 @@ impl App {
         });
         if let Some(i) = select {
             self.active = i;
+        }
+        if let Some((from, to)) = moved {
+            self.move_tab(from, to);
         }
         if let Some((path, look)) = restyle {
             if look == TabLook::default() {
@@ -872,7 +1013,6 @@ impl eframe::App for App {
         // A focused text field or the terminal keeps these keys for itself.
         let modal_open = self.clone_form.is_some()
             || self.palette.is_some()
-            || self.settings_open
             || self.manual_open
             || ctx.egui_wants_keyboard_input();
         let (new_tab, close, refresh, focused, palette, manual) = ctx.input(|i| {
@@ -885,10 +1025,10 @@ impl eframe::App for App {
                 i.key_pressed(Key::F1),
             )
         });
-        if manual && self.clone_form.is_none() && !self.settings_open && self.palette.is_none() {
+        if manual && self.clone_form.is_none() && self.palette.is_none() {
             self.manual_open = !self.manual_open;
         }
-        if palette && self.clone_form.is_none() && !self.settings_open {
+        if palette && self.clone_form.is_none() {
             if self.palette.is_some() {
                 self.palette = None;
             } else {
@@ -935,15 +1075,18 @@ impl eframe::App for App {
         let active = self.active;
         match self.tabs.get_mut(active) {
             Some(Tab::Repo(repo)) => {
-                repo.keys_blocked = self.palette.is_some()
-                    || self.settings_open
-                    || self.manual_open
-                    || self.clone_form.is_some();
+                repo.keys_blocked =
+                    self.palette.is_some() || self.manual_open || self.clone_form.is_some();
                 repo.ui(ui);
                 // A worktree asked to be opened in its own tab.
                 if let Some(path) = repo.open_request.take() {
                     self.open_repo(&path, &ctx);
                 }
+            }
+            Some(Tab::Settings) => {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(t.dock))
+                    .show(ui, |ui| self.settings_page(ui));
             }
             _ => {
                 egui::CentralPanel::default()
@@ -953,7 +1096,6 @@ impl eframe::App for App {
         }
         self.clone_dialog(&ctx);
         self.palette_ui(&ctx);
-        self.settings_ui(&ctx);
         self.manual_ui(&ctx);
 
         // Long operations that ended: a toast, and a desktop notification when away.
@@ -980,7 +1122,7 @@ impl eframe::App for App {
             .iter()
             .filter_map(|t| match t {
                 Tab::Repo(r) => Some(r.path.clone()),
-                Tab::Home => None,
+                Tab::Home | Tab::Settings => None,
             })
             .collect();
         // Index of the active tab among the saved (repo) tabs.
@@ -1201,7 +1343,7 @@ impl App {
             Entry::App(AppCommand::Open) => self.pick_existing(ctx),
             Entry::App(AppCommand::Create) => self.pick_new(ctx),
             Entry::App(AppCommand::Clone) => self.start_clone(),
-            Entry::App(AppCommand::Settings) => self.settings_open = true,
+            Entry::App(AppCommand::Settings) => self.open_settings(),
             Entry::App(AppCommand::Manual) => self.manual_open = true,
             Entry::App(AppCommand::Theme(kind)) => self.set_theme(ctx, kind),
             Entry::Repo(i) => {
@@ -1333,42 +1475,37 @@ impl App {
         }
     }
 
-    fn settings_ui(&mut self, ctx: &egui::Context) {
-        if !self.settings_open {
-            return;
+    /// Focuses the settings tab, opening it after the others when there is none.
+    fn open_settings(&mut self) {
+        if let Some(i) = self.tabs.iter().position(|t| matches!(t, Tab::Settings)) {
+            self.active = i;
+        } else {
+            self.tabs.push(Tab::Settings);
+            self.active = self.tabs.len() - 1;
         }
-        let t = Tokens::get(ctx);
-        let frame = egui::Frame::new()
-            .fill(t.card)
-            .stroke(Stroke::new(1.0, t.field_border))
-            .corner_radius(t.radius_lg)
-            .inner_margin(egui::Margin::same(18))
-            .shadow(ctx.global_style().visuals.window_shadow);
-        let mut close = false;
-        let resp = egui::Modal::new(egui::Id::new("settings"))
-            .frame(frame)
-            .backdrop_color(egui::Color32::from_black_alpha(110))
-            .show(ctx, |ui| {
-                ui.set_width(560.0);
+    }
+
+    /// The settings tab: the form in a centred column, scrolling as a whole.
+    fn settings_page(&mut self, ui: &mut Ui) {
+        const WIDTH: f32 = 640.0;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let side = ((ui.available_width() - WIDTH) / 2.0).max(24.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Settings").font(theme::semibold(16.0)));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icons::small_button(ui, "x", "Close").clicked() {
-                            close = true;
-                        }
-                    });
-                });
-                egui::ScrollArea::vertical()
-                    .max_height(560.0)
-                    .show(ui, |ui| {
+                    ui.add_space(side);
+                    ui.vertical(|ui| {
+                        ui.set_width(WIDTH.min(ui.available_width() - 24.0));
+                        ui.add_space(32.0);
+                        ui.label(RichText::new("Settings").font(theme::semibold(22.0)));
+                        ui.add_space(4.0);
                         if self.settings.ui(ui) {
                             self.settings.set(ui.ctx());
                         }
+                        ui.add_space(32.0);
                     });
+                });
             });
-        if close || resp.should_close() {
-            self.settings_open = false;
-        }
     }
 
     fn manual_ui(&mut self, ctx: &egui::Context) {

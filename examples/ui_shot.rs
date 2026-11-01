@@ -4,7 +4,7 @@
 //! `cargo run --example ui_shot -- <repo> <out-prefix> [step]...`
 //!
 //! Steps (coordinates in points, window is 1400×860):
-//! `click:x,y`, `dclick:x,y`, `rclick:x,y`, `hover:x,y`, `drag:x1,y1,x2,y2`, `leave` (pointer off the window), `open:path` (a repository in a new tab), `key:Escape`, `ckey:P` (Ctrl/Cmd+key), `type:text`, `wait:ms`, `shot`.
+//! `click:x,y`, `dclick:x,y`, `rclick:x,y`, `hover:x,y`, `drag:x1,y1,x2,y2`, `press:x,y` / `move:x,y` / `release:x,y` (a drag in parts), `leave` (pointer off the window), `open:path` (a repository in a new tab), `key:Escape`, `ckey:P` (Ctrl/Cmd+key), `type:text`, `wait:ms`, `shot`.
 //! Each `shot` writes `<out-prefix>-<n>.png`.
 
 use std::time::{Duration, Instant};
@@ -144,6 +144,28 @@ fn main() {
                     modifiers: Modifiers::NONE,
                 });
                 settle(&mut harness, 300);
+            }
+            // `press:x,y`, `move:x,y`, `release:x,y`: a drag in parts, to look at it midway.
+            "press" | "release" => {
+                let pos = point(arg);
+                harness.event(Event::PointerMoved(pos));
+                harness.step();
+                harness.event(Event::PointerButton {
+                    pos,
+                    button: PointerButton::Primary,
+                    pressed: cmd == "press",
+                    modifiers: Modifiers::NONE,
+                });
+                settle(&mut harness, 100);
+            }
+            "move" => {
+                let to = point(arg);
+                let from = harness.ctx.input(|i| i.pointer.latest_pos()).unwrap_or(to);
+                for k in 1..=8 {
+                    harness.event(Event::PointerMoved(from + (to - from) * (k as f32 / 8.0)));
+                    harness.step();
+                }
+                settle(&mut harness, 100);
             }
             "hover" => {
                 harness.event(Event::PointerMoved(point(arg)));
