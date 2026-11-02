@@ -10,8 +10,10 @@ mod diff;
 mod file_view;
 mod graph_view;
 mod highlight;
-mod pr_view;
 mod pinned_sections;
+mod pr_merge;
+mod pr_review;
+mod pr_view;
 mod rebase;
 mod sidebar;
 pub(crate) mod widgets;
@@ -66,6 +68,12 @@ enum Msg {
     /// A pull request in full, for the request numbered so.
     PrDetails(u64, Box<Result<crate::pull_request::PrDetails, String>>),
     PrFiles(u64, Result<crate::pull_request::PrFiles, String>),
+    /// Something said on a pull request went out, or didn't.
+    PrPosted {
+        number: u64,
+        what: pr_review::Posted,
+        result: Result<(), String>,
+    },
     /// The commits to replay when rewording `hash`.
     RewordCommits {
         hash: String,
@@ -253,6 +261,8 @@ pub(crate) enum Action {
     OpenPr(u64),
     ClosePr,
     ReloadPr,
+    /// Something done on the pull request shown.
+    Pr(pr_review::PrAct),
     CloseDiff,
     Ops {
         label: String,
@@ -404,6 +414,8 @@ pub struct RepoTab {
     /// The pull request the big area shows.
     pr_view: Option<pr_view::PrView>,
     pr_requests: u64,
+    /// What was written on each pull request and not sent, by its number.
+    pr_drafts: HashMap<u64, pr_review::PrDraft>,
     compare_requests: u64,
     file_view: Option<file_view::FileView>,
     rebase: Option<rebase::RebaseEditor>,
@@ -509,6 +521,7 @@ impl RepoTab {
             compare: None,
             pr_view: None,
             pr_requests: 0,
+            pr_drafts: HashMap::new(),
             compare_requests: 0,
             file_view: None,
             rebase: None,
@@ -1628,7 +1641,12 @@ impl RepoTab {
                 }
             }
             Msg::PrDetails(request, result) => self.pr_details_arrived(request, *result, ctx),
-            Msg::PrFiles(request, result) => self.pr_files_arrived(request, result),
+            Msg::PrFiles(request, result) => self.pr_files_arrived(request, result, ctx),
+            Msg::PrPosted {
+                number,
+                what,
+                result,
+            } => self.pr_posted(number, what, result, ctx),
             Msg::Compare(request, result) => {
                 if let Some(c) = &mut self.compare
                     && c.request == request
@@ -1781,6 +1799,7 @@ impl RepoTab {
                 self.diff = None;
             }
             Action::ReloadPr => self.load_pr(ctx),
+            Action::Pr(act) => self.pr_act(act, ctx),
             Action::CloseDiff => {
                 self.diff = None;
                 self.conflict = None;
@@ -1886,7 +1905,9 @@ impl RepoTab {
                 });
             }
             Action::OpenUrl(url) => {
-                let _ = open::that_detached(url);
+                if crate::pull_request::is_web_url(&url) {
+                    let _ = open::that_detached(url);
+                }
             }
             Action::OpenPath(rel) => {
                 let _ = open::that_detached(self.path.join(rel));
@@ -2116,7 +2137,9 @@ impl RepoTab {
                     i.modifiers.command && i.key_pressed(Key::F),
                 )
             });
-            if esc && self.diff.is_some() {
+            if esc && self.diff.is_some() && self.line_comment_open() {
+                acts.push(Action::Pr(pr_review::PrAct::CloseLine));
+            } else if esc && self.diff.is_some() {
                 acts.push(Action::CloseDiff);
             } else if esc && self.rebase.is_some() {
                 acts.push(Action::CloseRebase);

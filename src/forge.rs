@@ -2,8 +2,9 @@
 //! GitLab. They hold the user's login, so gitcraft never stores a token.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::git::Remote;
 
@@ -58,6 +59,16 @@ pub struct PullRequest {
 }
 
 pub(crate) fn tool(forge: Forge, repo: &Path, args: &[&str]) -> Result<String, String> {
+    tool_with_input(forge, repo, args, None)
+}
+
+/// [`tool`], with `input` on its stdin.
+pub(crate) fn tool_with_input(
+    forge: Forge,
+    repo: &Path,
+    args: &[&str],
+    input: Option<&str>,
+) -> Result<String, String> {
     let mut cmd = Command::new(forge.tool());
     cmd.current_dir(repo).args(args);
     cmd.env("GH_PROMPT_DISABLED", "1").env("NO_PROMPT", "1");
@@ -67,13 +78,30 @@ pub(crate) fn tool(forge: Forge, repo: &Path, args: &[&str]) -> Result<String, S
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    let out = cmd.output().map_err(|_| {
+    let not_installed = |_| {
         format!(
             "{} isn't installed: gitcraft uses it for {}s",
             forge.tool(),
             forge.noun()
         )
-    })?;
+    };
+    let out = match input {
+        None => cmd.output().map_err(not_installed)?,
+        Some(input) => {
+            let mut child = cmd
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(not_installed)?;
+            if let Some(mut stdin) = child.stdin.take() {
+                // A tool that stops reading has stopped for a reason, which its exit code and
+                // error output below tell better than the broken pipe would.
+                let _ = stdin.write_all(input.as_bytes());
+            }
+            child.wait_with_output().map_err(|e| e.to_string())?
+        }
+    };
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {

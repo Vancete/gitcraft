@@ -49,139 +49,136 @@ impl RepoTab {
             scroll = scroll.vertical_scroll_offset(offset);
         }
         let mut sections = Sections::new(egui::Id::new(("sidebar-section", self.repo_key())));
-        let output = scroll
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
+        let output = scroll.show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
 
-                let local: Vec<&Branch> = self.refs.local.iter().filter(matches).collect();
-                let can_branch = idle && !self.refs.head.is_empty();
-                let open = sections.add(
+            let local: Vec<&Branch> = self.refs.local.iter().filter(matches).collect();
+            let can_branch = idle && !self.refs.head.is_empty();
+            let open = sections.add(
+                ui,
+                Header {
+                    key: "local",
+                    icon: "laptop",
+                    title: "LOCAL",
+                    count: local.len(),
+                    default_open: true,
+                    button: Some(Button {
+                        icon: "plus",
+                        tooltip: "New branch at HEAD…",
+                        action: can_branch.then(|| {
+                            Action::Dialog(Dialog::create_branch(&self.refs.head, "HEAD"))
+                        }),
+                    }),
+                },
+            );
+            if open {
+                let tree = branch_tree::build(local.iter().map(|b| (b.name.as_str(), *b)));
+                let view = TreeView {
+                    id: egui::Id::new(("branch-folder", self.repo_key(), "local")),
+                    filtering: !filter.is_empty(),
+                    indent: 0.0,
+                };
+                branch_tree::show(
+                    ui,
+                    &tree,
+                    &view,
+                    &|b: &&Branch| b.is_head,
+                    &mut |ui, row, b: &&Branch| self.local_branch_row(ui, acts, b, row, idle),
+                );
+            }
+
+            self.remotes_section(ui, acts, idle, &filter, &mut sections);
+            self.worktree_section(ui, acts, idle, &mut sections);
+            self.stash_section(ui, acts, idle, &mut sections);
+            self.pr_section(ui, acts, idle, &mut sections);
+
+            let tags: Vec<&Branch> = self.refs.tags.iter().filter(matches).collect();
+            if !tags.is_empty()
+                && sections.add(
                     ui,
                     Header {
-                        key: "local",
-                        icon: "laptop",
-                        title: "LOCAL",
-                        count: local.len(),
-                        default_open: true,
-                        button: Some(Button {
-                            icon: "plus",
-                            tooltip: "New branch at HEAD…",
-                            action: can_branch.then(|| {
-                                Action::Dialog(Dialog::create_branch(&self.refs.head, "HEAD"))
-                            }),
-                        }),
+                        key: "tags",
+                        icon: "tag",
+                        title: "TAGS",
+                        count: tags.len(),
+                        default_open: false,
+                        button: None,
                     },
-                );
-                if open {
-                    let tree = branch_tree::build(local.iter().map(|b| (b.name.as_str(), *b)));
-                    let view = TreeView {
-                        id: egui::Id::new(("branch-folder", self.repo_key(), "local")),
-                        filtering: !filter.is_empty(),
-                        indent: 0.0,
-                    };
-                    branch_tree::show(
-                        ui,
-                        &tree,
-                        &view,
-                        &|b: &&Branch| b.is_head,
-                        &mut |ui, row, b: &&Branch| self.local_branch_row(ui, acts, b, row, idle),
-                    );
-                }
-
-                self.remotes_section(ui, acts, idle, &filter, &mut sections);
-                self.worktree_section(ui, acts, idle, &mut sections);
-                self.stash_section(ui, acts, idle, &mut sections);
-                self.pr_section(ui, acts, idle, &mut sections);
-
-                let tags: Vec<&Branch> = self.refs.tags.iter().filter(matches).collect();
-                if !tags.is_empty()
-                    && sections.add(
-                        ui,
-                        Header {
-                            key: "tags",
-                            icon: "tag",
-                            title: "TAGS",
-                            count: tags.len(),
-                            default_open: false,
-                            button: None,
-                        },
-                    )
-                {
-                    for tag in tags {
-                        let r = plain_row(ui, "tag", &tag.name, "");
-                        if r.clicked() {
-                            acts.push(Action::SelectHash(tag.target.clone()));
-                        }
-                        egui::Popup::context_menu(&r)
-                            .style(crate::theme::menu_style)
-                            .show(|ui| {
-                                if ui.button("Copy name").clicked() {
-                                    ui.ctx().copy_text(tag.name.clone());
-                                }
-                                if let Some(remote) = self.default_remote() {
-                                    if ui
-                                        .add_enabled(
-                                            idle,
-                                            egui::Button::new(format!("Push to {remote}")),
-                                        )
-                                        .clicked()
-                                    {
-                                        acts.push(Action::Ops {
-                                            label: format!("Push tag {}", tag.name),
-                                            ops: ops(&[&[
-                                                "push",
-                                                &remote,
-                                                &format!("refs/tags/{}", tag.name),
-                                            ]]),
-                                            refresh: Refresh::All,
-                                        });
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            idle,
-                                            egui::Button::new(format!("Delete from {remote}…")),
-                                        )
-                                        .clicked()
-                                    {
-                                        acts.push(Action::Dialog(Dialog::confirm(
-                                            "Delete remote tag",
-                                            format!("Delete the tag “{}” from {remote}?", tag.name),
-                                            "Delete",
-                                            ops(&[&[
-                                                "push",
-                                                &remote,
-                                                "--delete",
-                                                &format!("refs/tags/{}", tag.name),
-                                            ]]),
-                                            None,
-                                        )));
-                                    }
-                                }
-                                ui.separator();
+                )
+            {
+                for tag in tags {
+                    let r = plain_row(ui, "tag", &tag.name, "");
+                    if r.clicked() {
+                        acts.push(Action::SelectHash(tag.target.clone()));
+                    }
+                    egui::Popup::context_menu(&r)
+                        .style(crate::theme::menu_style)
+                        .show(|ui| {
+                            if ui.button("Copy name").clicked() {
+                                ui.ctx().copy_text(tag.name.clone());
+                            }
+                            if let Some(remote) = self.default_remote() {
                                 if ui
-                                    .add_enabled(idle, egui::Button::new("Delete tag…"))
+                                    .add_enabled(
+                                        idle,
+                                        egui::Button::new(format!("Push to {remote}")),
+                                    )
                                     .clicked()
                                 {
-                                    acts.push(Action::Dialog(
-                                        Dialog::confirm(
-                                            "Delete tag",
-                                            format!("Delete the local tag “{}”?", tag.name),
-                                            "Delete",
-                                            ops(&[&["tag", "-d", &tag.name]]),
-                                            None,
-                                        )
-                                        .undo(
-                                            Undo::Custom {
-                                                undo: ops(&[&["tag", &tag.name, &tag.target]]),
-                                                redo: ops(&[&["tag", "-d", &tag.name]]),
-                                            },
-                                        ),
-                                    ));
+                                    acts.push(Action::Ops {
+                                        label: format!("Push tag {}", tag.name),
+                                        ops: ops(&[&[
+                                            "push",
+                                            &remote,
+                                            &format!("refs/tags/{}", tag.name),
+                                        ]]),
+                                        refresh: Refresh::All,
+                                    });
                                 }
-                            });
-                    }
+                                if ui
+                                    .add_enabled(
+                                        idle,
+                                        egui::Button::new(format!("Delete from {remote}…")),
+                                    )
+                                    .clicked()
+                                {
+                                    acts.push(Action::Dialog(Dialog::confirm(
+                                        "Delete remote tag",
+                                        format!("Delete the tag “{}” from {remote}?", tag.name),
+                                        "Delete",
+                                        ops(&[&[
+                                            "push",
+                                            &remote,
+                                            "--delete",
+                                            &format!("refs/tags/{}", tag.name),
+                                        ]]),
+                                        None,
+                                    )));
+                                }
+                            }
+                            ui.separator();
+                            if ui
+                                .add_enabled(idle, egui::Button::new("Delete tag…"))
+                                .clicked()
+                            {
+                                acts.push(Action::Dialog(
+                                    Dialog::confirm(
+                                        "Delete tag",
+                                        format!("Delete the local tag “{}”?", tag.name),
+                                        "Delete",
+                                        ops(&[&["tag", "-d", &tag.name]]),
+                                        None,
+                                    )
+                                    .undo(Undo::Custom {
+                                        undo: ops(&[&["tag", &tag.name, &tag.target]]),
+                                        redo: ops(&[&["tag", "-d", &tag.name]]),
+                                    }),
+                                ));
+                            }
+                        });
                 }
-            });
+            }
+        });
         self.sidebar_jump = sections.show(ui, output.inner_rect, output.state.offset.y, acts);
     }
 
@@ -638,19 +635,13 @@ impl RepoTab {
                         acts.push(fast_forward_action(&b.name, current));
                     }
                     if ui
-                        .add_enabled(
-                            idle,
-                            egui::Button::new(format!("Merge into {current}")),
-                        )
+                        .add_enabled(idle, egui::Button::new(format!("Merge into {current}")))
                         .clicked()
                     {
                         acts.push(merge_action(&b.name, current));
                     }
                     if ui
-                        .add_enabled(
-                            idle,
-                            egui::Button::new(format!("Rebase {current} onto it")),
-                        )
+                        .add_enabled(idle, egui::Button::new(format!("Rebase {current} onto it")))
                         .clicked()
                     {
                         acts.push(rebase_action(&b.name, current));
@@ -672,14 +663,14 @@ impl RepoTab {
                     .clicked()
                 {
                     acts.push(Action::Dialog(Dialog::confirm(
-                    "Delete remote branch",
-                    format!(
-                        "Delete “{short}” from {remote}? This changes the remote for everyone.",
-                    ),
-                    "Delete",
-                    ops(&[&["push", remote, "--delete", short]]),
-                    None,
-                )));
+                        "Delete remote branch",
+                        format!(
+                            "Delete “{short}” from {remote}? This changes the remote for everyone.",
+                        ),
+                        "Delete",
+                        ops(&[&["push", remote, "--delete", short]]),
+                        None,
+                    )));
                 }
             });
     }
@@ -752,13 +743,7 @@ impl RepoTab {
         }
     }
 
-    fn pr_section(
-        &self,
-        ui: &mut Ui,
-        acts: &mut Vec<Action>,
-        idle: bool,
-        sections: &mut Sections,
-    ) {
+    fn pr_section(&self, ui: &mut Ui, acts: &mut Vec<Action>, idle: bool, sections: &mut Sections) {
         let Some(forge) = self.forge else { return };
         let t = Tokens::get(ui.ctx());
         let title = match forge {

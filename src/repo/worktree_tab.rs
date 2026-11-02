@@ -26,6 +26,7 @@ pub(super) struct Unfinished {
     pub terminal: bool,
     pub commit_message: bool,
     pub editor: bool,
+    pub review: bool,
 }
 
 impl Unfinished {
@@ -39,6 +40,8 @@ impl Unfinished {
             Some("commit message")
         } else if self.editor {
             Some("editor")
+        } else if self.review {
+            Some("review draft")
         } else {
             None
         }
@@ -150,6 +153,7 @@ impl RepoTab {
                 || !self.commit_body.trim().is_empty()
                 || self.reword.is_some(),
             editor: self.rebase.is_some() || self.conflict.is_some(),
+            review: self.has_pr_draft(),
         }
         .label()
     }
@@ -664,6 +668,10 @@ mod tests {
             },
             Unfinished {
                 editor: true,
+                ..Unfinished::default()
+            },
+            Unfinished {
+                review: true,
                 ..Unfinished::default()
             },
         ];
