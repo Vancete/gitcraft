@@ -182,6 +182,7 @@ was made this way, on a demo repository.
 | `src/terminal.rs`        | integrated terminal: pty, VT parsing (`vt100`), painting, keys, selection          |
 | `src/repo/mod.rs`        | one repository tab: state, background git work, undo / redo, toolbar               |
 | `src/repo/sidebar.rs`    | branches, remotes, worktrees, stashes, pull requests, tags                         |
+| `src/repo/branch_tree.rs` | branch names as a tree of folders, and its rows |
 | `src/repo/graph_view.rs` | commit graph, pills, search bar, commit menu                                       |
 | `src/repo/detail.rs`     | commit / stash detail, changes and commit box                                      |
 | `src/repo/diff.rs`       | diff loading, pairing and the diff view (unified, split, images)                   |
