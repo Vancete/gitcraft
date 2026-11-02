@@ -5,6 +5,7 @@ use egui::{
     Align2, Color32, CornerRadius, FontId, Key, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2,
 };
 
+use super::columns::{Bar, Cols, MIN_COL_W, MIN_GRAPH_W, MIN_REFS_W};
 use super::widgets;
 use super::{
     Action, Dialog, Refresh, RepoTab, Undo, WIP_HASH, compare_action, fast_forward_action,
@@ -26,29 +27,83 @@ const CORNER_R: f32 = 7.0;
 const MAX_LANES_SHOWN: usize = 24;
 /// How much darker the pills that are not checked out are (0 = same colour, 1 = black).
 const DIMMED: f32 = 0.4;
-const AUTHOR_W: f32 = 150.0;
-const DATE_W: f32 = 118.0;
-const HASH_W: f32 = 70.0;
+/// A translucent black, so the column handles read as dark on every theme's header.
+const HANDLE_COLOR: Color32 = Color32::from_black_alpha(130);
+const HANDLE_WIDTH: f32 = 2.0;
+/// How far a handle sits left of the column it resizes.
+const HANDLE_GAP: f32 = 5.0;
 const AVATAR_D: f32 = 20.0;
 
-/// Column widths for this frame (from the settings).
-#[derive(Clone, Copy)]
-struct Cols {
-    refs: f32,
-    graph: f32,
-    hash: f32,
-    author: f32,
-    date: f32,
-}
-
-impl Cols {
-    /// Width of everything right of the description.
-    fn trailing(&self) -> f32 {
-        self.hash + self.author + self.date
-    }
-}
-
 impl RepoTab {
+    /// Drag handles on the column borders of the header. A drag changes the preferred width
+    /// of the handle's column in the settings (the app saves them from there); `columns`
+    /// works out what that squeezes.
+    ///
+    /// Call this after the header background is painted, or the fill covers the lines.
+    fn column_handles(&self, ui: &mut Ui, header: Rect, cols: &Cols, settings: &Settings) {
+        let t = Tokens::get(ui.ctx());
+        let mut next = settings.clone();
+        // The right-hand columns start their text exactly on the border: keep the line off it.
+        let right = header.right() - HANDLE_GAP;
+        // (bar, x of the border, shown)
+        let borders = [
+            (Bar::Refs, header.left() + cols.refs, true),
+            (Bar::Graph, header.left() + cols.refs + cols.graph, true),
+            (Bar::Hash, right - cols.trailing(), cols.hash > 0.0),
+            (
+                Bar::Author,
+                right - cols.author - cols.date,
+                cols.author > 0.0,
+            ),
+            (Bar::Date, right - cols.date, cols.date > 0.0),
+        ];
+        for (bar, x, shown) in borders {
+            if !shown {
+                continue;
+            }
+            let grab =
+                Rect::from_center_size(pos2(x, header.center().y), vec2(10.0, header.height()));
+            let resp = ui
+                .interact(
+                    grab,
+                    ui.id().with(("col-handle", bar)),
+                    Sense::click_and_drag(),
+                )
+                .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+            let active = resp.hovered() || resp.dragged();
+            ui.painter().line_segment(
+                [pos2(x, header.top() + 5.0), pos2(x, header.bottom() - 5.0)],
+                Stroke::new(HANDLE_WIDTH, if active { t.accent } else { HANDLE_COLOR }),
+            );
+            // A dragged graph width can cut lanes off; a double-click fits it to them again.
+            if bar == Bar::Graph && resp.double_clicked() {
+                next.graph_width = 0.0;
+                continue;
+            }
+            // Measured from the pointer, not its movement: past a column's limit the bar waits
+            // there and only moves again once the pointer comes back to it.
+            let dx = resp
+                .interact_pointer_pos()
+                .map_or(0.0, |pointer| pointer.x - x);
+            if !resp.dragged() || dx == 0.0 {
+                continue;
+            }
+            let width = bar.dragged(cols, dx, header.width());
+            match bar {
+                Bar::Refs => next.refs_width = width,
+                Bar::Graph => next.graph_width = width,
+                Bar::Hash => next.hash_width = width,
+                Bar::Author => next.author_width = width,
+                Bar::Date => next.date_width = width,
+            }
+        }
+        if next != *settings {
+            next.set(ui.ctx());
+            // The new widths apply from the next frame: make sure there is one.
+            ui.ctx().request_repaint();
+        }
+    }
+
     pub(super) fn graph_view(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
         let t = Tokens::get(ui.ctx());
         if self.search.open {
@@ -96,13 +151,19 @@ impl RepoTab {
 
         let settings = Settings::get(ui.ctx());
         let lanes = self.graph.width.clamp(1, MAX_LANES_SHOWN);
+        let shown_if = |shown: bool, width: f32| if shown { width.max(MIN_COL_W) } else { 0.0 };
         let cols = Cols {
-            refs: settings.refs_width.clamp(150.0, 600.0),
-            graph: (lanes as f32 * LANE_W + 12.0).max(60.0),
-            hash: if settings.show_hash { HASH_W } else { 0.0 },
-            author: if settings.show_author { AUTHOR_W } else { 0.0 },
-            date: if settings.show_date { DATE_W } else { 0.0 },
-        };
+            refs: settings.refs_width.max(MIN_REFS_W),
+            graph: if settings.graph_width > 0.0 {
+                settings.graph_width.max(MIN_GRAPH_W)
+            } else {
+                (lanes as f32 * LANE_W + 12.0).max(MIN_GRAPH_W)
+            },
+            hash: shown_if(settings.show_hash, settings.hash_width),
+            author: shown_if(settings.show_author, settings.author_width),
+            date: shown_if(settings.show_date, settings.date_width),
+        }
+        .squeezed(ui.available_width());
 
         // Column headers.
         let (header, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
@@ -130,9 +191,18 @@ impl RepoTab {
             if cols.date > 0.0 {
                 labels.push((right - cols.date, "DATE"));
             }
-            for (x, label) in labels {
-                p.text(
-                    pos2(x, y),
+            // Each label is clipped where the next column starts, so a narrow window
+            // cuts DESCRIPTION short instead of running into AUTHOR.
+            for (i, (x, label)) in labels.iter().enumerate() {
+                let limit = labels
+                    .get(i + 1)
+                    .map_or(header.right(), |(next, _)| next - 8.0);
+                let clip = Rect::from_min_max(
+                    pos2(*x, header.top()),
+                    pos2(limit.max(*x), header.bottom()),
+                );
+                p.with_clip_rect(clip).text(
+                    pos2(*x, y),
                     Align2::LEFT_CENTER,
                     label,
                     font.clone(),
@@ -140,6 +210,7 @@ impl RepoTab {
                 );
             }
         }
+        self.column_handles(ui, header, &cols, &settings);
 
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt("graph_scroll")
@@ -852,7 +923,10 @@ impl RepoTab {
             );
             // Connector to the dot, drawn first so the lanes cross over it.
             painter.line_segment(
-                [pos2(when_rect.right(), mid), pos2(node_x, mid)],
+                [
+                    pos2(when_rect.right(), mid),
+                    pos2(node_x.min(gx + cols.graph), mid),
+                ],
                 Stroke::new(1.5, row_color.gamma_multiply(0.8)),
             );
             widgets::avatar(ui, avatar, AVATAR_D / 2.0, &commit.author, &commit.email);
