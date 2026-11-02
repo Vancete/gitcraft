@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::git;
 use crate::icons;
-use crate::repo::RepoTab;
+use crate::repo::worktree_tab::{self, Chip};
+use crate::repo::{OpenRequest, RepoTab};
 use crate::settings::Settings;
 use crate::tab_look::{self, TabLook};
 use crate::theme::{self, ThemeKind, Tokens};
@@ -66,6 +67,14 @@ struct CloneForm {
 pub struct App {
     git_version: Result<String, String>,
     tabs: Vec<Tab>,
+    /// What is typed in the worktree switcher.
+    switcher_query: String,
+    /// The switcher just opened: its search field takes the keyboard.
+    switcher_focus: bool,
+    /// The worktree picked in the switcher, to open after the tab strip is drawn.
+    switch_to: Option<PathBuf>,
+    /// The active tab's worktree is to be closed, after the tab strip is drawn.
+    close_worktree: bool,
     active: usize,
     recent: Vec<PathBuf>,
     theme: ThemeKind,
@@ -109,6 +118,11 @@ struct Palette {
     focus: bool,
 }
 
+/// Wide enough for a repository, its branch's chip and the badge.
+const MAX_TAB_W: f32 = 380.0;
+/// The badge counting a tab's worktrees with work in the background.
+const BADGE_W: f32 = 22.0;
+
 struct Toast {
     text: String,
     error: bool,
@@ -149,6 +163,10 @@ impl App {
         let mut app = Self {
             git_version: git::version(),
             tabs: Vec::new(),
+            switcher_query: String::new(),
+            switcher_focus: false,
+            switch_to: None,
+            close_worktree: false,
             active: 0,
             recent: saved.recent,
             theme: saved.theme,
@@ -204,15 +222,13 @@ impl App {
 
     /// Opens `path` in the active tab if it's a start page, otherwise in a new tab.
     fn open_repo(&mut self, path: &Path, ctx: &egui::Context) {
-        let root = match git::toplevel(path) {
+        let root = match repo_root(path) {
             Ok(root) => root,
             Err(e) => {
                 self.error = Some(e);
                 return;
             }
         };
-        let root = std::fs::canonicalize(&root).unwrap_or(root);
-        let root = strip_verbatim(root);
         self.remember(&root);
         self.error = None;
 
@@ -224,13 +240,98 @@ impl App {
             self.active = i;
             return;
         }
-        let tab = Tab::Repo(Box::new(RepoTab::new(root, ctx)));
+        // A worktree parked in some tab comes out with everything it had.
+        let view = self.take_parked(&root);
+        let tab = Tab::Repo(view.unwrap_or_else(|| Box::new(RepoTab::new(root, ctx))));
         if matches!(self.tabs.get(self.active), Some(Tab::Home)) {
             self.tabs[self.active] = tab;
         } else {
             self.tabs.push(tab);
             self.active = self.tabs.len() - 1;
         }
+    }
+
+    /// Moves the active tab to a worktree of its repository, when the settings say so, parking
+    /// what it was showing. A worktree open in another tab just gets that tab shown.
+    fn open_worktree(&mut self, path: &Path, ctx: &egui::Context) {
+        if !self.settings.worktrees_in_same_tab {
+            self.open_repo(path, ctx);
+            return;
+        }
+        let root = match repo_root(path) {
+            Ok(root) => root,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+        if let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t, Tab::Repo(r) if r.path == root))
+        {
+            self.active = i;
+            return;
+        }
+        let parked = self.take_parked(&root);
+        let Some(Tab::Repo(current)) = self.tabs.get_mut(self.active) else {
+            self.open_repo(&root, ctx);
+            return;
+        };
+        // The tab keeps the look it was given.
+        if let Some(look) = self.tab_looks.get(&current.path).cloned() {
+            self.tab_looks.entry(root.clone()).or_insert(look);
+        }
+        let came_back = parked.is_some();
+        let mut next = parked.unwrap_or_else(|| Box::new(RepoTab::new(root, ctx)));
+        next.continue_from(current);
+        if came_back {
+            next.resume(ctx);
+        }
+        let old = std::mem::replace(current, next);
+        current.adopt_parked(old);
+    }
+
+    /// Closes the worktree the active tab shows and goes back to the repository's main one. What
+    /// was going on in it ends, as when closing a tab; the worktree itself stays on disk.
+    fn close_current_worktree(&mut self, ctx: &egui::Context) {
+        let main = match self.tabs.get(self.active) {
+            Some(Tab::Repo(r)) => r.main_worktree().and_then(|main| repo_root(main).ok()),
+            _ => return,
+        };
+        // No main worktree to show (a bare repository): this is the end of the tab.
+        let Some(root) = main else {
+            self.close_tab(self.active);
+            return;
+        };
+        let shows_main = |t: &Tab| matches!(t, Tab::Repo(r) if r.path == root);
+        if self.tabs.iter().any(shows_main) {
+            self.close_tab(self.active);
+            if let Some(i) = self.tabs.iter().position(shows_main) {
+                self.active = i;
+            }
+            return;
+        }
+        let parked = self.take_parked(&root);
+        let Some(Tab::Repo(current)) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let came_back = parked.is_some();
+        let mut next = parked.unwrap_or_else(|| Box::new(RepoTab::new(root.clone(), ctx)));
+        next.continue_from(current);
+        next.inherit_parked(current);
+        if came_back {
+            next.resume(ctx);
+        }
+        *current = next;
+    }
+
+    /// Takes the parked view of the folder `path` out of whichever tab has it.
+    fn take_parked(&mut self, path: &Path) -> Option<Box<RepoTab>> {
+        self.tabs.iter_mut().find_map(|tab| match tab {
+            Tab::Repo(r) => r.take_parked(path),
+            Tab::Home | Tab::Settings => None,
+        })
     }
 
     fn remember(&mut self, path: &Path) {
@@ -298,6 +399,21 @@ impl App {
         if i >= self.tabs.len() {
             return;
         }
+        // Work still going on in a parked worktree isn't closed with a click on what is showing.
+        if let Some(Tab::Repo(r)) = self.tabs.get_mut(i)
+            && let Some(next) = r.successor_with_work()
+        {
+            *r = next;
+            let name = r.label(true);
+            let name = name.branch.unwrap_or(name.repo);
+            self.active = i;
+            self.toasts.push(Toast {
+                text: format!("{name} still has work going on, so the tab now shows it"),
+                error: false,
+                until: std::time::Instant::now() + std::time::Duration::from_secs(6),
+            });
+            return;
+        }
         self.tabs.remove(i);
         if self.tabs.is_empty() {
             self.tabs.push(Tab::Home);
@@ -357,10 +473,14 @@ impl App {
                 .enumerate()
                 .map(|(i, tab)| {
                     let active = i == self.active;
-                    let title = match tab {
-                        Tab::Home => "New tab".to_owned(),
-                        Tab::Repo(r) => r.name.clone(),
-                        Tab::Settings => "Settings".to_owned(),
+                    let (title, chip, background): (String, Option<Chip>, usize) = match tab {
+                        Tab::Home => ("New tab".to_owned(), None, 0),
+                        Tab::Repo(r) => {
+                            let label = r.label(self.settings.worktrees_in_same_tab);
+                            let chip = worktree_tab::chip_for(ui, &label);
+                            (label.repo, chip, r.background_work().len())
+                        }
+                        Tab::Settings => ("Settings".to_owned(), None, 0),
                     };
                     let font = if active {
                         theme::medium(12.5)
@@ -369,8 +489,10 @@ impl App {
                     };
                     let color = if active { t.text } else { t.text_dim };
                     let galley = ui.painter().layout_no_wrap(title, font, color);
-                    let w = (galley.size().x + 66.0).clamp(110.0, 260.0);
-                    (galley, color, w)
+                    let extras = chip.as_ref().map_or(0.0, |c| c.width + 6.0)
+                        + if background > 0 { BADGE_W } else { 0.0 };
+                    let w = (galley.size().x + 66.0 + extras).clamp(110.0, MAX_TAB_W);
+                    (galley, color, w, chip, background)
                 })
                 .collect();
             let width = |i: usize| titles.get(i).map_or(0.0, |g| g.2);
@@ -427,12 +549,12 @@ impl App {
                 })
                 .collect();
             for i in paint_order {
-                let (Some(tab), Some((galley, color, w)), Some(&id)) =
+                let (Some(tab), Some((galley, color, w, chip, background)), Some(&id)) =
                     (self.tabs.get(i), titles.get(i), ids.get(i))
                 else {
                     continue;
                 };
-                let (galley, color, w) = (galley.clone(), *color, *w);
+                let (galley, color, w, background) = (galley.clone(), *color, *w, *background);
                 let active = i == self.active;
                 let (tooltip, busy) = match tab {
                     Tab::Home => ("Open, create or clone a repository".to_owned(), false),
@@ -495,15 +617,99 @@ impl App {
                     14.0,
                     icon_tint,
                 );
+                // The name, then the chip right after it, then the badge. A name too long for
+                // the tab gives way to them.
+                let badge_w = if background > 0 { BADGE_W } else { 0.0 };
+                let chip_w = chip.as_ref().map_or(0.0, |c| c.width);
+                let right = rect.right() - 28.0;
+                let chip_left =
+                    (rect.left() + 32.0 + galley.size().x + 6.0).min(right - chip_w - badge_w);
+                let text_right = if chip.is_some() || background > 0 {
+                    chip_left - 4.0
+                } else {
+                    right
+                };
                 let text_clip = Rect::from_min_max(
                     pos2(rect.left() + 32.0, rect.top()),
-                    pos2(rect.right() - 28.0, rect.bottom()),
+                    pos2(text_right, rect.bottom()),
                 );
                 ui.painter().with_clip_rect(text_clip).galley(
                     pos2(text_clip.left(), y - galley.size().y / 2.0),
                     galley,
                     color,
                 );
+
+                if let Some(chip) = chip {
+                    let chip_rect =
+                        Rect::from_min_size(pos2(chip_left, y - 10.0), vec2(chip.width, 20.0));
+                    if let (true, Tab::Repo(r)) = (active, tab) {
+                        // The chip opens the switcher, its end closes the worktree.
+                        let body =
+                            chip_rect.with_max_x(chip_rect.right() - worktree_tab::CHIP_CLOSE_W);
+                        let c = ui.interact(body, id.with("worktree"), Sense::click());
+                        worktree_tab::paint_chip(ui, chip_rect, chip, true, c.hovered());
+                        let close_rect = Rect::from_center_size(
+                            pos2(chip_rect.right() - worktree_tab::CHIP_CLOSE_W / 2.0, y),
+                            vec2(18.0, 18.0),
+                        );
+                        let x = ui.interact(close_rect, id.with("close-worktree"), Sense::click());
+                        if x.hovered() {
+                            ui.painter().rect_filled(close_rect, t.radius_sm, t.pressed);
+                        }
+                        icons::paint(
+                            ui,
+                            close_rect,
+                            "x",
+                            11.0,
+                            if x.hovered() { t.text } else { t.text_faint },
+                        );
+                        if x.clicked() {
+                            self.close_worktree = true;
+                        }
+                        x.on_hover_text(
+                            "Close this worktree and go back to the main one. It stays on disk.",
+                        );
+                        if c.clicked() {
+                            self.switcher_query.clear();
+                            self.switcher_focus = true;
+                        }
+                        let popup = egui::Popup::menu(&c)
+                            .style(crate::theme::menu_style)
+                            .width(worktree_tab::SWITCHER_W)
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+                        popup.show(|ui| {
+                            let picked = worktree_tab::switcher(
+                                ui,
+                                r,
+                                &mut self.switcher_query,
+                                &mut self.switcher_focus,
+                            );
+                            if picked.is_some() {
+                                self.switch_to = picked;
+                                ui.close();
+                            }
+                        });
+                        c.on_hover_text(format!("{}\nSwitch worktree", chip.full_name));
+                    } else {
+                        worktree_tab::paint_chip(ui, chip_rect, chip, false, false);
+                    }
+                }
+                if background > 0 {
+                    let at = pos2(chip_left + chip_w + 7.0, y);
+                    ui.painter().circle_filled(at, 3.0, t.accent);
+                    ui.painter().text(
+                        at + vec2(5.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        background.to_string(),
+                        theme::medium(10.5),
+                        t.text_dim,
+                    );
+                    let badge = Rect::from_center_size(at + vec2(4.0, 0.0), vec2(BADGE_W, 20.0));
+                    ui.interact(badge, id.with("background"), Sense::hover())
+                        .on_hover_text(format!(
+                            "{background} worktree(s) with work in the background"
+                        ));
+                }
 
                 let close_rect =
                     Rect::from_center_size(pos2(rect.right() - 15.0, y), vec2(18.0, 18.0));
@@ -1059,6 +1265,13 @@ impl eframe::App for App {
             }
         }
 
+        // Worktrees parked in any tab keep going too.
+        for tab in &mut self.tabs {
+            if let Tab::Repo(r) = tab {
+                r.poll_parked(&ctx);
+            }
+        }
+
         egui::Panel::top("tabs")
             .frame(
                 egui::Frame::new()
@@ -1071,6 +1284,12 @@ impl eframe::App for App {
                     }),
             )
             .show(ui, |ui| self.tab_strip(ui));
+        if let Some(path) = self.switch_to.take() {
+            self.open_worktree(&path, &ctx);
+        }
+        if std::mem::take(&mut self.close_worktree) {
+            self.close_current_worktree(&ctx);
+        }
 
         let active = self.active;
         match self.tabs.get_mut(active) {
@@ -1078,9 +1297,11 @@ impl eframe::App for App {
                 repo.keys_blocked =
                     self.palette.is_some() || self.manual_open || self.clone_form.is_some();
                 repo.ui(ui);
-                // A worktree asked to be opened in its own tab.
-                if let Some(path) = repo.open_request.take() {
-                    self.open_repo(&path, &ctx);
+                // A tab asked for a folder to be opened.
+                match repo.open_request.take() {
+                    Some(OpenRequest::NewTab(path)) => self.open_repo(&path, &ctx),
+                    Some(OpenRequest::Worktree(path)) => self.open_worktree(&path, &ctx),
+                    None => {}
                 }
             }
             Some(Tab::Settings) => {
@@ -1146,6 +1367,13 @@ impl eframe::App for App {
         };
         eframe::set_value(storage, eframe::APP_KEY, &saved);
     }
+}
+
+/// The top of the repository `path` is in, in the form tabs are told apart by.
+fn repo_root(path: &Path) -> Result<PathBuf, String> {
+    let root = git::toplevel(path)?;
+    let root = std::fs::canonicalize(&root).unwrap_or(root);
+    Ok(strip_verbatim(root))
 }
 
 /// The window and taskbar icon (the `.exe` gets the same picture from `build.rs`).
