@@ -8,6 +8,7 @@ mod diff;
 mod file_view;
 mod graph_view;
 mod highlight;
+mod pinned_sections;
 mod rebase;
 mod sidebar;
 pub(crate) mod widgets;
@@ -410,6 +411,8 @@ pub struct RepoTab {
     op_started: Option<Instant>,
     status: Option<(String, bool)>,
     branch_filter: String,
+    /// Where a clicked jump mark wants the sidebar scrolled to.
+    sidebar_jump: Option<f32>,
     /// Jump to the changes row on the next rebuild (after an operation left conflicts).
     focus_wip: bool,
     last_fetch: Instant,
@@ -497,6 +500,7 @@ impl RepoTab {
             op_started: None,
             status: None,
             branch_filter: String::new(),
+            sidebar_jump: None,
             focus_wip: false,
             last_fetch: Instant::now(),
             terminals: Vec::new(),
