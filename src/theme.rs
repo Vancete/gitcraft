@@ -224,14 +224,18 @@ pub fn install_fonts(ctx: &egui::Context) {
         "JetBrainsMono",
         include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
     );
+    // The default fonts have only a part of the emoji people write: the rest comes from here.
+    add(
+        "NotoEmoji",
+        include_bytes!("../assets/fonts/NotoEmoji-Regular.ttf"),
+    );
     let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
     proportional.insert(0, "Inter".to_owned());
+    proportional.push("NotoEmoji".to_owned());
     let fallback = proportional.clone();
-    fonts
-        .families
-        .entry(FontFamily::Monospace)
-        .or_default()
-        .insert(0, "JetBrainsMono".to_owned());
+    let monospace = fonts.families.entry(FontFamily::Monospace).or_default();
+    monospace.insert(0, "JetBrainsMono".to_owned());
+    monospace.push("NotoEmoji".to_owned());
     for (family, primary) in [("medium", "Inter-Medium"), ("semibold", "Inter-SemiBold")] {
         let mut stack = vec![primary.to_owned()];
         stack.extend(fallback.iter().cloned());
