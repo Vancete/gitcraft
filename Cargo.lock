@@ -1487,6 +1487,7 @@ dependencies = [
 name = "gitcraft"
 version = "0.3.3"
 dependencies = [
+ "base64 0.22.1",
  "eframe",
  "egui",
  "egui_commonmark",
@@ -1498,6 +1499,7 @@ dependencies = [
  "notify-rust",
  "open",
  "portable-pty",
+ "pulldown-cmark",
  "rfd",
  "serde",
  "serde_json",

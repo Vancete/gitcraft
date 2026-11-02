@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::forge::{self, Forge};
 use crate::git::{self, ChangedFile, Credentials, Remote};
+use crate::pr_threads::{self, PrExtras};
 
 const FIELDS: &str = "number,title,body,state,isDraft,author,url,baseRefName,baseRefOid,\
     headRefName,headRefOid,createdAt,updatedAt,additions,deletions,changedFiles,mergeable,\
@@ -37,6 +38,15 @@ pub struct PrCommit {
     pub author: String,
 }
 
+/// Which version of a line a comment is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DiffSide {
+    /// As it was: a removed line.
+    Left,
+    /// As it is now: an added line, or one that didn't change.
+    Right,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EntryKind {
     Comment,
@@ -46,6 +56,10 @@ pub enum EntryKind {
     Inline {
         path: String,
         line: Option<u64>,
+        side: DiffSide,
+        /// The line has changed since, so it isn't where the comment says any more.
+        outdated: bool,
+        resolved: bool,
     },
 }
 
@@ -57,6 +71,8 @@ pub struct Entry {
     pub at: i64,
     pub body: String,
     pub url: String,
+    /// The review this is, if it can be dismissed.
+    pub review_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -87,6 +103,36 @@ pub struct PrDetails {
     pub timeline: Vec<Entry>,
     /// The comments on lines couldn't be read: why.
     pub inline_error: Option<String>,
+    /// Threads on lines and what the person logged in may do.
+    pub extras: PrExtras,
+}
+
+/// The sent comments of the threads, for the conversation.
+fn line_entries(extras: &PrExtras) -> Vec<Entry> {
+    extras
+        .threads
+        .iter()
+        .flat_map(|thread| {
+            thread
+                .comments
+                .iter()
+                .filter(|comment| !comment.pending)
+                .map(move |comment| Entry {
+                    kind: EntryKind::Inline {
+                        path: thread.path.clone(),
+                        line: thread.line,
+                        side: thread.side,
+                        outdated: thread.outdated,
+                        resolved: thread.resolved,
+                    },
+                    author: comment.author.clone(),
+                    at: comment.at,
+                    body: comment.body.clone(),
+                    url: comment.url.clone(),
+                    review_id: None,
+                })
+        })
+        .collect()
 }
 
 /// The changes a pull request proposes, as its web page shows them: from the merge base.
@@ -105,29 +151,18 @@ pub fn details(repo: &Path, number: u64) -> Result<PrDetails, String> {
         &["pr", "view", &number.to_string(), "--json", FIELDS],
     )?;
     let mut details = parse_details(&view)?;
-    match inline_comments(repo, &details) {
-        Ok(entries) => details.timeline.extend(entries),
-        Err(e) => details.inline_error = Some(e),
+    match repo_of_url(&details.url) {
+        Some((host, path)) => match pr_threads::fetch(repo, &host, &path, number) {
+            Ok(extras) => {
+                details.timeline.extend(line_entries(&extras));
+                details.extras = extras;
+            }
+            Err(e) => details.inline_error = Some(e),
+        },
+        None => details.inline_error = Some("unexpected pull request URL".to_owned()),
     }
     details.timeline.sort_by_key(|entry| entry.at);
     Ok(details)
-}
-
-fn inline_comments(repo: &Path, details: &PrDetails) -> Result<Vec<Entry>, String> {
-    let (host, path) = repo_of_url(&details.url).ok_or("unexpected pull request URL")?;
-    let endpoint = format!(
-        "repos/{path}/pulls/{}/comments?per_page=100",
-        details.number
-    );
-    let mut args = vec!["api", endpoint.as_str(), "--paginate", "--slurp"];
-    if host != "github.com" {
-        args.extend(["--hostname", host.as_str()]);
-    }
-    Ok(parse_inline_comments(&forge::tool(
-        Forge::GitHub,
-        repo,
-        &args,
-    )?))
 }
 
 /// Finds the changes of `details`, fetching its commits first if they aren't here yet.
@@ -213,25 +248,26 @@ pub(crate) fn parse_details(json: &str) -> Result<PrDetails, String> {
         commits: items(&v, "/commits").iter().map(commit).collect(),
         timeline,
         inline_error: None,
+        extras: PrExtras::default(),
     })
 }
 
 /// The string at `pointer`, or nothing.
-fn at<'a>(v: &'a Value, pointer: &str) -> &'a str {
+pub(crate) fn at<'a>(v: &'a Value, pointer: &str) -> &'a str {
     v.pointer(pointer)
         .and_then(Value::as_str)
         .unwrap_or_default()
 }
 
 /// The array at `pointer`, or nothing.
-fn items<'a>(v: &'a Value, pointer: &str) -> &'a [Value] {
+pub(crate) fn items<'a>(v: &'a Value, pointer: &str) -> &'a [Value] {
     v.pointer(pointer)
         .and_then(Value::as_array)
         .map_or(&[], Vec::as_slice)
 }
 
 /// The account at `pointer`: a deleted one has none, and GitHub calls those "ghost".
-fn login(v: &Value, pointer: &str) -> String {
+pub(crate) fn login(v: &Value, pointer: &str) -> String {
     match at(v, pointer) {
         "" => "ghost".to_owned(),
         name => name.to_owned(),
@@ -288,6 +324,7 @@ fn comment(v: &Value) -> Entry {
         at: parse_time(at(v, "/createdAt")).unwrap_or(0),
         body: at(v, "/body").to_owned(),
         url: at(v, "/url").to_owned(),
+        review_id: None,
     }
 }
 
@@ -301,37 +338,16 @@ fn review(v: &Value) -> Option<Entry> {
         "COMMENTED" if !body.is_empty() => "reviewed",
         _ => return None,
     };
+    let dismissable = matches!(at(v, "/state"), "APPROVED" | "CHANGES_REQUESTED");
+    let id = at(v, "/id");
     Some(Entry {
         kind: EntryKind::Review(verdict),
         author: login(v, "/author/login"),
         at: parse_time(at(v, "/submittedAt")).unwrap_or(0),
         body: body.to_owned(),
         url: at(v, "/url").to_owned(),
+        review_id: (dismissable && !id.is_empty()).then(|| id.to_owned()),
     })
-}
-
-/// `gh api --paginate --slurp`: an array of pages.
-pub(crate) fn parse_inline_comments(json: &str) -> Vec<Entry> {
-    let Ok(Value::Array(pages)) = serde_json::from_str::<Value>(json) else {
-        return Vec::new();
-    };
-    pages
-        .iter()
-        .flat_map(|page| page.as_array().map_or(&[][..], Vec::as_slice))
-        .map(|v| {
-            let line = |key: &str| v.pointer(key).and_then(Value::as_u64);
-            Entry {
-                kind: EntryKind::Inline {
-                    path: at(v, "/path").to_owned(),
-                    line: line("/line").or_else(|| line("/original_line")),
-                },
-                author: login(v, "/user/login"),
-                at: parse_time(at(v, "/created_at")).unwrap_or(0),
-                body: at(v, "/body").to_owned(),
-                url: at(v, "/html_url").to_owned(),
-            }
-        })
-        .collect()
 }
 
 /// Seconds since the epoch of a UTC time like `2026-11-02T20:37:34Z`.
@@ -391,7 +407,28 @@ pub fn is_web_url(url: &str) -> bool {
 pub fn safe_markdown(body: &str, host: &str) -> String {
     let body = without_comments(body);
     let body = img_tags_to_markdown(&body);
+    let body = without_html_tags(&body);
     images_to_links(&body, host)
+}
+
+/// `body` made safe, and cut into what the page shows one after the other.
+pub fn safe_blocks(body: &str, host: &str) -> Vec<Block> {
+    // A piece can read differently from the whole, say a table the whole has in a code block, so
+    // each is checked for images on its own too.
+    let check = |text: &str| images_to_links(text, host);
+    split_image_tables(&safe_markdown(body, host))
+        .into_iter()
+        .map(|block| match block {
+            Block::Markdown(text) => Block::Markdown(check(&text)),
+            Block::ImageTable { header, rows } => Block::ImageTable {
+                header: header.iter().map(|cell| check(cell)).collect(),
+                rows: rows
+                    .iter()
+                    .map(|row| row.iter().map(|cell| check(cell)).collect())
+                    .collect(),
+            },
+        })
+        .collect()
 }
 
 /// A part of a pull request's text.
@@ -466,6 +503,132 @@ fn table_cells(row: &str) -> Vec<String> {
     row.split('|').map(|cell| cell.trim().to_owned()).collect()
 }
 
+/// `body` without the HTML tags people and bots put in Markdown, which the viewer would show as
+/// text. What they enclose stays; code stays as it is.
+fn without_html_tags(body: &str) -> String {
+    let mut fenced = false;
+    let lines: Vec<String> = body
+        .split('\n')
+        .map(|line| {
+            if line.trim_start().starts_with("```") {
+                fenced = !fenced;
+                return line.to_owned();
+            }
+            if fenced {
+                return line.to_owned();
+            }
+            // Every other piece between backticks is inline code.
+            line.split('`')
+                .enumerate()
+                .map(|(i, piece)| {
+                    if i % 2 == 0 {
+                        strip_tags(piece)
+                    } else {
+                        piece.to_owned()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("`")
+        })
+        .collect();
+    lines.join("\n")
+}
+
+/// The HTML that shows up in pull requests. Anything else in angle brackets is left alone: it may
+/// well be `Vec<String>`.
+const HTML_TAGS: &[&str] = &[
+    "a",
+    "abbr",
+    "b",
+    "blockquote",
+    "br",
+    "center",
+    "code",
+    "dd",
+    "details",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "i",
+    "kbd",
+    "li",
+    "ol",
+    "p",
+    "picture",
+    "pre",
+    "s",
+    "small",
+    "source",
+    "span",
+    "strong",
+    "sub",
+    "summary",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "th",
+    "thead",
+    "tr",
+    "u",
+    "ul",
+];
+
+fn strip_tags(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        match tag_at(after) {
+            Some((name, len)) => {
+                if name.eq_ignore_ascii_case("br") {
+                    out.push('\n');
+                }
+                rest = &after[len..];
+            }
+            None => {
+                out.push('<');
+                rest = &after[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The name and length of the known tag `text` starts with. A `>` in an attribute's quotes doesn't
+/// end the tag.
+fn tag_at(text: &str) -> Option<(&str, usize)> {
+    let inner = text.strip_prefix('<')?;
+    let inner = inner.strip_prefix('/').unwrap_or(inner);
+    let len = inner
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(inner.len());
+    let name = &inner[..len];
+    if !HTML_TAGS.iter().any(|tag| tag.eq_ignore_ascii_case(name)) {
+        return None;
+    }
+    let mut quote = None;
+    for (i, c) in text.char_indices() {
+        match (quote, c) {
+            (None, '>') => return Some((name, i + 1)),
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(open), _) if open == c => quote = None,
+            _ => {}
+        }
+    }
+    None
+}
+
 fn without_comments(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
     let mut rest = body;
@@ -509,34 +672,94 @@ fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     Some(&tag[start..start + len])
 }
 
+/// `body` with its images from anywhere but `host` as links. The viewer's own parser finds them:
+/// references, escapes and images in images are all images too, which a search of the text misses.
 fn images_to_links(body: &str, host: &str) -> String {
+    let mut text = body.to_owned();
+    // A link right after a `!` reads as an image again, so go on until nothing changes.
+    for _ in 0..MAX_IMAGE_PASSES {
+        let next = image_pass(&text, host);
+        if next == text {
+            return text;
+        }
+        text = next;
+    }
+    text.replace("![", "[")
+}
+
+const MAX_IMAGE_PASSES: usize = 8;
+
+fn image_pass(body: &str, host: &str) -> String {
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
     let mut out = String::with_capacity(body.len());
-    let mut rest = body;
-    while let Some(start) = rest.find("![") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        let parts = after.find(']').and_then(|close| {
-            let target = after[close + 1..].strip_prefix('(')?;
-            let end = target.find(')')?;
-            Some((close, &target[..end], close + 2 + end + 1))
-        });
-        let Some((close, target, used)) = parts else {
-            out.push_str("![");
-            rest = after;
+    let mut copied = 0;
+    let mut events = Parser::new_ext(body, markdown_options()).into_offset_iter();
+    while let Some((event, range)) = events.next() {
+        let Event::Start(Tag::Image { dest_url, .. }) = event else {
             continue;
         };
-        let alt = &after[..close];
-        let url = target.split_whitespace().next().unwrap_or("");
-        if is_trusted_image(url, host) {
-            out.push_str(&format!("![{alt}]({target})"));
-        } else {
-            let label = if alt.is_empty() { "image" } else { alt };
-            out.push_str(&format!("[{label}]({target})"));
+        if is_trusted_image(&dest_url, host) {
+            continue;
         }
-        rest = &after[used..];
+        let mut label = String::new();
+        let mut depth = 1;
+        for (inner, _) in events.by_ref() {
+            match inner {
+                Event::Start(Tag::Image { .. }) => depth += 1,
+                Event::End(TagEnd::Image) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Event::Text(text) | Event::Code(text) => label.push_str(&text),
+                _ => {}
+            }
+        }
+        let Some(before) = body.get(copied..range.start) else {
+            continue;
+        };
+        out.push_str(before);
+        out.push_str(&link_markdown(&label, &dest_url));
+        copied = range.end;
     }
-    out.push_str(rest);
+    out.push_str(&body[copied..]);
     out
+}
+
+fn link_markdown(label: &str, url: &str) -> String {
+    let label = if label.trim().is_empty() {
+        "image".to_owned()
+    } else {
+        label
+            .replace('\\', "\\\\")
+            .replace('[', "\\[")
+            .replace(']', "\\]")
+            .replace(['\n', '\r'], " ")
+    };
+    let plain = !url
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '(' | ')' | '<' | '>' | '\\'));
+    if plain {
+        format!("[{label}]({url})")
+    } else {
+        let url = url
+            .replace('<', "%3C")
+            .replace('>', "%3E")
+            .replace('\\', "%5C")
+            .replace(['\n', '\r'], "");
+        format!("[{label}](<{url}>)")
+    }
+}
+
+/// What the viewer parses Markdown with, so that this module sees the same images it does.
+fn markdown_options() -> pulldown_cmark::Options {
+    use pulldown_cmark::Options;
+    Options::ENABLE_TABLES
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_DEFINITION_LIST
 }
 
 fn is_trusted_image(url: &str, host: &str) -> bool {
@@ -548,7 +771,11 @@ fn is_trusted_image(url: &str, host: &str) -> bool {
         .next()
         .unwrap_or("")
         .to_lowercase();
-    image_host == host || (host == "github.com" && image_host.ends_with(".githubusercontent.com"))
+    let plain_name = image_host
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'));
+    image_host == host
+        || (host == "github.com" && plain_name && image_host.ends_with(".githubusercontent.com"))
 }
 
 #[cfg(test)]
@@ -588,7 +815,7 @@ mod tests {
              "submittedAt": "2026-11-02T20:10:00Z"},
             {"author": {"login": "cy"}, "body": "", "state": "COMMENTED",
              "submittedAt": "2026-11-02T20:11:00Z"},
-            {"author": {"login": "di"}, "body": "", "state": "APPROVED",
+            {"id": "PRR_di", "author": {"login": "di"}, "body": "", "state": "APPROVED",
              "submittedAt": "2026-11-02T20:50:00Z"}
         ]
     }"#;
@@ -675,43 +902,16 @@ mod tests {
     }
 
     #[test]
-    fn reads_comments_on_lines_across_pages() {
-        let json = r#"[[{"user": {"login": "ana"}, "body": "Typo", "path": "src/a.rs", "line": 7,
-                         "created_at": "2026-11-02T20:00:00Z", "html_url": "https://g/1"}],
-                       [{"user": {"login": "bo"}, "body": "Old", "path": "src/b.rs", "line": null,
-                         "original_line": 3, "created_at": "2026-11-02T20:05:00Z",
-                         "html_url": "https://g/2"},
-                        {"user": null, "body": "Gone", "path": "c.rs", "line": null,
-                         "created_at": "2026-11-02T20:06:00Z", "html_url": "https://g/3"}]]"#;
-        let entries = parse_inline_comments(json);
-        assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].author, "ana");
+    fn approvals_and_requests_for_changes_can_be_dismissed() {
+        let pr = parsed();
+        let approval = pr.timeline.iter().find(|e| e.author == "di");
         assert_eq!(
-            entries[0].kind,
-            EntryKind::Inline {
-                path: "src/a.rs".to_owned(),
-                line: Some(7)
-            }
+            approval.and_then(|e| e.review_id.as_deref()),
+            Some("PRR_di")
         );
-        assert_eq!(
-            entries[1].kind,
-            EntryKind::Inline {
-                path: "src/b.rs".to_owned(),
-                line: Some(3)
-            }
-        );
-        assert_eq!(
-            entries[2].kind,
-            EntryKind::Inline {
-                path: "c.rs".to_owned(),
-                line: None
-            }
-        );
-    }
-
-    #[test]
-    fn inline_comments_that_are_not_json_are_none() {
-        assert_eq!(parse_inline_comments("oops"), Vec::new());
+        // Without an id there's nothing to refer to.
+        let request = pr.timeline.iter().find(|e| e.author == "cy");
+        assert_eq!(request.and_then(|e| e.review_id.as_deref()), None);
     }
 
     #[test]
@@ -775,6 +975,91 @@ mod tests {
             safe_markdown("![x](http://github.com/x.png)", "github.com"),
             "[x](http://github.com/x.png)"
         );
+    }
+
+    /// Where the viewer would fetch images from, as its own parser sees the text.
+    fn image_sources(markdown: &str) -> Vec<String> {
+        pulldown_cmark::Parser::new_ext(markdown, markdown_options())
+            .filter_map(|event| match event {
+                pulldown_cmark::Event::Start(pulldown_cmark::Tag::Image { dest_url, .. }) => {
+                    Some(dest_url.to_string())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn no_way_of_writing_an_image_gets_one_fetched_from_elsewhere() {
+        let evil = "https://evil.example/p.png";
+        for body in [
+            format!("![x][a]\n\n[a]: {evil}"),
+            format!("![a][]\n\n[a]: {evil}"),
+            format!("![a]\n\n[a]: {evil}"),
+            format!("![a\\]b]({evil})"),
+            format!("!![x]({evil})"),
+            format!("!!!![x]({evil})"),
+            format!("![![x]({evil})](https://github.com/a.png)"),
+            format!("![![x](https://github.com/a.png)]({evil})"),
+            format!("![x](<{evil}>)"),
+            format!("![x]({evil} \"title\")"),
+            format!("> ![x]({evil})"),
+            format!("- ![x]({evil})"),
+        ] {
+            let shown = safe_markdown(&body, "github.com");
+            assert!(
+                image_sources(&shown)
+                    .iter()
+                    .all(|url| !url.contains("evil")),
+                "{body:?} became {shown:?}"
+            );
+            assert!(shown.contains("evil.example"), "the link went: {shown:?}");
+        }
+    }
+
+    #[test]
+    fn a_table_outside_the_parsers_view_gets_no_image_through() {
+        for body in [
+            "~~~\n| h |\n|---|\n| ![x](https://evil.example/p.png) |\n~~~",
+            "    | h |\n    |---|\n    | ![x](https://evil.example/p.png) |",
+        ] {
+            for block in safe_blocks(body, "github.com") {
+                match block {
+                    Block::Markdown(text) => {
+                        assert!(image_sources(&text).is_empty(), "{body:?}: {text:?}");
+                    }
+                    Block::ImageTable { header, rows } => {
+                        for cell in header.iter().chain(rows.iter().flatten()) {
+                            assert!(image_sources(cell).is_empty(), "{body:?}: {cell:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_host_that_only_ends_right_is_no_trusted_host() {
+        for url in [
+            r"https://evil.example\.githubusercontent.com/p.png",
+            "https://evil.example%2f.githubusercontent.com/p.png",
+            "https://evil.example\t.githubusercontent.com/p.png",
+            "https://user@evil.example/.githubusercontent.com",
+        ] {
+            assert!(!is_trusted_image(url, "github.com"), "{url}");
+        }
+        assert!(is_trusted_image(
+            "https://user-images.githubusercontent.com/p.png",
+            "github.com"
+        ));
+    }
+
+    #[test]
+    fn what_looks_like_an_image_in_code_stays_code() {
+        let block = "```\n![x](https://evil.example/p.png)\n```";
+        assert_eq!(safe_markdown(block, "github.com"), block);
+        let inline = "Write `![x](https://evil.example/p.png)` for it";
+        assert_eq!(safe_markdown(inline, "github.com"), inline);
     }
 
     #[test]
@@ -883,6 +1168,52 @@ mod tests {
     fn pipes_without_a_delimiter_row_are_not_a_table() {
         let markdown = "| ![a](u) |\n| ![b](v) |";
         assert_eq!(split_image_tables(markdown), [text(markdown)]);
+    }
+
+    #[test]
+    fn html_tags_go_and_what_they_enclose_stays() {
+        let shown = safe_markdown(
+            "<details>\n<summary><strong>Title</strong></summary>\n\nInner text\n</details>",
+            "github.com",
+        );
+        assert!(!shown.contains('<'), "{shown}");
+        assert!(shown.contains("Title"), "{shown}");
+        assert!(shown.contains("Inner text"), "{shown}");
+    }
+
+    #[test]
+    fn tags_with_attributes_go_too() {
+        assert_eq!(
+            safe_markdown(r#"<strong title="a > b">Auto</strong> fix"#, "github.com"),
+            "Auto fix"
+        );
+        assert_eq!(
+            safe_markdown(
+                r#"<picture><source media="x" srcset="u"></picture>"#,
+                "github.com"
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn a_line_break_tag_breaks_the_line() {
+        assert_eq!(safe_markdown("a<br/>b<br>c", "github.com"), "a\nb\nc");
+    }
+
+    #[test]
+    fn what_only_looks_like_a_tag_stays() {
+        for text in ["a < b and c > d", "Vec<String> is <unknown>", "x <- y"] {
+            assert_eq!(safe_markdown(text, "github.com"), text);
+        }
+    }
+
+    #[test]
+    fn tags_in_code_stay() {
+        let inline = "Use `<details>` here";
+        assert_eq!(safe_markdown(inline, "github.com"), inline);
+        let block = "```html\n<details>x</details>\n```";
+        assert_eq!(safe_markdown(block, "github.com"), block);
     }
 
     #[test]

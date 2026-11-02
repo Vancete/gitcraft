@@ -8,6 +8,8 @@ mod git;
 mod graph;
 mod icons;
 mod manual;
+mod pr_post;
+mod pr_threads;
 mod pull_request;
 mod repo;
 mod settings;

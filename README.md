@@ -172,6 +172,8 @@ was made this way, on a demo repository.
 | `src/graph.rs`           | lane layout for the commit graph                                                   |
 | `src/forge.rs`           | pull / merge requests through `gh` and `glab`                                      |
 | `src/pull_request.rs` | one pull request in full through `gh`: details, checks, comments, changes |
+| `src/pr_post.rs` | what goes out through `gh`: comments, reviews, replies, suggestions, merges |
+| `src/pr_threads.rs` | review threads, the pending review and permissions, from GitHub's GraphQL API |
 | `src/avatars.rs`         | avatars from GitHub, GitLab or Gravatar, cached on disk                            |
 | `src/update.rs`          | new-release check                                                                  |
 | `src/desktop_entry.rs`   | applications menu entry for the AppImage                                           |
@@ -184,6 +186,8 @@ was made this way, on a demo repository.
 | `src/repo/mod.rs`        | one repository tab: state, background git work, undo / redo, toolbar               |
 | `src/repo/sidebar.rs`    | branches, remotes, worktrees, stashes, pull requests, tags                         |
 | `src/repo/pr_view.rs` | a pull request in the big area, its changed files on the right |
+| `src/repo/pr_review.rs` | comments and reviews being written, and the threads on lines of a diff |
+| `src/repo/pr_merge.rs` | the box that merges a pull request |
 | `src/repo/graph_view.rs` | commit graph, pills, search bar, commit menu                                       |
 | `src/repo/detail.rs`     | commit / stash detail, changes and commit box                                      |
 | `src/repo/diff.rs`       | diff loading, pairing and the diff view (unified, split, images)                   |
