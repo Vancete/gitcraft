@@ -34,6 +34,8 @@ pub struct Settings {
     /// An absolute date column (tips show a relative date either way).
     pub show_date: bool,
     pub show_hash: bool,
+    /// A worktree opens in the tab it was opened from, which then shows its branch.
+    pub worktrees_in_same_tab: bool,
     /// Background fetch interval in minutes; 0 turns it off.
     pub auto_fetch_minutes: u32,
     /// Load avatars: GitHub / GitLab accounts on repositories hosted there, Gravatar otherwise.
@@ -63,6 +65,7 @@ impl Default for Settings {
             show_author: true,
             show_date: false,
             show_hash: false,
+            worktrees_in_same_tab: true,
             auto_fetch_minutes: 10,
             avatars: true,
             editor: "code".to_owned(),
@@ -118,6 +121,10 @@ impl Settings {
                 ui.checkbox(&mut self.show_date, "Date");
                 ui.checkbox(&mut self.show_hash, "Hash");
             });
+            ui.end_row();
+            ui.label("Worktrees");
+            ui.checkbox(&mut self.worktrees_in_same_tab, "Open in the same tab")
+                .on_hover_text("The tab moves to the worktree and shows its branch, which also opens a list to switch between them. What you leave behind keeps running: terminals, operations, a half-written commit message.");
             ui.end_row();
             ui.label("Avatars");
             ui.checkbox(&mut self.avatars, "Load from GitHub, GitLab or Gravatar")

@@ -12,6 +12,7 @@ use super::{
 };
 use crate::git::{self, Branch};
 use crate::icons;
+use crate::settings::Settings;
 use crate::theme::{self, Tokens};
 
 /// The pane's rows: a little taller than the file lists', 2 px more above and below.
@@ -47,7 +48,7 @@ impl RepoTab {
         if let Some(offset) = self.sidebar_jump.take() {
             scroll = scroll.vertical_scroll_offset(offset);
         }
-        let mut sections = Sections::new(egui::Id::new(("sidebar-section", &self.path)));
+        let mut sections = Sections::new(egui::Id::new(("sidebar-section", self.repo_key())));
         let output = scroll
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -74,7 +75,7 @@ impl RepoTab {
                 if open {
                     let tree = branch_tree::build(local.iter().map(|b| (b.name.as_str(), *b)));
                     let view = TreeView {
-                        id: egui::Id::new(("branch-folder", &self.path, "local")),
+                        id: egui::Id::new(("branch-folder", self.repo_key(), "local")),
                         filtering: !filter.is_empty(),
                         indent: 0.0,
                     };
@@ -224,7 +225,7 @@ impl RepoTab {
         };
         if r.double_clicked() && elsewhere.is_some() {
             if let Some(wt) = elsewhere {
-                acts.push(Action::OpenTab(wt.path.clone()));
+                acts.push(Action::OpenWorktree(wt.path.clone()));
             }
         } else if r.double_clicked() && !b.is_head && idle {
             acts.push(Action::Checkout(b.name.clone()));
@@ -249,8 +250,13 @@ impl RepoTab {
             .iter()
             .find(|w| !w.current && w.branch.as_deref() == Some(b.name.as_str()));
         if let Some(wt) = elsewhere {
-            if ui.button("Open its worktree in a tab").clicked() {
-                acts.push(Action::OpenTab(wt.path.clone()));
+            let label = if Settings::get(ui.ctx()).worktrees_in_same_tab {
+                "Open its worktree"
+            } else {
+                "Open its worktree in a tab"
+            };
+            if ui.button(label).clicked() {
+                acts.push(Action::OpenWorktree(wt.path.clone()));
             }
         } else {
             if ui
@@ -575,7 +581,7 @@ impl RepoTab {
                 (short, *b)
             }));
             let view = TreeView {
-                id: egui::Id::new(("branch-folder", &self.path, "remote", &remote.name)),
+                id: egui::Id::new(("branch-folder", self.repo_key(), "remote", &remote.name)),
                 filtering: !filter.is_empty(),
                 indent: REMOTE_INDENT,
             };
@@ -936,6 +942,7 @@ impl RepoTab {
         if !open {
             return;
         }
+        let same_tab = Settings::get(ui.ctx()).worktrees_in_same_tab;
         let any_prunable = self.worktrees.iter().any(|w| w.prunable.is_some());
         for wt in &self.worktrees {
             let (rect, r) =
@@ -1008,20 +1015,26 @@ impl RepoTab {
                 tip.push_str(&format!("\nMissing: {reason}"));
             }
             if !wt.current {
-                tip.push_str("\nDouble-click to open in a tab");
+                tip.push_str(if same_tab {
+                    "\nDouble-click to open"
+                } else {
+                    "\nDouble-click to open in a tab"
+                });
             }
             let r = r.on_hover_text(tip);
-            if r.double_clicked() && !wt.current && wt.prunable.is_none() {
-                acts.push(Action::OpenTab(wt.path.clone()));
+            let can_open = !wt.current && wt.prunable.is_none();
+            if r.double_clicked() && can_open {
+                acts.push(Action::OpenWorktree(wt.path.clone()));
             } else if r.clicked() && !wt.head.is_empty() {
                 acts.push(Action::SelectHash(wt.head.clone()));
             }
             let path = wt.path.display().to_string();
             egui::Popup::context_menu(&r).style(crate::theme::menu_style).show(|ui| {
-                if ui
-                    .add_enabled(!wt.current && wt.prunable.is_none(), egui::Button::new("Open in a tab"))
-                    .clicked()
-                {
+                if same_tab && ui.add_enabled(can_open, egui::Button::new("Open")).clicked() {
+                    acts.push(Action::OpenWorktree(wt.path.clone()));
+                }
+                let new_tab = if same_tab { "Open in a new tab" } else { "Open in a tab" };
+                if ui.add_enabled(can_open, egui::Button::new(new_tab)).clicked() {
                     acts.push(Action::OpenTab(wt.path.clone()));
                 }
                 if ui.button("Open terminal here").clicked() {
