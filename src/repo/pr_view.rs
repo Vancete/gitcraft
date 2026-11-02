@@ -8,12 +8,12 @@ use super::widgets;
 use super::{Action, DiffKey, Msg, RepoTab, short, spawn};
 use crate::git;
 use crate::icons;
-use crate::pull_request::{self as pr, CheckState, Entry, EntryKind, PrDetails, PrFiles};
+use crate::pull_request::{self as pr, Block, CheckState, Entry, EntryKind, PrDetails, PrFiles};
 use crate::theme::{self, Tokens};
 
 const CONTENT_W: f32 = 900.0;
 const MARGIN_X: f32 = 24.0;
-const TABLE_CELL_PADDING: f32 = 12.0;
+const TABLE_MARGIN: f32 = 8.0;
 
 pub(crate) struct PrView {
     pub number: u64,
@@ -21,8 +21,8 @@ pub(crate) struct PrView {
     loading: bool,
     details: Option<Result<PrDetails, String>>,
     /// The description and what the timeline says, made safe to show.
-    body: String,
-    entries: Vec<String>,
+    body: Vec<Block>,
+    entries: Vec<Vec<Block>>,
     files: Option<Result<PrFiles, String>>,
     markdown: CommonMarkCache,
 }
@@ -38,7 +38,7 @@ impl RepoTab {
             request: 0,
             loading: true,
             details: None,
-            body: String::new(),
+            body: Vec::new(),
             entries: Vec::new(),
             files: None,
             markdown: CommonMarkCache::default(),
@@ -73,11 +73,12 @@ impl RepoTab {
         view.loading = false;
         if let Ok(details) = &result {
             let host = pr::repo_of_url(&details.url).map_or(String::new(), |(host, _)| host);
-            view.body = pr::safe_markdown(&details.body, &host);
+            let prepare = |text: &str| pr::split_image_tables(&pr::safe_markdown(text, &host));
+            view.body = prepare(&details.body);
             view.entries = details
                 .timeline
                 .iter()
-                .map(|entry| pr::safe_markdown(&entry.body, &host))
+                .map(|entry| prepare(&entry.body))
                 .collect();
             let details = details.clone();
             let (path, remotes, credentials) = (
@@ -162,12 +163,14 @@ impl RepoTab {
                                 ui.set_max_width(width);
                                 header(ui, details);
                                 section(ui, "DESCRIPTION");
-                                let description = Markdown {
-                                    id: "body",
-                                    text: &view.body,
-                                    width,
-                                };
-                                markdown(ui, &mut view.markdown, &description, "No description.");
+                                if view.body.is_empty() {
+                                    ui.label(
+                                        RichText::new("No description.")
+                                            .color(t.text_faint)
+                                            .italics(),
+                                    );
+                                }
+                                blocks(ui, &mut view.markdown, "body", &view.body, width);
                                 section(ui, "BUILD STATUS");
                                 checks(ui, details, acts);
                                 section(ui, &format!("COMMENTS ({})", details.timeline.len()));
@@ -243,29 +246,64 @@ fn section(ui: &mut Ui, title: &str) {
     ui.add_space(6.0);
 }
 
-/// Text from the pull request to show, wrapped to `width`.
-struct Markdown<'a> {
-    id: &'a str,
-    text: &'a str,
-    width: f32,
+/// Text of the pull request, wrapped to `width`.
+fn blocks(ui: &mut Ui, cache: &mut CommonMarkCache, id: &str, blocks: &[Block], width: f32) {
+    ui.push_id(id, |ui| {
+        for (i, block) in blocks.iter().enumerate() {
+            ui.push_id(i, |ui| match block {
+                Block::Markdown(text) => markdown(ui, cache, text, width),
+                Block::ImageTable { header, rows } => image_table(ui, cache, header, rows, width),
+            });
+        }
+    });
 }
 
-fn markdown(ui: &mut Ui, cache: &mut CommonMarkCache, text: &Markdown<'_>, empty: &str) {
-    if text.text.trim().is_empty() {
-        let t = Tokens::get(ui.ctx());
-        ui.label(RichText::new(empty).color(t.text_faint).italics());
-        return;
-    }
-    ui.push_id(text.id, |ui| {
-        ui.set_max_width(text.width);
-        // The viewer wraps text to at least this, so it can't be more than there is room for. A
-        // table wider than the pane would make everything after it wider too, so its images share.
-        let columns = pr::images_per_row(text.text) as f32;
-        let image_width = (text.width - TABLE_CELL_PADDING * (columns - 1.0)) / columns;
-        CommonMarkViewer::new()
-            .max_image_width(Some(image_width as usize))
-            .show(ui, cache, text.text);
-    });
+fn markdown(ui: &mut Ui, cache: &mut CommonMarkCache, text: &str, width: f32) {
+    ui.set_max_width(width);
+    // The viewer wraps text to at least this, so it can't be more than there is room for.
+    CommonMarkViewer::new()
+        .max_image_width(Some(width as usize))
+        .show(ui, cache, text);
+}
+
+/// A table with images, its columns sharing `width` evenly.
+fn image_table(
+    ui: &mut Ui,
+    cache: &mut CommonMarkCache,
+    header: &[String],
+    rows: &[Vec<String>],
+    width: f32,
+) {
+    let t = Tokens::get(ui.ctx());
+    let columns = rows
+        .iter()
+        .map(Vec::len)
+        .fold(header.len(), usize::max)
+        .max(1);
+    let inner = width - 2.0 * TABLE_MARGIN;
+    let gap = ui.spacing().item_spacing.x;
+    let column_width = (inner - gap * (columns - 1) as f32) / columns as f32;
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, t.separator))
+        .corner_radius(t.radius)
+        .inner_margin(TABLE_MARGIN)
+        .show(ui, |ui| {
+            ui.set_width(inner);
+            ui.columns(columns, |cells| {
+                for (cell, title) in cells.iter_mut().zip(header) {
+                    cell.label(RichText::new(title).font(theme::semibold(12.0)));
+                }
+            });
+            for (r, row) in rows.iter().enumerate() {
+                ui.add_space(6.0);
+                ui.columns(columns, |cells| {
+                    for (c, (cell, text)) in cells.iter_mut().zip(row).enumerate() {
+                        cell.push_id((r, c), |ui| markdown(ui, cache, text, column_width));
+                    }
+                });
+            }
+        });
+    ui.add_space(6.0);
 }
 
 /// Title, state, who wants what merged where, and how things stand.
@@ -420,7 +458,7 @@ fn checks(ui: &mut Ui, d: &PrDetails, acts: &mut Vec<Action>) {
 fn timeline(
     ui: &mut Ui,
     d: &PrDetails,
-    bodies: &[String],
+    bodies: &[Vec<Block>],
     cache: &mut CommonMarkCache,
     width: f32,
     acts: &mut Vec<Action>,
@@ -449,15 +487,9 @@ fn timeline(
                 let inner = width - 24.0;
                 ui.set_width(inner);
                 entry_header(ui, entry, acts);
-                if !body.trim().is_empty() {
+                if !body.is_empty() {
                     ui.add_space(6.0);
-                    let id = format!("entry-{i}");
-                    let text = Markdown {
-                        id: &id,
-                        text: body,
-                        width: inner,
-                    };
-                    markdown(ui, cache, &text, "");
+                    blocks(ui, cache, &format!("entry-{i}"), body, inner);
                 }
             });
         ui.add_space(8.0);
