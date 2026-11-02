@@ -171,6 +171,7 @@ was made this way, on a demo repository.
 | `src/git.rs`             | `git` CLI wrapper and output parsing (refs, log, status, stashes, remotes, search) |
 | `src/graph.rs`           | lane layout for the commit graph                                                   |
 | `src/forge.rs`           | pull / merge requests through `gh` and `glab`                                      |
+| `src/pull_request.rs` | one pull request in full through `gh`: details, checks, comments, changes |
 | `src/avatars.rs`         | avatars from GitHub, GitLab or Gravatar, cached on disk                            |
 | `src/update.rs`          | new-release check                                                                  |
 | `src/desktop_entry.rs`   | applications menu entry for the AppImage                                           |
@@ -182,6 +183,10 @@ was made this way, on a demo repository.
 | `src/terminal.rs`        | integrated terminal: pty, VT parsing (`vt100`), painting, keys, selection          |
 | `src/repo/mod.rs`        | one repository tab: state, background git work, undo / redo, toolbar               |
 | `src/repo/sidebar.rs`    | branches, remotes, worktrees, stashes, pull requests, tags                         |
+| `src/repo/pr_view.rs` | a pull request in the big area, its changed files on the right |
+| `src/repo/pinned_sections.rs` | sidebar section headers that stay in view and jump to their section |
+| `src/repo/branch_tree.rs` | branch names as a tree of folders, and its rows |
+| `src/repo/columns.rs` | widths of the graph's columns: what a drag changes and what gets squeezed |
 | `src/repo/worktree_tab.rs` | worktrees in the same tab: parked views, the tab's chip and switcher |
 | `src/repo/graph_view.rs` | commit graph, pills, search bar, commit menu                                       |
 | `src/repo/detail.rs`     | commit / stash detail, changes and commit box                                      |

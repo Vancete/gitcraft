@@ -795,7 +795,10 @@ impl RepoTab {
         for pr in &self.prs {
             let (rect, r) =
                 ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
-            if r.hovered() {
+            let shown = self.pr_view.as_ref().is_some_and(|v| v.number == pr.number);
+            if shown {
+                ui.painter().rect_filled(rect, 0.0, t.row_selected);
+            } else if r.hovered() {
                 ui.painter().rect_filled(rect, 0.0, t.hover);
             }
             let y = rect.center().y;
@@ -827,7 +830,12 @@ impl RepoTab {
                 egui::FontId::proportional(11.0),
                 t.text_faint,
             );
-            let r = r.on_hover_text(format!("{}\nDouble-click to open in the browser", pr.url));
+            let has_view = forge == crate::forge::Forge::GitHub;
+            let r = r.on_hover_text(if has_view {
+                format!("{}\nClick to open, double-click for the browser", pr.url)
+            } else {
+                format!("{}\nDouble-click to open in the browser", pr.url)
+            });
             // The branch's tip, local or on a remote.
             let target = self
                 .refs
@@ -846,6 +854,8 @@ impl RepoTab {
                 .map(|b| b.target.clone());
             if r.double_clicked() {
                 acts.push(Action::OpenUrl(pr.url.clone()));
+            } else if r.clicked() && has_view {
+                acts.push(Action::OpenPr(pr.number));
             } else if r.clicked()
                 && let Some(target) = &target
             {

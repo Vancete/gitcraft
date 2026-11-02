@@ -10,6 +10,7 @@ mod diff;
 mod file_view;
 mod graph_view;
 mod highlight;
+mod pr_view;
 mod pinned_sections;
 mod rebase;
 mod sidebar;
@@ -62,6 +63,9 @@ enum Msg {
     /// A comparison's files, for the request numbered so.
     Compare(u64, Result<CompareData, String>),
     Prs(Result<Vec<PullRequest>, String>),
+    /// A pull request in full, for the request numbered so.
+    PrDetails(u64, Box<Result<crate::pull_request::PrDetails, String>>),
+    PrFiles(u64, Result<crate::pull_request::PrFiles, String>),
     /// The commits to replay when rewording `hash`.
     RewordCommits {
         hash: String,
@@ -245,6 +249,10 @@ pub(crate) enum Action {
     SelectHash(String),
     SelectStash(usize),
     OpenDiff(DiffKey),
+    /// Show a pull request in the big area.
+    OpenPr(u64),
+    ClosePr,
+    ReloadPr,
     CloseDiff,
     Ops {
         label: String,
@@ -393,6 +401,9 @@ pub struct RepoTab {
     detail_error: Option<String>,
     diff: Option<DiffView>,
     compare: Option<Compare>,
+    /// The pull request the big area shows.
+    pr_view: Option<pr_view::PrView>,
+    pr_requests: u64,
     compare_requests: u64,
     file_view: Option<file_view::FileView>,
     rebase: Option<rebase::RebaseEditor>,
@@ -496,6 +507,8 @@ impl RepoTab {
             detail_error: None,
             diff: None,
             compare: None,
+            pr_view: None,
+            pr_requests: 0,
             compare_requests: 0,
             file_view: None,
             rebase: None,
@@ -871,6 +884,7 @@ impl RepoTab {
 
     /// Starts comparing two points of history (replacing the comparison shown).
     fn compare(&mut self, compare: Compare, ctx: &egui::Context) {
+        self.pr_view = None;
         if matches!(
             self.diff,
             Some(DiffView {
@@ -1613,6 +1627,8 @@ impl RepoTab {
                     view.anchor = None;
                 }
             }
+            Msg::PrDetails(request, result) => self.pr_details_arrived(request, *result, ctx),
+            Msg::PrFiles(request, result) => self.pr_files_arrived(request, result),
             Msg::Compare(request, result) => {
                 if let Some(c) = &mut self.compare
                     && c.request == request
@@ -1746,10 +1762,25 @@ impl RepoTab {
     pub(crate) fn apply(&mut self, action: Action, ctx: &egui::Context) {
         let plain = OpKind::Normal(Undo::None, String::new());
         match action {
-            Action::Select(row) => self.select(row, ctx),
-            Action::SelectHash(hash) => self.goto(&hash, ctx),
-            Action::SelectStash(i) => self.select_stash(i, ctx),
+            Action::Select(row) => {
+                self.pr_view = None;
+                self.select(row, ctx);
+            }
+            Action::SelectHash(hash) => {
+                self.pr_view = None;
+                self.goto(&hash, ctx);
+            }
+            Action::SelectStash(i) => {
+                self.pr_view = None;
+                self.select_stash(i, ctx);
+            }
             Action::OpenDiff(key) => self.open_diff(key, ctx),
+            Action::OpenPr(number) => self.open_pr(number, ctx),
+            Action::ClosePr => {
+                self.pr_view = None;
+                self.diff = None;
+            }
+            Action::ReloadPr => self.load_pr(ctx),
             Action::CloseDiff => {
                 self.diff = None;
                 self.conflict = None;
@@ -2091,6 +2122,8 @@ impl RepoTab {
                 acts.push(Action::CloseRebase);
             } else if esc && self.file_view.is_some() {
                 acts.push(Action::CloseFileView);
+            } else if esc && self.pr_view.is_some() {
+                acts.push(Action::ClosePr);
             } else if esc && self.compare.is_some() {
                 acts.push(Action::CloseCompare);
             } else if esc && self.search.open {
@@ -2150,6 +2183,8 @@ impl RepoTab {
                     self.diff_view(ui, &mut acts);
                 } else if self.file_view.is_some() {
                     self.file_view(ui, &mut acts);
+                } else if self.pr_view.is_some() {
+                    self.pr_view_ui(ui, &mut acts);
                 } else {
                     self.graph_view(ui, &mut acts);
                 }

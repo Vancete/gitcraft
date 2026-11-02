@@ -12,6 +12,7 @@ readme = "README.md"
 [dependencies]
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "persistence"] }
 egui = "0.36"
+egui_commonmark = { version = "0.25", default-features = false, features = ["pulldown_cmark", "fetch"] }
 egui_extras = { version = "0.36", default-features = false, features = ["svg", "image"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 md5 = "0.7"

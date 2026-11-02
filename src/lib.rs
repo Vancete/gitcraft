@@ -8,6 +8,7 @@ mod git;
 mod graph;
 mod icons;
 mod manual;
+mod pull_request;
 mod repo;
 mod settings;
 mod shell_path;
