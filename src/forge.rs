@@ -57,7 +57,7 @@ pub struct PullRequest {
     pub draft: bool,
 }
 
-fn tool(forge: Forge, repo: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn tool(forge: Forge, repo: &Path, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new(forge.tool());
     cmd.current_dir(repo).args(args);
     cmd.env("GH_PROMPT_DISABLED", "1").env("NO_PROMPT", "1");

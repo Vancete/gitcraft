@@ -12,7 +12,9 @@ use crate::theme::{self, Tokens};
 impl RepoTab {
     pub(super) fn detail_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
         let wip = self.selected.is_some_and(|r| self.is_wip(r));
-        if self.compare.is_some() {
+        if self.pr_view.is_some() {
+            self.pr_files_panel(ui, acts);
+        } else if self.compare.is_some() {
             self.compare_panel(ui, acts);
         } else if wip {
             self.changes_panel(ui, acts);
@@ -256,7 +258,7 @@ impl RepoTab {
 
     /// Changed files, each opening its diff (`key`) when clicked; `rev`: where the files are,
     /// for their menu (`None`: the working tree).
-    fn file_list(
+    pub(super) fn file_list(
         &self,
         ui: &mut Ui,
         acts: &mut Vec<Action>,
@@ -734,7 +736,7 @@ fn discard_dialog(f: &StatusFile) -> Dialog {
 }
 
 /// "N files changed +a −d", and an optional note on the right.
-fn files_header(ui: &mut Ui, files: &[ChangedFile], note: Option<&str>) {
+pub(super) fn files_header(ui: &mut Ui, files: &[ChangedFile], note: Option<&str>) {
     let t = Tokens::get(ui.ctx());
     let (adds, dels) = files.iter().fold((0, 0), |(a, d), f| {
         (a + f.added.unwrap_or(0), d + f.removed.unwrap_or(0))

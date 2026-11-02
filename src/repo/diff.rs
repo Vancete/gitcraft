@@ -855,6 +855,7 @@ impl RepoTab {
             self.compare
                 .as_ref()
                 .and_then(|c| c.name_of(rev))
+                .or_else(|| self.pr_name_of(rev))
                 .unwrap_or_else(|| short(rev).to_owned())
         };
         match to {
