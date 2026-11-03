@@ -27,10 +27,31 @@ fn method_of(draft: &PrDraft, d: &PrDetails) -> MergeMethod {
         .unwrap_or_default()
 }
 
+/// Whether the app has to delete the branch after merging. Where the repository is set to do it,
+/// GitHub does so whatever is chosen here.
+pub(super) fn deletes_branch(own_branch: bool, repo_deletes: bool, choice: Option<bool>) -> bool {
+    own_branch && !repo_deletes && choice == Some(true)
+}
+
 pub(super) fn merge_box(ui: &mut Ui, draft: &mut PrDraft, d: &PrDetails, acts: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
     let extras = &d.extras;
-    let blocker = pr_post::merge_blocker(d.draft, &d.mergeable, &d.merge_state, extras.can_write());
+    if extras.pr_id.is_empty() {
+        // Nothing is known about the rights or the merge methods, so nothing can be said of them.
+        ui.label(
+            RichText::new("Couldn't read what can be done here. Load it again.")
+                .color(t.warning)
+                .small(),
+        );
+        return;
+    }
+    let blocker = pr_post::merge_blocker(
+        d.draft,
+        &d.mergeable,
+        &d.merge_state,
+        extras.can_write(),
+        extras.can_bypass_rules,
+    );
     let method = method_of(draft, d);
     draft.merge_method = Some(method);
     ui.horizontal_wrapped(|ui| {
@@ -49,8 +70,17 @@ pub(super) fn merge_box(ui: &mut Ui, draft: &mut PrDraft, d: &PrDetails, acts: &
         crate::pull_request::repo_of_url(&d.url).map(|(_, path)| path),
         &extras.head_repo,
     );
-    if host_path.as_ref() == own_branch.as_ref() {
-        let mut delete = draft.delete_branch.unwrap_or(extras.delete_branch_on_merge);
+    if host_path.as_ref() == own_branch.as_ref() && extras.delete_branch_on_merge {
+        ui.label(
+            RichText::new(format!(
+                "GitHub deletes {} afterwards: this repository is set to.",
+                d.head_branch
+            ))
+            .color(t.text_faint)
+            .small(),
+        );
+    } else if host_path.as_ref() == own_branch.as_ref() {
+        let mut delete = draft.delete_branch.unwrap_or(false);
         if ui
             .checkbox(&mut delete, format!("Delete {} afterwards", d.head_branch))
             .changed()
@@ -73,6 +103,12 @@ pub(super) fn merge_box(ui: &mut Ui, draft: &mut PrDraft, d: &PrDetails, acts: &
     }
     if let Some(blocker) = blocker {
         ui.label(RichText::new(blocker).color(t.text_faint).small());
+    } else if d.merge_state == "BLOCKED" {
+        ui.label(
+            RichText::new("The repository's rules aren't met, but you may merge past them.")
+                .color(t.warning)
+                .small(),
+        );
     }
     let enabled = blocker.is_none() && !draft.posting;
     if draft.confirm_merge {
@@ -83,7 +119,7 @@ pub(super) fn merge_box(ui: &mut Ui, draft: &mut PrDraft, d: &PrDetails, acts: &
             ))
             .color(t.warning),
         );
-        ui.horizontal(|ui| {
+        let buttons = ui.horizontal(|ui| {
             if ui
                 .add_enabled(enabled, egui::Button::new("Yes, merge"))
                 .clicked()
@@ -97,6 +133,9 @@ pub(super) fn merge_box(ui: &mut Ui, draft: &mut PrDraft, d: &PrDetails, acts: &
                 ui.spinner();
             }
         });
+        if std::mem::take(&mut draft.reveal_merge) {
+            buttons.response.scroll_to_me(Some(egui::Align::BOTTOM));
+        }
     } else if ui
         .add_enabled(enabled, egui::Button::new("Merge pull request"))
         .clicked()

@@ -99,7 +99,10 @@ impl Posted {
     /// What the notice says once it went out.
     /// Whether a failure can leave the pull request changed or the page behind it.
     fn catches_up_after_failure(self) -> bool {
-        matches!(self, Posted::Merge | Posted::Suggestion)
+        matches!(
+            self,
+            Posted::Merge | Posted::Suggestion | Posted::AddPending
+        )
     }
 
     fn done(self) -> &'static str {
@@ -140,9 +143,24 @@ pub(crate) struct PrDraft {
     pub(super) merge_method: Option<MergeMethod>,
     pub(super) delete_branch: Option<bool>,
     pub(super) confirm_merge: bool,
+    /// The buttons of the merge box have just come up, and should be in view.
+    pub(super) reveal_merge: bool,
 }
 
 impl PrDraft {
+    /// The page is being left: only what's typed stays for next time.
+    pub(super) fn left(&mut self) {
+        self.target = None;
+        self.confirm_merge = false;
+        self.reveal_merge = false;
+    }
+
+    /// New commits have come: a yes given for the old ones doesn't count for them.
+    pub(super) fn head_moved(&mut self) {
+        self.confirm_merge = false;
+        self.reveal_merge = false;
+    }
+
     /// Clears what has been sent. Text not yet sent stays.
     fn sent(&mut self, what: Posted) {
         match what {
@@ -196,6 +214,39 @@ pub(super) fn target_of(
 }
 
 /// Whether `thread` is on that line now: an outdated one isn't on any.
+/// Whether a comment's suggestion can be committed: GitHub takes it only for lines of the file as
+/// it is now, on a pull request that's still going.
+pub(super) fn suggestion_applies(thread: &Thread, comment_pending: bool, open: bool) -> bool {
+    open && !comment_pending && thread.side == DiffSide::Right && !thread.starts_left
+}
+
+/// Which lines a suggestion replaces.
+pub(super) fn suggestion_scope(start: u64, end: u64) -> String {
+    if start == end {
+        format!("Replaces line {end}")
+    } else {
+        format!("Replaces lines {start} to {end}")
+    }
+}
+
+/// Where a line of the unified diff opens: the thread it has, or else the file as it is now.
+pub(super) fn unified_spot(
+    kind: Kind,
+    old: Option<u32>,
+    new: Option<u32>,
+    marks: &HashMap<(DiffSide, u64), usize>,
+) -> Option<(DiffSide, u64)> {
+    let right = target_of(kind, old, new, None);
+    if kind == Kind::Context
+        && let (Some(spot), Some(old)) = (right, old)
+        && !marks.contains_key(&spot)
+        && marks.contains_key(&(DiffSide::Left, u64::from(old)))
+    {
+        return Some((DiffSide::Left, u64::from(old)));
+    }
+    right
+}
+
 fn thread_is_on(thread: &Thread, path: &str, side: DiffSide, line: u64) -> bool {
     !thread.outdated && thread.path == path && thread.side == side && thread.line == Some(line)
 }
@@ -240,7 +291,8 @@ impl RepoTab {
         else {
             return None;
         };
-        if *from != files.from || *to != files.to {
+        // While new commits are being fetched, the file shown isn't the one comments would go on.
+        if *from != files.from || *to != files.to || files.to != details.head_oid {
             return None;
         }
         Some(DiffReview {
@@ -256,10 +308,18 @@ impl RepoTab {
 
     /// Whether a thread is open under a diff, which `Esc` then closes first.
     pub(super) fn line_comment_open(&self) -> bool {
-        let number = self.pr_view.as_ref().map(|v| v.number);
-        number
-            .and_then(|n| self.pr_drafts.get(&n))
-            .is_some_and(|d| d.target.is_some())
+        self.diff
+            .as_ref()
+            .and_then(|diff| self.diff_review(&diff.key))
+            .is_some_and(|review| review.target.is_some())
+    }
+
+    /// The page of the pull request shown is being left.
+    pub(super) fn leave_pr(&mut self) {
+        let number = self.pr_view.as_ref().map(|view| view.number);
+        if let Some(draft) = number.and_then(|number| self.pr_drafts.get_mut(&number)) {
+            draft.left();
+        }
     }
 
     /// Does what the page, the review box or a thread asked for.
@@ -291,6 +351,7 @@ impl RepoTab {
             PrAct::AskMerge => {
                 if let Some(draft) = self.pr_draft() {
                     draft.confirm_merge = true;
+                    draft.reveal_merge = true;
                 }
             }
             PrAct::CancelMerge => {
@@ -377,7 +438,11 @@ impl RepoTab {
             }
             PrAct::Merge => {
                 let method = draft.merge_method.unwrap_or_default();
-                let delete = can_delete_branch && draft.delete_branch.unwrap_or(delete_default);
+                let delete = super::pr_merge::deletes_branch(
+                    can_delete_branch,
+                    delete_default,
+                    draft.delete_branch,
+                );
                 (Posted::Merge, Box::new(move |t| t.merge(method, delete)))
             }
             _ => return,
@@ -469,6 +534,7 @@ pub(super) fn review_box(
     draft: &mut PrDraft,
     extras: &PrExtras,
     own: bool,
+    open: bool,
     acts: &mut Vec<Action>,
 ) {
     let t = Tokens::get(ui.ctx());
@@ -487,7 +553,7 @@ pub(super) fn review_box(
             .desired_rows(2),
     );
     error_label(ui, draft.error_at(Place::Review));
-    if own {
+    if own && open {
         ui.label(
             RichText::new("This one is yours: you can comment, but not approve it.")
                 .color(t.text_faint)
@@ -501,6 +567,10 @@ pub(super) fn review_box(
             (Verdict::Approve, "Approve"),
             (Verdict::RequestChanges, "Request changes"),
         ] {
+            // Whatever is pending can still go out, but a verdict comes too late.
+            if !open && verdict != Verdict::Comment {
+                continue;
+            }
             let problem = pr_post::review_problem(verdict, &draft.review, count);
             let reviews_own = own && verdict != Verdict::Comment;
             let enabled = problem.is_none() && !reviews_own && !draft.posting;
@@ -636,10 +706,12 @@ pub(super) fn line_panel(
                 }
             }
             None => {
-                if ui
-                    .add_enabled(can_send, egui::Button::new("Add to review"))
-                    .on_hover_text("Keep it in a pending review, to send with the others")
-                    .clicked()
+                // A review started now couldn't be sent from a page without a review box.
+                if (threads.open || threads.pending_exists)
+                    && ui
+                        .add_enabled(can_send, egui::Button::new("Add to review"))
+                        .on_hover_text("Keep it in a pending review, to send with the others")
+                        .clicked()
                 {
                     pr_acts(acts, PrAct::AddPending);
                 }
@@ -654,7 +726,7 @@ pub(super) fn line_panel(
                 }
             }
         }
-        if let Some(line) = current
+        if let Some(line) = current.filter(|_| threads.open)
             && ui
                 .button("Suggest a change")
                 .on_hover_text("Start from the line as it is, for them to apply with a click")
@@ -678,6 +750,8 @@ struct ThreadsShown {
     /// The thread a reply goes to.
     reply_to: Option<String>,
     pending_exists: bool,
+    /// The pull request is still going.
+    open: bool,
 }
 
 /// The threads on `target`.
@@ -693,12 +767,15 @@ fn threads(
     let mut shown = ThreadsShown {
         reply_to: None,
         pending_exists: false,
+        open: false,
     };
     let Some(Ok(details)) = &view.details else {
         return shown;
     };
     let extras = &details.extras;
     shown.pending_exists = extras.pending_review.is_some();
+    shown.open = details.state == "OPEN";
+    let open = shown.open;
     let markdown = &mut view.markdown;
     let bodies = &view.thread_bodies;
     let suggestions = &view.suggestions;
@@ -732,30 +809,47 @@ fn threads(
                     }
                     let suggestion = suggestions
                         .get(&comment.id)
-                        .filter(|_| !comment.pending && thread.side == DiffSide::Right);
+                        .filter(|_| suggestion_applies(thread, comment.pending, open));
                     if let Some(text) = suggestion
                         && extras.can_write()
                         && let Some(line) = thread.line
-                        && ui
-                            .add_enabled(!draft.posting, egui::Button::new("Apply suggestion"))
-                            .on_hover_text("Commit this change to the pull request's branch")
-                            .clicked()
                     {
-                        pr_acts(
-                            acts,
-                            PrAct::ApplySuggestion {
-                                thread: thread.id.clone(),
-                                suggestion: Suggestion {
-                                    path: thread.path.clone(),
-                                    start: thread.start_line.unwrap_or(line),
-                                    end: line,
-                                    text: text.clone(),
-                                    author: comment.author.clone(),
-                                },
-                            },
-                        );
+                        let start = thread.start_line.unwrap_or(line);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(!draft.posting, egui::Button::new("Apply suggestion"))
+                                .on_hover_text("Commit this change to the pull request's branch")
+                                .clicked()
+                            {
+                                pr_acts(
+                                    acts,
+                                    PrAct::ApplySuggestion {
+                                        thread: thread.id.clone(),
+                                        suggestion: Suggestion {
+                                            path: thread.path.clone(),
+                                            start,
+                                            end: line,
+                                            text: text.clone(),
+                                            author: comment.author.clone(),
+                                        },
+                                    },
+                                );
+                            }
+                            ui.label(
+                                RichText::new(suggestion_scope(start, line))
+                                    .color(t.text_faint)
+                                    .small(),
+                            );
+                        });
                     }
                     ui.add_space(6.0);
+                }
+                if thread.more_comments {
+                    ui.label(
+                        RichText::new("This thread goes on: the rest is on GitHub.")
+                            .color(t.text_faint)
+                            .small(),
+                    );
                 }
                 ui.horizontal(|ui| {
                     if thread.resolved {
@@ -866,6 +960,8 @@ mod tests {
             can_unresolve: false,
             can_reply: true,
             comments: vec![ThreadComment::default(); comments],
+            starts_left: false,
+            more_comments: false,
         }
     }
 
@@ -912,6 +1008,90 @@ mod tests {
     }
 
     #[test]
+    fn a_suggestion_applies_only_while_it_can_land() {
+        let plain = thread("a.rs", 3, DiffSide::Right, false, 1);
+        assert!(suggestion_applies(&plain, false, true));
+        assert!(!suggestion_applies(&plain, true, true), "still pending");
+        assert!(
+            !suggestion_applies(&plain, false, false),
+            "merged or closed"
+        );
+        let old = thread("a.rs", 3, DiffSide::Left, false, 1);
+        assert!(!suggestion_applies(&old, false, true), "on the old file");
+        let mixed = Thread {
+            starts_left: true,
+            ..thread("a.rs", 3, DiffSide::Right, false, 1)
+        };
+        assert!(
+            !suggestion_applies(&mixed, false, true),
+            "starts on the old file"
+        );
+    }
+
+    #[test]
+    fn says_which_lines_a_suggestion_replaces() {
+        assert_eq!(suggestion_scope(3, 3), "Replaces line 3");
+        assert_eq!(suggestion_scope(2, 4), "Replaces lines 2 to 4");
+    }
+
+    #[test]
+    fn a_line_that_stayed_opens_the_thread_it_has() {
+        let mut marks = HashMap::new();
+        assert_eq!(
+            unified_spot(Kind::Context, Some(5), Some(7), &marks),
+            Some((DiffSide::Right, 7))
+        );
+        marks.insert((DiffSide::Left, 5), 1);
+        assert_eq!(
+            unified_spot(Kind::Context, Some(5), Some(7), &marks),
+            Some((DiffSide::Left, 5))
+        );
+        marks.insert((DiffSide::Right, 7), 1);
+        assert_eq!(
+            unified_spot(Kind::Context, Some(5), Some(7), &marks),
+            Some((DiffSide::Right, 7))
+        );
+    }
+
+    #[test]
+    fn leaving_the_page_keeps_only_what_is_typed() {
+        let mut draft = PrDraft {
+            review: "Summary".to_owned(),
+            confirm_merge: true,
+            target: Some(LineTarget {
+                path: "a.rs".to_owned(),
+                line: 1,
+                side: DiffSide::Right,
+            }),
+            ..PrDraft::default()
+        };
+        draft.left();
+        assert!(!draft.confirm_merge);
+        assert!(draft.target.is_none());
+        assert_eq!(draft.review, "Summary");
+    }
+
+    #[test]
+    fn new_commits_take_back_the_yes_to_merging() {
+        let mut draft = PrDraft {
+            confirm_merge: true,
+            ..PrDraft::default()
+        };
+        draft.head_moved();
+        assert!(!draft.confirm_merge);
+    }
+
+    #[test]
+    fn the_repository_deleting_branches_leaves_nothing_to_delete() {
+        use super::super::pr_merge::deletes_branch;
+        assert!(!deletes_branch(true, true, None));
+        assert!(!deletes_branch(true, true, Some(true)));
+        assert!(!deletes_branch(true, false, None));
+        assert!(deletes_branch(true, false, Some(true)));
+        assert!(!deletes_branch(false, false, Some(true)), "a fork's branch");
+    }
+
+    #[test]
     fn discarding_the_pending_comments_keeps_the_text_of_the_review() {
         let mut draft = PrDraft {
             review: "Summary".to_owned(),
@@ -928,6 +1108,7 @@ mod tests {
         assert!(Posted::Merge.catches_up_after_failure());
         assert!(Posted::Suggestion.catches_up_after_failure());
         assert!(!Posted::Comment.catches_up_after_failure());
-        assert!(!Posted::AddPending.catches_up_after_failure());
+        assert!(Posted::AddPending.catches_up_after_failure());
+        assert!(!Posted::Reply.catches_up_after_failure());
     }
 }

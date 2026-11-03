@@ -12,7 +12,7 @@ use egui::{
 };
 
 use super::highlight::{self, Spans};
-use super::pr_review::{LineTarget, PrAct, paint_gutter_mark, target_of};
+use super::pr_review::{LineTarget, PrAct, paint_gutter_mark, target_of, unified_spot};
 use super::widgets;
 use super::{Action, DiffKey, Refresh, RepoTab, ops, short};
 use crate::git::{self, Area};
@@ -804,7 +804,10 @@ impl RepoTab {
                 .lines
                 .get(i)
                 .filter(|_| side != Side::Both)
-                .and_then(|l| target_of(l.kind, l.old, l.new, column));
+                .and_then(|l| match (&review, column) {
+                    (Some(review), None) => unified_spot(l.kind, l.old, l.new, &review.marks),
+                    _ => target_of(l.kind, l.old, l.new, column),
+                });
             let active = spot.is_some_and(|(s, n)| {
                 review
                     .as_ref()
