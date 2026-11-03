@@ -76,8 +76,9 @@ so your config, credentials and hooks apply as usual.
 
 **Diffs and conflicts** (centre)
 
-- Unified or side by side, syntax colours, the changed part of each line marked, whitespace
-  changes optional, images shown before / after. Esc closes.
+- Unified or side by side, syntax colours (bat's languages: TypeScript, Vue, TOML, Dockerfile…),
+  the changed part of each line marked, whitespace changes optional, images shown before / after.
+  Esc closes.
 - Code takes the colours of the theme VS Code (or Insiders, VSCodium) is using, read from its
   settings and extensions, when it is dark or light like gitcraft's; a setting turns it off.
 - Conflicts open in a three-pane editor: each conflict's two sides with _Ours_, _Theirs_ and
@@ -185,7 +186,7 @@ was made this way, on a demo repository.
 | `src/repo/graph_view.rs` | commit graph, pills, search bar, commit menu                                       |
 | `src/repo/detail.rs`     | commit / stash detail, changes and commit box                                      |
 | `src/repo/diff.rs`       | diff loading, pairing and the diff view (unified, split, images)                   |
-| `src/repo/highlight.rs`  | syntax colours (syntect)                                                           |
+| `src/repo/highlight.rs`  | syntax colours (syntect, with bat's syntaxes from `two-face`)                      |
 | `src/vscode_theme.rs`    | VS Code's current colour theme as a syntect theme                                  |
 | `src/repo/conflict.rs`   | three-pane conflict editor                                                         |
 | `src/repo/rebase.rs`     | interactive rebase editor and its todo list                                        |
