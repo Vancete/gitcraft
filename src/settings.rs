@@ -59,7 +59,7 @@ impl Default for Settings {
             ui_scale: 1.0,
             terminal_font: 12.5,
             shell: String::new(),
-            refs_width: 270.0,
+            refs_width: 280.0,
             graph_width: 0.0,
             author_width: 150.0,
             date_width: 118.0,
@@ -116,7 +116,7 @@ impl Settings {
             ui.add(egui::Slider::new(&mut self.ui_scale, 0.7..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0} %", v * 100.0)));
             ui.end_row();
             ui.label("Branch column width");
-            ui.add(egui::Slider::new(&mut self.refs_width, 150.0..=2000.0).step_by(10.0).suffix(" px"));
+            ui.add(egui::Slider::new(&mut self.refs_width, 210.0..=2000.0).step_by(10.0).suffix(" px"));
             ui.end_row();
             ui.label("Graph columns");
             ui.horizontal(|ui| {

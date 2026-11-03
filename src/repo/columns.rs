@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub(super) const MIN_REFS_W: f32 = 150.0;
+pub(super) const MIN_REFS_W: f32 = 210.0;
 pub(super) const MIN_GRAPH_W: f32 = 60.0;
 pub(super) const MIN_COL_W: f32 = 50.0;
 const MIN_DESCRIPTION_W: f32 = 140.0;
@@ -192,11 +192,11 @@ impl Bar {
 mod tests {
     use super::*;
 
-    const AVAILABLE: f32 = 700.0;
+    const AVAILABLE: f32 = 830.0;
 
     fn preferred() -> Cols {
         Cols {
-            refs: 200.0,
+            refs: 330.0,
             graph: 100.0,
             hash: 0.0,
             author: 150.0,
@@ -242,7 +242,7 @@ mod tests {
     fn graph_gives_way_before_the_branch_column() {
         let shown = shown_after(Bar::Author, -10.0, 13);
         assert_eq!(shown.graph, 80.0);
-        assert_eq!(shown.refs, 200.0);
+        assert_eq!(shown.refs, 330.0);
         assert_eq!(description(&shown, AVAILABLE), 140.0);
     }
 
@@ -252,14 +252,14 @@ mod tests {
         assert_eq!(shown.refs, MIN_REFS_W);
         assert_eq!(shown.graph, MIN_GRAPH_W);
         assert_eq!(description(&shown, AVAILABLE), MIN_DESCRIPTION_W);
-        assert_eq!(shown.author, 350.0);
+        assert_eq!(shown.author, 420.0);
     }
 
     #[test]
     fn dragging_back_restores_every_squeezed_column() {
         let squeezed = drag(preferred(), None, Bar::Author, -10.0, 100);
-        // From 350 back to the 150 it started at.
-        let restored = drag(squeezed, Some(Bar::Author), Bar::Author, 10.0, 20);
+        // From 420 back to the 150 it started at.
+        let restored = drag(squeezed, Some(Bar::Author), Bar::Author, 10.0, 27);
         assert_eq!(restored.squeezed(AVAILABLE, Some(Bar::Author)), preferred());
     }
 
@@ -267,10 +267,10 @@ mod tests {
     fn squeezed_columns_come_back_in_reverse_order() {
         let squeezed = drag(preferred(), None, Bar::Author, -10.0, 100);
         // At 280 the branch column has its width back; the graph is still 20 short.
-        let shown = drag(squeezed, Some(Bar::Author), Bar::Author, 10.0, 7)
+        let shown = drag(squeezed, Some(Bar::Author), Bar::Author, 10.0, 14)
             .squeezed(AVAILABLE, Some(Bar::Author));
         assert_eq!(shown.author, 280.0);
-        assert_eq!(shown.refs, 200.0);
+        assert_eq!(shown.refs, 330.0);
         assert_eq!(shown.graph, 80.0);
     }
 
@@ -282,7 +282,7 @@ mod tests {
         };
         let shown = drag(prefs, None, Bar::Date, -10.0, 100).squeezed(AVAILABLE, Some(Bar::Date));
         assert_eq!(shown.author, MIN_COL_W);
-        assert_eq!(shown.date, 300.0);
+        assert_eq!(shown.date, 370.0);
     }
 
     #[test]
@@ -305,22 +305,22 @@ mod tests {
 
     #[test]
     fn branch_and_graph_bars_push_the_columns_on_the_right_once_the_description_is_full() {
-        // 700 - 100 - 50 - 140 leaves 410 for the branch column, the author at its minimum.
+        // 830 - 100 - 50 - 140 leaves 540 for the branch column, the author at its minimum.
         let shown = shown_after(Bar::Refs, 10.0, 100);
-        assert_eq!(shown.refs, 410.0);
+        assert_eq!(shown.refs, 540.0);
         assert_eq!(shown.author, MIN_COL_W);
         assert_eq!(shown.graph, 100.0);
-        // 700 - 200 - 50 - 140 leaves 310 for the graph.
+        // 830 - 330 - 50 - 140 leaves 310 for the graph.
         let shown = shown_after(Bar::Graph, 10.0, 100);
         assert_eq!(shown.graph, 310.0);
-        assert_eq!(shown.refs, 200.0);
+        assert_eq!(shown.refs, 330.0);
         assert_eq!(shown.author, MIN_COL_W);
     }
 
     #[test]
     fn dragging_the_branch_bar_back_restores_the_columns_on_the_right() {
         let pushed = drag(preferred(), None, Bar::Refs, 10.0, 100);
-        // From 410 back to the 200 it started at.
+        // From 540 back to the 330 it started at.
         let restored = drag(pushed, Some(Bar::Refs), Bar::Refs, -10.0, 21);
         assert_eq!(restored.squeezed(AVAILABLE, Some(Bar::Refs)), preferred());
     }
@@ -332,7 +332,7 @@ mod tests {
         let shown = drag(pushed, Some(Bar::Refs), Bar::Author, -10.0, 1)
             .squeezed(AVAILABLE, Some(Bar::Author));
         assert_eq!(shown.author, 60.0);
-        assert_eq!(shown.refs, 410.0);
+        assert_eq!(shown.refs, 540.0);
         assert_eq!(shown.graph, 90.0);
     }
 
@@ -399,8 +399,8 @@ mod tests {
 
     #[test]
     fn a_narrow_window_squeezes_and_a_wider_one_restores() {
-        assert_eq!(preferred().squeezed(550.0, None).graph, 60.0);
-        assert_eq!(preferred().squeezed(550.0, None).refs, 200.0);
+        assert_eq!(preferred().squeezed(680.0, None).graph, 60.0);
+        assert_eq!(preferred().squeezed(680.0, None).refs, 330.0);
         assert_eq!(preferred().squeezed(AVAILABLE, None), preferred());
     }
 
