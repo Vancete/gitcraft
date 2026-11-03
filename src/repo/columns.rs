@@ -21,6 +21,8 @@ pub(crate) struct Cols {
     pub graph: f32,
     pub hash: f32,
     pub author: f32,
+    /// How long ago, next to the absolute date.
+    pub when: f32,
     pub date: f32,
     /// How far the bar dragged last was pulled past its column's minimum, towards the right:
     /// the columns right of it give that much (a right-hand column only).
@@ -28,7 +30,7 @@ pub(crate) struct Cols {
 }
 
 /// The columns right of the description, left to right.
-const TRAILING: [Bar; 3] = [Bar::Hash, Bar::Author, Bar::Date];
+const TRAILING: [Bar; 4] = [Bar::Hash, Bar::Author, Bar::When, Bar::Date];
 
 /// A draggable bar, named after the column it resizes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -37,6 +39,7 @@ pub(crate) enum Bar {
     Graph,
     Hash,
     Author,
+    When,
     Date,
 }
 
@@ -47,8 +50,8 @@ pub(crate) enum Bar {
 fn give_way_order(last: Option<Bar>) -> Vec<Bar> {
     use Bar::*;
     let mut order = match last {
-        Some(Refs | Graph) => vec![Hash, Author, Date, Graph, Refs],
-        _ => vec![Graph, Refs, Hash, Author, Date],
+        Some(Refs | Graph) => vec![Hash, Author, When, Date, Graph, Refs],
+        _ => vec![Graph, Refs, Hash, Author, When, Date],
     };
     if let Some(last) = last {
         order.retain(|&b| b != last);
@@ -60,7 +63,7 @@ fn give_way_order(last: Option<Bar>) -> Vec<Bar> {
 impl Cols {
     /// Width of everything right of the description.
     pub fn trailing(&self) -> f32 {
-        self.hash + self.author + self.date
+        self.hash + self.author + self.when + self.date
     }
 
     pub fn width(&self, bar: Bar) -> f32 {
@@ -69,6 +72,7 @@ impl Cols {
             Bar::Graph => self.graph,
             Bar::Hash => self.hash,
             Bar::Author => self.author,
+            Bar::When => self.when,
             Bar::Date => self.date,
         }
     }
@@ -79,6 +83,7 @@ impl Cols {
             Bar::Graph => &mut self.graph,
             Bar::Hash => &mut self.hash,
             Bar::Author => &mut self.author,
+            Bar::When => &mut self.when,
             Bar::Date => &mut self.date,
         }
     }
@@ -128,7 +133,7 @@ impl Cols {
 
     /// How much the columns on the right can still shrink.
     fn slack(&self) -> f32 {
-        [self.hash, self.author, self.date]
+        [self.hash, self.author, self.when, self.date]
             .iter()
             .map(|w| (w - MIN_COL_W).max(0.0))
             .sum()
@@ -176,9 +181,12 @@ impl Bar {
                 let max = (own + room + shown.slack()).max(MIN_GRAPH_W);
                 return ((own + dx).clamp(MIN_GRAPH_W, max), 0.0);
             }
-            Bar::Hash => left_of_trailing + shown.author + shown.date,
-            Bar::Author => left_of_trailing + least(shown.hash) + shown.date,
-            Bar::Date => left_of_trailing + least(shown.hash) + least(shown.author),
+            Bar::Hash => left_of_trailing + shown.author + shown.when + shown.date,
+            Bar::Author => left_of_trailing + least(shown.hash) + shown.when + shown.date,
+            Bar::When => left_of_trailing + least(shown.hash) + least(shown.author) + shown.date,
+            Bar::Date => {
+                left_of_trailing + least(shown.hash) + least(shown.author) + least(shown.when)
+            }
         };
         // Past the minimum by as much as the columns on the right can still give.
         let pushed = (MIN_COL_W - own).max(0.0);
@@ -200,6 +208,7 @@ mod tests {
             graph: 100.0,
             hash: 0.0,
             author: 150.0,
+            when: 0.0,
             date: 0.0,
             push: 0.0,
         }
@@ -391,9 +400,25 @@ mod tests {
     }
 
     #[test]
+    fn the_author_bar_pushes_the_nearest_column_first() {
+        let prefs = Cols {
+            graph: 60.0,
+            when: 70.0,
+            date: 70.0,
+            ..preferred()
+        };
+        // The author shrinks to 50, then the when column gives 20 and the date 10.
+        let shown = drag(prefs, None, Bar::Author, 10.0, 13).squeezed(AVAILABLE, Some(Bar::Author));
+        assert_eq!(shown.author, MIN_COL_W);
+        assert_eq!(shown.when, MIN_COL_W);
+        assert_eq!(shown.date, 60.0);
+    }
+
+    #[test]
     fn hidden_columns_stay_hidden() {
         let shown = shown_after(Bar::Author, -10.0, 100);
         assert_eq!(shown.hash, 0.0);
+        assert_eq!(shown.when, 0.0);
         assert_eq!(shown.date, 0.0);
     }
 

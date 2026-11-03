@@ -45,6 +45,7 @@ fn save_drag(next: &mut Settings, bar: Bar, prefs: &Cols, widths: &Cols) {
         (Bar::Graph, &mut next.graph_width),
         (Bar::Hash, &mut next.hash_width),
         (Bar::Author, &mut next.author_width),
+        (Bar::When, &mut next.when_width),
         (Bar::Date, &mut next.date_width),
     ] {
         if col == Bar::Graph && bar != Bar::Graph {
@@ -82,9 +83,10 @@ impl RepoTab {
             (Bar::Hash, right - cols.trailing(), cols.hash > 0.0),
             (
                 Bar::Author,
-                right - cols.author - cols.date,
+                right - cols.author - cols.when - cols.date,
                 cols.author > 0.0,
             ),
+            (Bar::When, right - cols.when - cols.date, cols.when > 0.0),
             (Bar::Date, right - cols.date, cols.date > 0.0),
         ];
         for (bar, x, shown) in borders {
@@ -185,6 +187,7 @@ impl RepoTab {
             },
             hash: shown_if(settings.show_hash, settings.hash_width),
             author: shown_if(settings.show_author, settings.author_width),
+            when: shown_if(settings.show_when, settings.when_width),
             date: shown_if(settings.show_date, settings.date_width),
             push: settings.column_push,
         };
@@ -211,7 +214,10 @@ impl RepoTab {
                 labels.push((right - cols.trailing(), "COMMIT"));
             }
             if cols.author > 0.0 {
-                labels.push((right - cols.author - cols.date, "AUTHOR"));
+                labels.push((right - cols.author - cols.when - cols.date, "AUTHOR"));
+            }
+            if cols.when > 0.0 {
+                labels.push((right - cols.when - cols.date, "WHEN"));
             }
             if cols.date > 0.0 {
                 labels.push((right - cols.date, "DATE"));
@@ -879,18 +885,15 @@ impl RepoTab {
         let node_x = self.graph.rows.get(i).map(|r| x(r.col));
 
         // Branch and tag pills, left of the graph, joined to the commit's dot, with the tip's
-        // author and how long ago it was made.
+        // author.
         let badges = badges(&commit.refs, &self.refs);
         let mut resp = resp;
         if let (Some(first), Some(node_x)) = (badges.first(), node_x) {
             let refs_clip = Rect::from_min_max(rect.min, pos2(gx - 4.0, bottom));
             let rp = painter.with_clip_rect(refs_clip);
-            let when = git::relative_time(commit.time, now);
-            let when_galley = rp.layout_no_wrap(when, theme::medium(10.5), t.text_dim);
-            let when_w = when_galley.size().x + 12.0;
             let more = badges.len() - 1;
             let more_w = if more > 0 { 28.0 } else { 0.0 };
-            let max_w = cols.refs - 10.0 - AVATAR_D - 8.0 - more_w - when_w - 14.0;
+            let max_w = cols.refs - 10.0 - AVATAR_D - 8.0 - more_w - 14.0;
             let has_pr =
                 first.kind == BadgeKind::Branch && self.prs.iter().any(|p| p.branch == first.label);
             let pill = ref_pill(
@@ -942,31 +945,15 @@ impl RepoTab {
                 more_rect = Some(r);
             }
             let avatar = pos2(end + 5.0 + AVATAR_D / 2.0, mid);
-            let when_rect = Rect::from_min_size(
-                pos2(avatar.x + AVATAR_D / 2.0 + 5.0, mid - 9.0),
-                vec2(when_w, 18.0),
-            );
             // Connector to the dot, drawn first so the lanes cross over it.
             painter.line_segment(
                 [
-                    pos2(when_rect.right(), mid),
+                    pos2(avatar.x + AVATAR_D / 2.0, mid),
                     pos2(node_x.min(gx + cols.graph), mid),
                 ],
                 Stroke::new(1.5, row_color.gamma_multiply(0.8)),
             );
             widgets::avatar(ui, avatar, AVATAR_D / 2.0, &commit.author, &commit.email);
-            rp.rect_filled(when_rect, CornerRadius::same(9), t.field);
-            rp.rect_stroke(
-                when_rect,
-                CornerRadius::same(9),
-                Stroke::new(1.0, row_color.gamma_multiply(0.6)),
-                egui::StrokeKind::Inside,
-            );
-            rp.galley(
-                pos2(when_rect.left() + 6.0, mid - when_galley.size().y / 2.0),
-                when_galley,
-                t.text_dim,
-            );
             let stack_open = more_rect.is_some_and(|more| {
                 let at = pos2(rect.left() + 2.0, mid - 16.0);
                 self.ref_stack(ui, &badges, i, more, at, cols, row_color, acts)
@@ -1100,13 +1087,29 @@ impl RepoTab {
         }
         if cols.author > 0.0 {
             let author_clip = Rect::from_min_max(
-                pos2(rect.right() - cols.author - cols.date, rect.top()),
-                pos2(rect.right() - cols.date - 8.0, rect.bottom()),
+                pos2(
+                    rect.right() - cols.author - cols.when - cols.date,
+                    rect.top(),
+                ),
+                pos2(rect.right() - cols.when - cols.date - 8.0, rect.bottom()),
             );
             painter.with_clip_rect(author_clip).text(
                 pos2(author_clip.left(), mid),
                 Align2::LEFT_CENTER,
                 &commit.author,
+                small.clone(),
+                t.text_dim,
+            );
+        }
+        if cols.when > 0.0 {
+            let when_clip = Rect::from_min_max(
+                pos2(rect.right() - cols.when - cols.date, rect.top()),
+                pos2(rect.right() - cols.date - 8.0, rect.bottom()),
+            );
+            painter.with_clip_rect(when_clip).text(
+                pos2(when_clip.left(), mid),
+                Align2::LEFT_CENTER,
+                git::relative_time(commit.time, now),
                 small.clone(),
                 t.text_dim,
             );
@@ -1469,6 +1472,7 @@ mod tests {
             graph: 100.0,
             hash: 0.0,
             author: 150.0,
+            when: 0.0,
             date: 0.0,
             push: 0.0,
         };
