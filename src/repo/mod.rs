@@ -2,7 +2,7 @@
 //! (branches on the left, commit graph or diff in the middle, commit detail / changes on the right).
 
 mod branch_tree;
-mod columns;
+pub(crate) mod columns;
 mod conflict;
 mod detail;
 mod dialogs;

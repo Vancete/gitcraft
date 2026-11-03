@@ -40,7 +40,14 @@ impl RepoTab {
     /// works out what that squeezes.
     ///
     /// Call this after the header background is painted, or the fill covers the lines.
-    fn column_handles(&self, ui: &mut Ui, header: Rect, cols: &Cols, settings: &Settings) {
+    fn column_handles(
+        &self,
+        ui: &mut Ui,
+        header: Rect,
+        prefs: &Cols,
+        cols: &Cols,
+        settings: &Settings,
+    ) {
         let t = Tokens::get(ui.ctx());
         let mut next = settings.clone();
         // The right-hand columns start their text exactly on the border: keep the line off it.
@@ -89,15 +96,22 @@ impl RepoTab {
             if !resp.dragged() || dx == 0.0 {
                 continue;
             }
-            let width = bar.dragged(cols, dx, header.width());
-            match bar {
-                Bar::Refs => next.refs_width = width,
-                Bar::Graph => next.graph_width = width,
-                Bar::Hash => next.hash_width = width,
-                Bar::Author => next.author_width = width,
-                Bar::When => next.when_width = width,
-                Bar::Date => next.date_width = width,
+            let widths = bar.drag(prefs, settings.last_resized, dx, header.width());
+            next.last_resized = Some(bar);
+            // Only what changed: hidden columns keep their width, the graph its fit to the lanes.
+            for (col, setting) in [
+                (Bar::Refs, &mut next.refs_width),
+                (Bar::Graph, &mut next.graph_width),
+                (Bar::Hash, &mut next.hash_width),
+                (Bar::Author, &mut next.author_width),
+                (Bar::When, &mut next.when_width),
+                (Bar::Date, &mut next.date_width),
+            ] {
+                if widths.width(col) != prefs.width(col) {
+                    *setting = widths.width(col);
+                }
             }
+            next.column_push = widths.push;
         }
         if next != *settings {
             next.set(ui.ctx());
@@ -154,7 +168,7 @@ impl RepoTab {
         let settings = Settings::get(ui.ctx());
         let lanes = self.graph.width.clamp(1, MAX_LANES_SHOWN);
         let shown_if = |shown: bool, width: f32| if shown { width.max(MIN_COL_W) } else { 0.0 };
-        let cols = Cols {
+        let prefs = Cols {
             refs: settings.refs_width.max(MIN_REFS_W),
             graph: if settings.graph_width > 0.0 {
                 settings.graph_width.max(MIN_GRAPH_W)
@@ -165,8 +179,9 @@ impl RepoTab {
             author: shown_if(settings.show_author, settings.author_width),
             when: shown_if(settings.show_when, settings.when_width),
             date: shown_if(settings.show_date, settings.date_width),
-        }
-        .squeezed(ui.available_width());
+            push: settings.column_push,
+        };
+        let cols = prefs.squeezed(ui.available_width(), settings.last_resized);
 
         // Column headers.
         let (header, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
@@ -216,7 +231,7 @@ impl RepoTab {
                 );
             }
         }
-        self.column_handles(ui, header, &cols, &settings);
+        self.column_handles(ui, header, &prefs, &cols, &settings);
 
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt("graph_scroll")
