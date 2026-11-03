@@ -5,7 +5,7 @@
 //! the branch column and the columns on the right. Dragging a bar only changes the preferred
 //! width of its own column, so dragging back gives every squeezed column its width back.
 
-pub(super) const MIN_REFS_W: f32 = 150.0;
+pub(super) const MIN_REFS_W: f32 = 280.0;
 const MAX_REFS_W: f32 = 800.0;
 pub(super) const MIN_GRAPH_W: f32 = 60.0;
 pub(super) const MIN_COL_W: f32 = 50.0;
@@ -92,11 +92,11 @@ impl Bar {
 mod tests {
     use super::*;
 
-    const AVAILABLE: f32 = 700.0;
+    const AVAILABLE: f32 = 830.0;
 
     fn preferred() -> Cols {
         Cols {
-            refs: 200.0,
+            refs: 330.0,
             graph: 100.0,
             hash: 0.0,
             author: 150.0,
@@ -143,7 +143,7 @@ mod tests {
         let prefs = drag(preferred(), Bar::Author, -10.0, 13, AVAILABLE);
         let shown = prefs.squeezed(AVAILABLE);
         assert_eq!(shown.graph, 80.0);
-        assert_eq!(shown.refs, 200.0);
+        assert_eq!(shown.refs, 330.0);
         assert_eq!(description(&shown, AVAILABLE), 140.0);
     }
 
@@ -171,7 +171,7 @@ mod tests {
         // At 280 the branch column has its width back; the graph is still 20 short.
         let shown = drag(squeezed, Bar::Author, 10.0, 7, AVAILABLE).squeezed(AVAILABLE);
         assert_eq!(shown.author, 280.0);
-        assert_eq!(shown.refs, 200.0);
+        assert_eq!(shown.refs, 330.0);
         assert_eq!(shown.graph, 80.0);
     }
 
@@ -208,14 +208,14 @@ mod tests {
 
     #[test]
     fn branch_and_graph_bars_stop_when_the_description_is_at_its_minimum() {
-        // 700 - 100 - 150 - 140 leaves 310 for the branch column.
+        // 830 - 100 - 150 - 140 leaves 440 for the branch column.
         let shown = drag(preferred(), Bar::Refs, 10.0, 100, AVAILABLE).squeezed(AVAILABLE);
-        assert_eq!(shown.refs, 310.0);
+        assert_eq!(shown.refs, 440.0);
         assert_eq!(shown.author, 150.0);
-        // 700 - 200 - 150 - 140 leaves 210 for the graph.
+        // 830 - 330 - 150 - 140 leaves 210 for the graph.
         let shown = drag(preferred(), Bar::Graph, 10.0, 100, AVAILABLE).squeezed(AVAILABLE);
         assert_eq!(shown.graph, 210.0);
-        assert_eq!(shown.refs, 200.0);
+        assert_eq!(shown.refs, 330.0);
     }
 
     #[test]
@@ -227,8 +227,8 @@ mod tests {
 
     #[test]
     fn a_narrow_window_squeezes_and_a_wider_one_restores() {
-        assert_eq!(preferred().squeezed(550.0).graph, 60.0);
-        assert_eq!(preferred().squeezed(550.0).refs, 200.0);
+        assert_eq!(preferred().squeezed(680.0).graph, 60.0);
+        assert_eq!(preferred().squeezed(680.0).refs, 330.0);
         assert_eq!(preferred().squeezed(AVAILABLE), preferred());
     }
 

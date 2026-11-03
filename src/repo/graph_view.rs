@@ -860,8 +860,8 @@ impl RepoTab {
             .unwrap_or(t.text_faint);
         let node_x = self.graph.rows.get(i).map(|r| x(r.col));
 
-        // Branch and tag pills, left of the graph, joined to the commit's dot, with the tip's
-        // author and how long ago it was made.
+        // Branch and tag pills, left of the graph, joined to the commit's dot, with how long ago
+        // the tip was made.
         let badges = badges(&commit.refs, &self.refs);
         let mut resp = resp;
         if let (Some(first), Some(node_x)) = (badges.first(), node_x) {
@@ -872,7 +872,7 @@ impl RepoTab {
             let when_w = when_galley.size().x + 12.0;
             let more = badges.len() - 1;
             let more_w = if more > 0 { 28.0 } else { 0.0 };
-            let max_w = cols.refs - 10.0 - AVATAR_D - 8.0 - more_w - when_w - 14.0;
+            let max_w = cols.refs - 10.0 - 5.0 - more_w - when_w - 14.0;
             let has_pr =
                 first.kind == BadgeKind::Branch && self.prs.iter().any(|p| p.branch == first.label);
             let pill = ref_pill(
@@ -923,11 +923,7 @@ impl RepoTab {
                 end = r.right();
                 more_rect = Some(r);
             }
-            let avatar = pos2(end + 5.0 + AVATAR_D / 2.0, mid);
-            let when_rect = Rect::from_min_size(
-                pos2(avatar.x + AVATAR_D / 2.0 + 5.0, mid - 9.0),
-                vec2(when_w, 18.0),
-            );
+            let when_rect = Rect::from_min_size(pos2(end + 5.0, mid - 9.0), vec2(when_w, 18.0));
             // Connector to the dot, drawn first so the lanes cross over it.
             painter.line_segment(
                 [
@@ -936,7 +932,6 @@ impl RepoTab {
                 ],
                 Stroke::new(1.5, row_color.gamma_multiply(0.8)),
             );
-            widgets::avatar(ui, avatar, AVATAR_D / 2.0, &commit.author, &commit.email);
             rp.rect_filled(when_rect, CornerRadius::same(9), t.field);
             rp.rect_stroke(
                 when_rect,
@@ -1100,8 +1095,10 @@ impl RepoTab {
                 pos2(rect.right() - cols.author - cols.date, rect.top()),
                 pos2(rect.right() - cols.date - 8.0, rect.bottom()),
             );
+            let avatar = pos2(author_clip.left() + AVATAR_D / 2.0, mid);
+            widgets::avatar(ui, avatar, AVATAR_D / 2.0, &commit.author, &commit.email);
             painter.with_clip_rect(author_clip).text(
-                pos2(author_clip.left(), mid),
+                pos2(author_clip.left() + AVATAR_D + 6.0, mid),
                 Align2::LEFT_CENTER,
                 &commit.author,
                 small.clone(),
