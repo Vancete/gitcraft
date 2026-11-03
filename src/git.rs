@@ -899,14 +899,15 @@ pub fn stashes(repo: &Path) -> Result<Vec<Stash>, String> {
             "stash",
             "list",
             "--date=format-local:%Y-%m-%d %H:%M",
-            &format!("--format=%gd{FS}%H{FS}%P{FS}%gs{FS}%an{FS}%ae{FS}%at{FS}%ad"),
+            &format!("--format=%H{FS}%P{FS}%gs{FS}%an{FS}%ae{FS}%at{FS}%ad"),
         ],
     )?;
     Ok(out
         .lines()
-        .filter_map(|line| {
+        .enumerate()
+        .filter_map(|(i, line)| {
             let f: Vec<&str> = line.split(FS).collect();
-            let [name, hash, parents, message, author, email, time, date] = f[..] else {
+            let [hash, parents, message, author, email, time, date] = f[..] else {
                 return None;
             };
             // `On main: wip` / `WIP on main: 1234 msg` → the part after the colon reads better.
@@ -916,7 +917,9 @@ pub fn stashes(repo: &Path) -> Result<Vec<Stash>, String> {
                 .unwrap_or(message)
                 .to_owned();
             Some(Stash {
-                name: name.to_owned(),
+                // Not `%gd`: with a date format it names the stash by its date, which two
+                // stashes made in the same minute share.
+                name: format!("stash@{{{i}}}"),
                 hash: hash.to_owned(),
                 base: parents
                     .split_whitespace()
@@ -1432,5 +1435,36 @@ second.
         assert_eq!(stats[0], ("a.txt".to_owned(), Some(1), Some(2)));
         assert_eq!(stats[1], ("img.png".to_owned(), None, None));
         assert_eq!(stats[2], ("new.rs".to_owned(), Some(3), Some(0)));
+    }
+
+    /// Two stashes made in the same minute keep names of their own, and each knows its commit.
+    #[test]
+    fn stashes_are_named_by_number() {
+        let dir = std::env::temp_dir().join(format!("gitcraft-stashes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let git = |args: &[&str]| run(Some(&dir), args);
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+        ] {
+            assert!(git(args).is_ok());
+        }
+        let file = dir.join("f.txt");
+        let _ = std::fs::write(&file, "a\n");
+        assert!(git(&["add", "."]).is_ok());
+        assert!(git(&["commit", "-q", "-m", "base"]).is_ok());
+        let head = git(&["rev-parse", "HEAD"]).unwrap_or_default();
+        for text in ["b\n", "c\n"] {
+            let _ = std::fs::write(&file, text);
+            assert!(git(&["stash", "push", "-q", "-m", text.trim()]).is_ok());
+        }
+        let list = stashes(&dir).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        let names: Vec<&str> = list.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["stash@{0}", "stash@{1}"]);
+        assert_eq!(list[0].message, "c");
+        assert!(list.iter().all(|s| s.base == head.trim()));
     }
 }
