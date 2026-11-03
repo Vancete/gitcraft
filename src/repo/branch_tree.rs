@@ -1,11 +1,13 @@
-//! Branch names as a tree: `docs/accuracy/gearbox` is a branch in a folder in a folder.
+//! Names as a tree: `docs/accuracy/gearbox` is a branch in a folder in a folder, and
+//! `src/repo/mod.rs` a changed file in one.
 //!
-//! Folders start collapsed. The ones opened are saved with the app, per repository.
+//! Branch folders start collapsed, file folders open. The ones changed are saved with the app.
 
 use egui::{Align2, Id, Rect, Response, Sense, Ui, pos2, vec2};
 
 use super::sidebar::ROW_H;
 use crate::icons;
+use crate::settings::Settings;
 use crate::theme::{self, Tokens};
 
 /// How much further in each level of folders is.
@@ -88,7 +90,28 @@ pub(super) struct LeafRow<'a> {
     pub indent: f32,
 }
 
+/// Merges each folder whose only child is a folder with it, `src/repo` instead of `src` holding
+/// `repo`, and puts folders before what isn't one, at every level.
+pub(super) fn compact<T>(nodes: &mut [Node<'_, T>]) {
+    nodes.sort_by_key(|node| !matches!(node, Node::Folder(_)));
+    for node in nodes {
+        if let Node::Folder(folder) = node {
+            while let [Node::Folder(_)] = folder.children.as_slice() {
+                let Some(Node::Folder(child)) = folder.children.pop() else {
+                    break;
+                };
+                let start = folder.path.len() - folder.name.len();
+                folder.name = &child.path[start..];
+                folder.path = child.path;
+                folder.children = child.children;
+            }
+            compact(&mut folder.children);
+        }
+    }
+}
+
 /// How to show a tree.
+#[derive(Clone, Copy)]
 pub(super) struct TreeView {
     /// Identifies the tree among those of all repositories.
     pub id: Id,
@@ -96,6 +119,68 @@ pub(super) struct TreeView {
     pub filtering: bool,
     /// Where the tree starts.
     pub indent: f32,
+    /// Whether a folder nobody has opened or closed yet is open.
+    pub start_open: bool,
+    /// Where a top-level folder's chevron is, from the left of the row.
+    pub left: f32,
+}
+
+impl TreeView {
+    /// Branches in the sidebar: folders stay closed until opened.
+    pub fn branches(id: Id, filtering: bool, indent: f32) -> Self {
+        Self {
+            id,
+            filtering,
+            indent,
+            start_open: false,
+            left: 34.0,
+        }
+    }
+}
+
+/// Changed files, flat or as a tree of their folders as the settings say. `row` draws a file,
+/// given how far in it is in the tree (`None`: in a flat list, showing its folder); a folder
+/// holding the file for which `selected` holds stands out while it is closed.
+pub(super) fn files<'a, T>(
+    ui: &mut Ui,
+    id: Id,
+    files: &'a [T],
+    path: impl Fn(&'a T) -> &'a str,
+    selected: &impl Fn(&&'a T) -> bool,
+    row: &mut impl FnMut(&mut Ui, Option<f32>, &'a T),
+) {
+    if !Settings::get(ui.ctx()).files_as_tree {
+        for f in files {
+            row(ui, None, f);
+        }
+        return;
+    }
+    let mut tree = build(files.iter().map(|f| (path(f), f)));
+    compact(&mut tree);
+    let view = TreeView {
+        id,
+        filtering: false,
+        indent: 0.0,
+        start_open: true,
+        left: 18.0,
+    };
+    show(ui, &tree, &view, selected, &mut |ui, leaf, f| {
+        row(ui, Some(leaf.indent), f);
+    });
+}
+
+/// The panel-header button that switches changed files between a flat list and a tree.
+pub(super) fn files_toggle(ui: &mut Ui) {
+    let mut settings = Settings::get(ui.ctx());
+    let (icon, tooltip) = if settings.files_as_tree {
+        ("list", "Show files as a list")
+    } else {
+        ("folder-tree", "Show files as a tree")
+    };
+    if icons::small_button(ui, icon, tooltip).clicked() {
+        settings.files_as_tree = !settings.files_as_tree;
+        settings.set(ui.ctx());
+    }
 }
 
 /// Shows the rows of a tree, with `leaf` drawing the branches. A folder with a branch for which
@@ -118,14 +203,14 @@ pub(super) fn show<'a, T>(
             }
             Node::Folder(folder) => {
                 let id = view.id.with(folder.path);
+                // Only the folders that differ from how they start are kept.
                 let saved = ui
                     .data_mut(|d| d.get_persisted::<bool>(id))
                     .unwrap_or(false);
-                let open = view.filtering || saved;
-                let resp = folder_row(ui, folder, view.indent, open, folder.any(is_head));
+                let open = view.filtering || saved != view.start_open;
+                let resp = folder_row(ui, folder, view, open, folder.any(is_head));
                 let toggled = resp.clicked() && !view.filtering;
                 if toggled {
-                    // Only open folders are kept: collapsed is what a folder starts as.
                     ui.data_mut(|d| {
                         if saved {
                             d.remove::<bool>(id);
@@ -136,9 +221,8 @@ pub(super) fn show<'a, T>(
                 }
                 if open != toggled {
                     let inner = TreeView {
-                        id: view.id,
-                        filtering: view.filtering,
                         indent: view.indent + INDENT,
+                        ..*view
                     };
                     show(ui, &folder.children, &inner, is_head, leaf);
                 }
@@ -151,11 +235,12 @@ pub(super) fn show<'a, T>(
 fn folder_row<T>(
     ui: &mut Ui,
     folder: &Folder<'_, T>,
-    indent: f32,
+    view: &TreeView,
     open: bool,
     has_head: bool,
 ) -> Response {
     let t = Tokens::get(ui.ctx());
+    let x = view.left + view.indent;
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     let painter = ui.painter_at(rect);
     if resp.hovered() {
@@ -164,7 +249,7 @@ fn folder_row<T>(
     let y = rect.center().y;
     icons::paint(
         ui,
-        Rect::from_center_size(pos2(rect.left() + 34.0 + indent, y), vec2(14.0, 14.0)),
+        Rect::from_center_size(pos2(rect.left() + x, y), vec2(14.0, 14.0)),
         if open {
             "chevron-down"
         } else {
@@ -188,7 +273,7 @@ fn folder_row<T>(
     painter
         .with_clip_rect(rect.with_max_x(count.left() - 6.0))
         .text(
-            pos2(rect.left() + 48.0 + indent, y),
+            pos2(rect.left() + x + 14.0, y),
             Align2::LEFT_CENTER,
             folder.name,
             font,
@@ -307,5 +392,71 @@ mod tests {
         let has = |wanted: u32| only_folder(&tree).map(|f| f.any(&|item| *item == wanted));
         assert_eq!(has(2), Some(true));
         assert_eq!(has(9), Some(false));
+    }
+
+    fn compacted<'a>(items: &[(&'a str, u32)]) -> Vec<Node<'a, u32>> {
+        let mut tree = build(items.iter().copied());
+        compact(&mut tree);
+        tree
+    }
+
+    #[test]
+    fn a_chain_of_lone_folders_becomes_one() {
+        assert_eq!(
+            compacted(&[("src/repo/mod.rs", 1), ("src/repo/diff.rs", 2)]),
+            vec![folder(
+                "src/repo",
+                "src/repo",
+                vec![leaf("mod.rs", 1), leaf("diff.rs", 2)]
+            )]
+        );
+    }
+
+    #[test]
+    fn a_folder_with_files_of_its_own_is_not_merged() {
+        assert_eq!(
+            compacted(&[("src/lib.rs", 1), ("src/repo/mod.rs", 2)]),
+            vec![folder(
+                "src",
+                "src",
+                vec![
+                    folder("repo", "src/repo", vec![leaf("mod.rs", 2)]),
+                    leaf("lib.rs", 1)
+                ]
+            )]
+        );
+    }
+
+    #[test]
+    fn merging_stops_where_folders_branch() {
+        assert_eq!(
+            compacted(&[("a/b/c/1", 1), ("a/b/d/2", 2)]),
+            vec![folder(
+                "a/b",
+                "a/b",
+                vec![
+                    folder("c", "a/b/c", vec![leaf("1", 1)]),
+                    folder("d", "a/b/d", vec![leaf("2", 2)]),
+                ]
+            )]
+        );
+    }
+
+    #[test]
+    fn folders_come_before_files_keeping_their_order() {
+        assert_eq!(
+            compacted(&[
+                ("Cargo.toml", 1),
+                ("src/a", 2),
+                ("README.md", 3),
+                ("docs/b", 4)
+            ]),
+            vec![
+                folder("src", "src", vec![leaf("a", 2)]),
+                folder("docs", "docs", vec![leaf("b", 4)]),
+                leaf("Cargo.toml", 1),
+                leaf("README.md", 3),
+            ]
+        );
     }
 }

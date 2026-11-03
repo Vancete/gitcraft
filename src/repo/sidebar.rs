@@ -73,11 +73,11 @@ impl RepoTab {
             );
             if open {
                 let tree = branch_tree::build(local.iter().map(|b| (b.name.as_str(), *b)));
-                let view = TreeView {
-                    id: egui::Id::new(("branch-folder", self.repo_key(), "local")),
-                    filtering: !filter.is_empty(),
-                    indent: 0.0,
-                };
+                let view = TreeView::branches(
+                    egui::Id::new(("branch-folder", self.repo_key(), "local")),
+                    !filter.is_empty(),
+                    0.0,
+                );
                 branch_tree::show(
                     ui,
                     &tree,
@@ -577,11 +577,11 @@ impl RepoTab {
                     .unwrap_or(&b.name);
                 (short, *b)
             }));
-            let view = TreeView {
-                id: egui::Id::new(("branch-folder", self.repo_key(), "remote", &remote.name)),
-                filtering: !filter.is_empty(),
-                indent: REMOTE_INDENT,
-            };
+            let view = TreeView::branches(
+                egui::Id::new(("branch-folder", self.repo_key(), "remote", &remote.name)),
+                !filter.is_empty(),
+                REMOTE_INDENT,
+            );
             branch_tree::show(
                 ui,
                 &tree,

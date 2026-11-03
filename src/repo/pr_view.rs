@@ -289,7 +289,7 @@ impl RepoTab {
     /// The right pane: the files the pull request changes.
     pub(super) fn pr_files_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
         let t = Tokens::get(ui.ctx());
-        widgets::panel_header(ui, "Changed files", |_| {});
+        widgets::panel_header(ui, "Changed files", super::branch_tree::files_toggle);
         let Some(view) = &self.pr_view else {
             return;
         };
@@ -337,7 +337,7 @@ impl RepoTab {
                     .auto_shrink(false)
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
-                        self.file_list(ui, acts, &files.files, Some(&files.to), |path| {
+                        self.file_list(ui, acts, "pr", &files.files, Some(&files.to), |path| {
                             DiffKey::Range {
                                 from: files.from.clone(),
                                 to: Some(files.to.clone()),

@@ -36,6 +36,8 @@ pub struct Settings {
     pub show_hash: bool,
     /// A worktree opens in the tab it was opened from, which then shows its branch.
     pub worktrees_in_same_tab: bool,
+    /// Changed files in a tree of their folders rather than a flat list.
+    pub files_as_tree: bool,
     /// Background fetch interval in minutes; 0 turns it off.
     pub auto_fetch_minutes: u32,
     /// Load avatars: GitHub / GitLab accounts on repositories hosted there, Gravatar otherwise.
@@ -66,6 +68,7 @@ impl Default for Settings {
             show_date: false,
             show_hash: false,
             worktrees_in_same_tab: true,
+            files_as_tree: true,
             auto_fetch_minutes: 10,
             avatars: true,
             editor: "code".to_owned(),
