@@ -903,7 +903,11 @@ pub fn stashes(repo: &Path) -> Result<Vec<Stash>, String> {
             Some(Stash {
                 name: name.to_owned(),
                 hash: hash.to_owned(),
-                base: parents.split_whitespace().next().unwrap_or_default().to_owned(),
+                base: parents
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned(),
                 message,
                 author: author.to_owned(),
                 email: email.to_owned(),

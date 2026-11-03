@@ -26,12 +26,15 @@ pub struct Settings {
     pub refs_width: f32,
     /// Width of the graph column; 0 = fit the lanes of the repository.
     pub graph_width: f32,
-    /// Widths of the author, date and hash columns (dragged in the graph header).
+    /// Widths of the author, when, date and hash columns (dragged in the graph header).
     pub author_width: f32,
+    pub when_width: f32,
     pub date_width: f32,
     pub hash_width: f32,
     pub show_author: bool,
-    /// An absolute date column (tips show a relative date either way).
+    /// How long ago each commit was made ("3 hours ago").
+    pub show_when: bool,
+    /// An absolute date column.
     pub show_date: bool,
     pub show_hash: bool,
     /// A worktree opens in the tab it was opened from, which then shows its branch.
@@ -62,9 +65,11 @@ impl Default for Settings {
             refs_width: 280.0,
             graph_width: 0.0,
             author_width: 150.0,
+            when_width: 100.0,
             date_width: 118.0,
             hash_width: 70.0,
             show_author: true,
+            show_when: true,
             show_date: false,
             show_hash: false,
             worktrees_in_same_tab: true,
@@ -121,6 +126,7 @@ impl Settings {
             ui.label("Graph columns");
             ui.horizontal(|ui| {
                 ui.checkbox(&mut self.show_author, "Author");
+                ui.checkbox(&mut self.show_when, "When");
                 ui.checkbox(&mut self.show_date, "Date");
                 ui.checkbox(&mut self.show_hash, "Hash");
             });

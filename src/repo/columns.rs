@@ -18,6 +18,8 @@ pub(super) struct Cols {
     pub graph: f32,
     pub hash: f32,
     pub author: f32,
+    /// How long ago, next to the absolute date.
+    pub when: f32,
     pub date: f32,
 }
 
@@ -28,13 +30,14 @@ pub(super) enum Bar {
     Graph,
     Hash,
     Author,
+    When,
     Date,
 }
 
 impl Cols {
     /// Width of everything right of the description.
     pub fn trailing(&self) -> f32 {
-        self.hash + self.author + self.date
+        self.hash + self.author + self.when + self.date
     }
 
     /// The widths to show when these preferred ones get `available` in total.
@@ -50,6 +53,7 @@ impl Cols {
             refs: give_way(self.refs, MIN_REFS_W),
             hash: give_way(self.hash, MIN_COL_W),
             author: give_way(self.author, MIN_COL_W),
+            when: give_way(self.when, MIN_COL_W),
             date: give_way(self.date, MIN_COL_W),
         }
     }
@@ -74,14 +78,21 @@ impl Bar {
                 let max = (shown.graph + room).max(MIN_GRAPH_W);
                 return (shown.graph + dx).clamp(MIN_GRAPH_W, max);
             }
-            Bar::Hash => (shown.hash, left_of_trailing + shown.author + shown.date),
+            Bar::Hash => (
+                shown.hash,
+                left_of_trailing + shown.author + shown.when + shown.date,
+            ),
             Bar::Author => (
                 shown.author,
-                left_of_trailing + least(shown.hash) + shown.date,
+                left_of_trailing + least(shown.hash) + shown.when + shown.date,
+            ),
+            Bar::When => (
+                shown.when,
+                left_of_trailing + least(shown.hash) + least(shown.author) + shown.date,
             ),
             Bar::Date => (
                 shown.date,
-                left_of_trailing + least(shown.hash) + least(shown.author),
+                left_of_trailing + least(shown.hash) + least(shown.author) + least(shown.when),
             ),
         };
         (width - dx).clamp(MIN_COL_W, (available - taken).max(MIN_COL_W))
@@ -100,6 +111,7 @@ mod tests {
             graph: 100.0,
             hash: 0.0,
             author: 150.0,
+            when: 0.0,
             date: 0.0,
         }
     }
@@ -118,6 +130,7 @@ mod tests {
                 Bar::Graph => prefs.graph = width,
                 Bar::Hash => prefs.hash = width,
                 Bar::Author => prefs.author = width,
+                Bar::When => prefs.when = width,
                 Bar::Date => prefs.date = width,
             }
         }

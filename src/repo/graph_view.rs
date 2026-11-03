@@ -52,9 +52,10 @@ impl RepoTab {
             (Bar::Hash, right - cols.trailing(), cols.hash > 0.0),
             (
                 Bar::Author,
-                right - cols.author - cols.date,
+                right - cols.author - cols.when - cols.date,
                 cols.author > 0.0,
             ),
+            (Bar::When, right - cols.when - cols.date, cols.when > 0.0),
             (Bar::Date, right - cols.date, cols.date > 0.0),
         ];
         for (bar, x, shown) in borders {
@@ -94,6 +95,7 @@ impl RepoTab {
                 Bar::Graph => next.graph_width = width,
                 Bar::Hash => next.hash_width = width,
                 Bar::Author => next.author_width = width,
+                Bar::When => next.when_width = width,
                 Bar::Date => next.date_width = width,
             }
         }
@@ -161,6 +163,7 @@ impl RepoTab {
             },
             hash: shown_if(settings.show_hash, settings.hash_width),
             author: shown_if(settings.show_author, settings.author_width),
+            when: shown_if(settings.show_when, settings.when_width),
             date: shown_if(settings.show_date, settings.date_width),
         }
         .squeezed(ui.available_width());
@@ -186,7 +189,10 @@ impl RepoTab {
                 labels.push((right - cols.trailing(), "COMMIT"));
             }
             if cols.author > 0.0 {
-                labels.push((right - cols.author - cols.date, "AUTHOR"));
+                labels.push((right - cols.author - cols.when - cols.date, "AUTHOR"));
+            }
+            if cols.when > 0.0 {
+                labels.push((right - cols.when - cols.date, "WHEN"));
             }
             if cols.date > 0.0 {
                 labels.push((right - cols.date, "DATE"));
@@ -860,19 +866,15 @@ impl RepoTab {
             .unwrap_or(t.text_faint);
         let node_x = self.graph.rows.get(i).map(|r| x(r.col));
 
-        // Branch and tag pills, left of the graph, joined to the commit's dot, with how long ago
-        // the tip was made.
+        // Branch and tag pills, left of the graph, joined to the commit's dot.
         let badges = badges(&commit.refs, &self.refs);
         let mut resp = resp;
         if let (Some(first), Some(node_x)) = (badges.first(), node_x) {
             let refs_clip = Rect::from_min_max(rect.min, pos2(gx - 4.0, bottom));
             let rp = painter.with_clip_rect(refs_clip);
-            let when = git::relative_time(commit.time, now);
-            let when_galley = rp.layout_no_wrap(when, theme::medium(10.5), t.text_dim);
-            let when_w = when_galley.size().x + 12.0;
             let more = badges.len() - 1;
             let more_w = if more > 0 { 28.0 } else { 0.0 };
-            let max_w = cols.refs - 10.0 - 5.0 - more_w - when_w - 14.0;
+            let max_w = cols.refs - 10.0 - 5.0 - more_w - 14.0;
             let has_pr =
                 first.kind == BadgeKind::Branch && self.prs.iter().any(|p| p.branch == first.label);
             let pill = ref_pill(
@@ -923,26 +925,10 @@ impl RepoTab {
                 end = r.right();
                 more_rect = Some(r);
             }
-            let when_rect = Rect::from_min_size(pos2(end + 5.0, mid - 9.0), vec2(when_w, 18.0));
             // Connector to the dot, drawn first so the lanes cross over it.
             painter.line_segment(
-                [
-                    pos2(when_rect.right(), mid),
-                    pos2(node_x.min(gx + cols.graph), mid),
-                ],
+                [pos2(end, mid), pos2(node_x.min(gx + cols.graph), mid)],
                 Stroke::new(1.5, row_color.gamma_multiply(0.8)),
-            );
-            rp.rect_filled(when_rect, CornerRadius::same(9), t.field);
-            rp.rect_stroke(
-                when_rect,
-                CornerRadius::same(9),
-                Stroke::new(1.0, row_color.gamma_multiply(0.6)),
-                egui::StrokeKind::Inside,
-            );
-            rp.galley(
-                pos2(when_rect.left() + 6.0, mid - when_galley.size().y / 2.0),
-                when_galley,
-                t.text_dim,
             );
             let stack_open = more_rect.is_some_and(|more| {
                 let at = pos2(rect.left() + 2.0, mid - 16.0);
@@ -981,7 +967,11 @@ impl RepoTab {
                 edge(&gp, node, pos2(x(lane), top), t.lane(lane), width);
             }
             for &lane in &row.outgoing {
-                let color = if is_wip || stash.is_some() { t.text_faint } else { t.lane(lane) };
+                let color = if is_wip || stash.is_some() {
+                    t.text_faint
+                } else {
+                    t.lane(lane)
+                };
                 edge(&gp, node, pos2(x(lane), bottom), color, width);
             }
 
@@ -991,7 +981,13 @@ impl RepoTab {
                 gp.rect_filled(r, CornerRadius::same(3), t.dock);
                 let (l, tp, rt, b) = (r.left(), r.top(), r.right(), r.bottom());
                 gp.add(egui::Shape::dashed_line(
-                    &[pos2(l, tp), pos2(rt, tp), pos2(rt, b), pos2(l, b), pos2(l, tp)],
+                    &[
+                        pos2(l, tp),
+                        pos2(rt, tp),
+                        pos2(rt, b),
+                        pos2(l, b),
+                        pos2(l, tp),
+                    ],
                     Stroke::new(1.5, t.text_dim),
                     2.5,
                     2.0,
@@ -1092,8 +1088,11 @@ impl RepoTab {
         }
         if cols.author > 0.0 {
             let author_clip = Rect::from_min_max(
-                pos2(rect.right() - cols.author - cols.date, rect.top()),
-                pos2(rect.right() - cols.date - 8.0, rect.bottom()),
+                pos2(
+                    rect.right() - cols.author - cols.when - cols.date,
+                    rect.top(),
+                ),
+                pos2(rect.right() - cols.when - cols.date - 8.0, rect.bottom()),
             );
             let avatar = pos2(author_clip.left() + AVATAR_D / 2.0, mid);
             widgets::avatar(ui, avatar, AVATAR_D / 2.0, &commit.author, &commit.email);
@@ -1101,6 +1100,19 @@ impl RepoTab {
                 pos2(author_clip.left() + AVATAR_D + 6.0, mid),
                 Align2::LEFT_CENTER,
                 &commit.author,
+                small.clone(),
+                t.text_dim,
+            );
+        }
+        if cols.when > 0.0 {
+            let when_clip = Rect::from_min_max(
+                pos2(rect.right() - cols.when - cols.date, rect.top()),
+                pos2(rect.right() - cols.date - 8.0, rect.bottom()),
+            );
+            painter.with_clip_rect(when_clip).text(
+                pos2(when_clip.left(), mid),
+                Align2::LEFT_CENTER,
+                git::relative_time(commit.time, now),
                 small.clone(),
                 t.text_dim,
             );
