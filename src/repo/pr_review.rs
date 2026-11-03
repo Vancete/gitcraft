@@ -496,7 +496,7 @@ impl RepoTab {
                 (e, true)
             }
         };
-        self.finished = Some(outcome);
+        self.finished.push(outcome);
         // Until the page shows the new state, anything sent would go by the old one.
         if self.pr_view.as_ref().is_some_and(|v| v.number == number) {
             draft.posting = true;

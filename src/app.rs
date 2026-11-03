@@ -122,6 +122,9 @@ struct Palette {
 const MAX_TAB_W: f32 = 380.0;
 /// The badge counting a tab's worktrees with work in the background.
 const BADGE_W: f32 = 22.0;
+/// The widest a worktree chip gets: what a tab at its widest leaves next to its icon, its close
+/// button and the badge.
+const MAX_CHIP_W: f32 = MAX_TAB_W - 32.0 - 28.0 - BADGE_W;
 
 struct Toast {
     text: String,
@@ -241,8 +244,13 @@ impl App {
             return;
         }
         // A worktree parked in some tab comes out with everything it had.
-        let view = self.take_parked(&root);
-        let tab = Tab::Repo(view.unwrap_or_else(|| Box::new(RepoTab::new(root, ctx))));
+        let parked = self.take_parked(&root);
+        let came_back = parked.is_some();
+        let mut view = parked.unwrap_or_else(|| Box::new(RepoTab::new(root, ctx)));
+        if came_back {
+            view.resume(ctx);
+        }
+        let tab = Tab::Repo(view);
         if matches!(self.tabs.get(self.active), Some(Tab::Home)) {
             self.tabs[self.active] = tab;
         } else {
@@ -301,12 +309,12 @@ impl App {
         };
         // No main worktree to show (a bare repository): this is the end of the tab.
         let Some(root) = main else {
-            self.close_tab(self.active);
+            self.close_tab(self.active, ctx);
             return;
         };
         let shows_main = |t: &Tab| matches!(t, Tab::Repo(r) if r.path == root);
         if self.tabs.iter().any(shows_main) {
-            self.close_tab(self.active);
+            self.close_tab(self.active, ctx);
             if let Some(i) = self.tabs.iter().position(shows_main) {
                 self.active = i;
             }
@@ -395,7 +403,7 @@ impl App {
         });
     }
 
-    fn close_tab(&mut self, i: usize) {
+    fn close_tab(&mut self, i: usize, ctx: &egui::Context) {
         if i >= self.tabs.len() {
             return;
         }
@@ -404,6 +412,7 @@ impl App {
             && let Some(next) = r.successor_with_work()
         {
             *r = next;
+            r.resume(ctx);
             let name = r.label(true);
             let name = name.branch.unwrap_or(name.repo);
             self.active = i;
@@ -477,7 +486,7 @@ impl App {
                         Tab::Home => ("New tab".to_owned(), None, 0),
                         Tab::Repo(r) => {
                             let label = r.label(self.settings.worktrees_in_same_tab);
-                            let chip = worktree_tab::chip_for(ui, &label);
+                            let chip = worktree_tab::chip_for(ui, &label, MAX_CHIP_W);
                             (label.repo, chip, r.background_work().len())
                         }
                         Tab::Settings => ("Settings".to_owned(), None, 0),
@@ -858,7 +867,7 @@ impl App {
             }
         }
         if let Some(i) = close {
-            self.close_tab(i);
+            self.close_tab(i, ui.ctx());
         }
         if add {
             self.new_tab();
@@ -1247,7 +1256,7 @@ impl eframe::App for App {
             self.new_tab();
         }
         if close && !modal_open {
-            self.close_tab(self.active);
+            self.close_tab(self.active, &ctx);
         }
         // Coming back to the window (e.g. after using git elsewhere) refreshes the open repo.
         let regained = focused && !self.was_focused;
@@ -1323,9 +1332,8 @@ impl eframe::App for App {
 
         // Long operations that ended: a toast, and a desktop notification when away.
         for tab in &mut self.tabs {
-            if let Tab::Repo(r) = tab
-                && let Some((text, error)) = r.finished.take()
-            {
+            let Tab::Repo(r) = tab else { continue };
+            for (text, error) in r.finished.drain(..) {
                 if !focused && self.settings.notifications {
                     notify(&text);
                 }

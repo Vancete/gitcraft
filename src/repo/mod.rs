@@ -478,8 +478,9 @@ pub struct RepoTab {
     parked_status: Vec<(PathBuf, &'static str)>,
     /// The app has a dialog of its own open (palette, settings): leave the keys to it.
     pub keys_blocked: bool,
-    /// A long operation that just ended: (message, failed), for a notification (taken by `App`).
-    pub finished: Option<(String, bool)>,
+    /// Long operations that just ended, its own and its parked worktrees': (message, failed),
+    /// for a notification each (taken by `App`).
+    pub finished: Vec<(String, bool)>,
 }
 
 impl RepoTab {
@@ -562,7 +563,7 @@ impl RepoTab {
             parked: Vec::new(),
             parked_status: Vec::new(),
             keys_blocked: false,
-            finished: None,
+            finished: Vec::new(),
         };
         tab.watch(ctx);
         tab.reload(ctx);
@@ -1767,7 +1768,7 @@ impl RepoTab {
                     }
                 }
                 if long && !quiet {
-                    self.finished = Some(match &result {
+                    self.finished.push(match &result {
                         Ok(_) => (format!("{} · {label}: done", self.name), false),
                         Err(e) => (
                             format!("{} · {label} failed: {}", self.name, headline(e)),
