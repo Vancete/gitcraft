@@ -761,6 +761,7 @@ impl RepoTab {
                                 .and_then(|l| l.raw.get(1..))
                         });
                     super::pr_review::line_panel(ui, pr, draft, current, acts);
+                    super::pr_view::only_web_links(ui.ctx());
                 });
         }
 

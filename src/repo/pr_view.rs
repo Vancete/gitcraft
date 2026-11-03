@@ -37,6 +37,12 @@ pub(crate) struct PrView {
 impl RepoTab {
     /// Shows the pull request numbered `number` in the big area.
     pub(super) fn open_pr(&mut self, number: u64, ctx: &egui::Context) {
+        // Those editors hold choices written nowhere yet, and take the big area until they're
+        // done: the pull request waits rather than throwing them away.
+        if let Some(why) = editor_in_the_way(self.conflict.is_some(), self.rebase.is_some()) {
+            self.status = Some((why.to_owned(), true));
+            return;
+        }
         self.leave_pr();
         self.diff = None;
         self.file_view = None;
@@ -153,22 +159,10 @@ impl RepoTab {
         let (Some(before), Some(Ok(now))) = (before, view.files.as_ref()) else {
             return;
         };
-        // The branch has moved, say by a suggestion applied: a file open in the diff follows it.
-        let next = match self.diff.as_ref().map(|diff| &diff.key) {
-            Some(DiffKey::Range {
-                from,
-                to: Some(to),
-                path,
-            }) if *from == before.from && *to == before.to && *to != now.to => {
-                let still_changed = now.files.iter().any(|file| file.path == *path);
-                Some(still_changed.then(|| DiffKey::Range {
-                    from: now.from.clone(),
-                    to: Some(now.to.clone()),
-                    path: path.clone(),
-                }))
-            }
-            _ => None,
-        };
+        let next = self
+            .diff
+            .as_ref()
+            .and_then(|diff| followed(&diff.key, &before, now));
         match next {
             Some(Some(key)) => self.open_diff(key, ctx),
             Some(None) => self.diff = None,
@@ -278,12 +272,7 @@ impl RepoTab {
                     });
             }
         }
-        // Text from strangers may link anywhere: a click only ever opens a web page.
-        ui.ctx().output_mut(|o| {
-            o.commands.retain(
-                |c| !matches!(c, egui::OutputCommand::OpenUrl(open) if !pr::is_web_url(&open.url)),
-            );
-        });
+        only_web_links(ui.ctx());
     }
 
     /// The right pane: the files the pull request changes.
@@ -350,6 +339,42 @@ impl RepoTab {
     }
 }
 
+/// Why a pull request can't take the big area now, if it can't.
+fn editor_in_the_way(conflict: bool, rebase: bool) -> Option<&'static str> {
+    if conflict {
+        Some("Finish or close the conflict editor first")
+    } else if rebase {
+        Some("Finish or cancel the interactive rebase first")
+    } else {
+        None
+    }
+}
+
+/// What becomes of the diff open as `open` when the changes of the pull request go from
+/// `before` to `now`, say by a suggestion applied or the base branch rewritten: a file of the
+/// pull request follows them (`Some(None)` if it's no longer changed). `None` leaves it be.
+fn followed(open: &DiffKey, before: &PrFiles, now: &PrFiles) -> Option<Option<DiffKey>> {
+    let DiffKey::Range {
+        from,
+        to: Some(to),
+        path,
+    } = open
+    else {
+        return None;
+    };
+    let was_the_pull_request = *from == before.from && *to == before.to;
+    let moved = before.from != now.from || before.to != now.to;
+    if !was_the_pull_request || !moved {
+        return None;
+    }
+    let still_changed = now.files.iter().any(|file| file.path == *path);
+    Some(still_changed.then(|| DiffKey::Range {
+        from: now.from.clone(),
+        to: Some(now.to.clone()),
+        path: path.clone(),
+    }))
+}
+
 fn section(ui: &mut Ui, title: &str) {
     let t = Tokens::get(ui.ctx());
     ui.add_space(22.0);
@@ -376,6 +401,16 @@ pub(super) fn blocks(
                 Block::ImageTable { header, rows } => image_table(ui, cache, header, rows, width),
             });
         }
+    });
+}
+
+/// Text from strangers may link anywhere: a click only ever opens a web page. Called after
+/// drawing such text, this drops anything else a link asked to open.
+pub(super) fn only_web_links(ctx: &egui::Context) {
+    ctx.output_mut(|o| {
+        o.commands.retain(
+            |c| !matches!(c, egui::OutputCommand::OpenUrl(open) if !pr::is_web_url(&open.url)),
+        );
     });
 }
 
@@ -748,5 +783,85 @@ fn commits(ui: &mut Ui, d: &PrDetails) {
             ui.label(&commit.headline);
             ui.label(RichText::new(&commit.author).color(t.text_faint).small());
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn files(from: &str, to: &str, paths: &[&str]) -> PrFiles {
+        PrFiles {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            files: paths
+                .iter()
+                .map(|path| git::ChangedFile {
+                    status: 'M',
+                    path: (*path).to_owned(),
+                    old_path: None,
+                    added: None,
+                    removed: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn range(from: &str, to: &str, path: &str) -> DiffKey {
+        DiffKey::Range {
+            from: from.to_owned(),
+            to: Some(to.to_owned()),
+            path: path.to_owned(),
+        }
+    }
+
+    #[test]
+    fn an_open_file_follows_new_commits() {
+        let before = files("base", "h0", &["a.rs"]);
+        let now = files("base", "h1", &["a.rs"]);
+        assert_eq!(
+            followed(&range("base", "h0", "a.rs"), &before, &now),
+            Some(Some(range("base", "h1", "a.rs")))
+        );
+    }
+
+    #[test]
+    fn an_open_file_follows_a_new_merge_base() {
+        let before = files("base0", "h0", &["a.rs"]);
+        let now = files("base1", "h0", &["a.rs"]);
+        assert_eq!(
+            followed(&range("base0", "h0", "a.rs"), &before, &now),
+            Some(Some(range("base1", "h0", "a.rs")))
+        );
+    }
+
+    #[test]
+    fn a_file_no_longer_changed_closes() {
+        let before = files("base", "h0", &["a.rs"]);
+        let now = files("base", "h1", &["b.rs"]);
+        assert_eq!(
+            followed(&range("base", "h0", "a.rs"), &before, &now),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn other_diffs_and_unchanged_ones_stay() {
+        let before = files("base", "h0", &["a.rs"]);
+        let now = files("base", "h1", &["a.rs"]);
+        // Not the pull request's comparison.
+        assert_eq!(followed(&range("other", "h0", "a.rs"), &before, &now), None);
+        // Nothing moved.
+        assert_eq!(
+            followed(&range("base", "h0", "a.rs"), &before, &before),
+            None
+        );
+    }
+
+    #[test]
+    fn an_editor_open_keeps_its_place() {
+        assert!(editor_in_the_way(true, false).is_some());
+        assert!(editor_in_the_way(false, true).is_some());
+        assert_eq!(editor_in_the_way(false, false), None);
     }
 }

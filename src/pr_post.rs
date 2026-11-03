@@ -210,6 +210,14 @@ pub(crate) fn branch_was_gone(error: &str) -> bool {
     error.contains("Reference does not exist")
 }
 
+/// The commit a branch is on, from what GitHub answers when asked for its ref.
+pub(crate) fn ref_tip(answer: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(answer).ok()?;
+    v.pointer("/object/sha")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
 /// A suggested change to apply.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Suggestion {
@@ -428,11 +436,21 @@ impl Target {
             Some(&merge_payload(&self.head_oid, method)),
         )?;
         if delete_branch {
-            let endpoint = format!(
-                "repos/{}/git/refs/heads/{}",
-                self.path,
-                encode_path(&self.head_branch)
-            );
+            let branch = encode_path(&self.head_branch);
+            // Commits pushed since the merge would lose their branch. GitHub deletes without
+            // asking which commit it's on, so this is checked first; a push can still come in
+            // between, just in a much smaller window.
+            if let Ok(answer) = self.api(
+                "GET",
+                &format!("repos/{}/git/ref/heads/{branch}", self.path),
+                None,
+            ) && ref_tip(&answer).is_some_and(|tip| tip != self.head_oid)
+            {
+                return Err(
+                    "It's merged, but the branch has new commits, so it was kept".to_owned(),
+                );
+            }
+            let endpoint = format!("repos/{}/git/refs/heads/{branch}", self.path);
             if let Err(e) = self.api("DELETE", &endpoint, None)
                 && !branch_was_gone(&e)
             {
@@ -614,6 +632,14 @@ mod tests {
     fn a_branch_gone_already_is_what_deleting_it_wanted() {
         assert!(branch_was_gone("gh: Reference does not exist (HTTP 422)"));
         assert!(!branch_was_gone("gh: Must have admin rights (HTTP 403)"));
+    }
+
+    #[test]
+    fn reads_which_commit_a_branch_is_on() {
+        let answer = r#"{"ref":"refs/heads/b","object":{"sha":"abc123","type":"commit"}}"#;
+        assert_eq!(ref_tip(answer).as_deref(), Some("abc123"));
+        assert_eq!(ref_tip(r#"{"message":"Not Found"}"#), None);
+        assert_eq!(ref_tip("not json"), None);
     }
 
     fn target_without_extras() -> Target {
