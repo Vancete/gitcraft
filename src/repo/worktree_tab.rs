@@ -43,6 +43,12 @@ impl Unfinished {
             None
         }
     }
+
+    /// Whether some of it goes on by itself, an operation or a terminal, and has an end to wait
+    /// for. The rest waits on the user.
+    pub fn running(self) -> bool {
+        self.operation || self.terminal
+    }
 }
 
 /// What a tab shows about the worktree it is on.
@@ -104,6 +110,19 @@ pub(super) fn shorten_middle(name: &str, max: usize) -> String {
     format!("{start}…{end}")
 }
 
+/// `name` shortened as by `shorten_middle`, further if need be, until `width` measures it at no
+/// more than `max_w`: some characters are much wider than others.
+pub(super) fn fit_branch(name: &str, max_w: f32, width: impl Fn(&str) -> f32) -> String {
+    let mut max = MAX_BRANCH_CHARS;
+    loop {
+        let short = shorten_middle(name, max);
+        if max <= 1 || width(&short) <= max_w {
+            return short;
+        }
+        max -= 1;
+    }
+}
+
 /// Which parked worktrees to let go of, oldest first in `unfinished`: all but the last `keep` of
 /// those with nothing unfinished.
 pub(super) fn parked_to_drop(unfinished: &[bool], keep: usize) -> Vec<usize> {
@@ -113,7 +132,8 @@ pub(super) fn parked_to_drop(unfinished: &[bool], keep: usize) -> Vec<usize> {
 }
 
 /// The worktrees the switcher lists for `query`: the current one, then those with work in the
-/// background, then the rest. Folders that are gone can't be opened, so they are left out.
+/// background, then the rest. Folders that are gone can't be opened, nor can a bare repository,
+/// which has no files to show, so they are left out.
 pub(super) fn picker_entries<'a>(
     worktrees: &'a [Worktree],
     background: &[(PathBuf, &'static str)],
@@ -122,7 +142,7 @@ pub(super) fn picker_entries<'a>(
     let query = query.to_lowercase();
     let mut list: Vec<&Worktree> = worktrees
         .iter()
-        .filter(|w| w.prunable.is_none())
+        .filter(|w| w.prunable.is_none() && !w.bare)
         .filter(|w| {
             let branch = w.branch.as_deref().unwrap_or("").to_lowercase();
             branch.contains(&query) || w.name().to_lowercase().contains(&query)
@@ -142,7 +162,7 @@ pub(super) fn picker_entries<'a>(
 }
 
 impl RepoTab {
-    fn unfinished(&mut self) -> Option<&'static str> {
+    fn work(&mut self) -> Unfinished {
         Unfinished {
             operation: self.busy_op.is_some(),
             terminal: self.terminals.iter_mut().any(|t| !t.has_exited()),
@@ -151,7 +171,10 @@ impl RepoTab {
                 || self.reword.is_some(),
             editor: self.rebase.is_some() || self.conflict.is_some(),
         }
-        .label()
+    }
+
+    fn unfinished(&mut self) -> Option<&'static str> {
+        self.work().label()
     }
 
     /// What the tab strip shows for this tab.
@@ -201,9 +224,7 @@ impl RepoTab {
         let mut status = Vec::new();
         for parked in &mut self.parked {
             parked.poll(ctx);
-            if let Some(done) = parked.finished.take() {
-                self.finished.get_or_insert(done);
-            }
+            self.finished.append(&mut parked.finished);
             if let Some(work) = parked.unfinished() {
                 status.push((parked.path.clone(), work));
             }
@@ -215,7 +236,10 @@ impl RepoTab {
     /// keeping any more.
     pub(crate) fn park(&mut self, view: Box<RepoTab>) {
         self.parked.push(view);
-        self.parked.retain(|parked| parked.path.is_dir());
+        // A worktree whose folder is gone can't be gone back to, but what still runs in it is
+        // seen through first.
+        self.parked
+            .retain_mut(|parked| parked.path.is_dir() || parked.work().running());
         let unfinished: Vec<bool> = self
             .parked
             .iter_mut()
@@ -273,15 +297,19 @@ pub(crate) struct Chip {
 /// Width of the end of the chip with the button that closes the worktree.
 pub(crate) const CHIP_CLOSE_W: f32 = 20.0;
 
-/// The chip for `label`, if it has one: the main worktree has none.
-pub(crate) fn chip_for(ui: &Ui, label: &TabLabel) -> Option<Chip> {
+/// The chip for `label`, if it has one: the main worktree has none. It is at most `max_w` wide,
+/// however wide the branch's characters are.
+pub(crate) fn chip_for(ui: &Ui, label: &TabLabel, max_w: f32) -> Option<Chip> {
     let name = label.branch.as_deref()?;
     let t = Tokens::get(ui.ctx());
-    let branch = ui.painter().layout_no_wrap(
-        shorten_middle(name, MAX_BRANCH_CHARS),
-        egui::FontId::proportional(11.5),
-        t.text_dim,
-    );
+    let layout = |text: String| {
+        ui.painter()
+            .layout_no_wrap(text, egui::FontId::proportional(11.5), t.text_dim)
+    };
+    let short = fit_branch(name, max_w - 22.0 - CHIP_CLOSE_W, |text| {
+        layout(text.to_owned()).size().x
+    });
+    let branch = layout(short);
     let width = branch.size().x + 22.0 + CHIP_CLOSE_W;
     Some(Chip {
         branch,
@@ -567,6 +595,26 @@ mod tests {
     }
 
     #[test]
+    fn a_branch_that_fits_keeps_its_characters() {
+        let short = fit_branch("feature/search", 200.0, |s| s.chars().count() as f32 * 7.0);
+        assert_eq!(short, "feature/search");
+    }
+
+    #[test]
+    fn a_branch_of_wide_characters_is_cut_to_the_width() {
+        let width = |s: &str| s.chars().count() as f32 * 12.0;
+        let short = fit_branch("機能/検索画面の新しいデザインと実装の詳細", 120.0, width);
+        assert!(width(&short) <= 120.0, "{short}");
+        assert!(short.contains('…'), "{short}");
+        assert!(short.ends_with("詳細"), "{short}");
+    }
+
+    #[test]
+    fn a_branch_is_cut_to_nothing_but_the_ellipsis_rather_than_overflow() {
+        assert_eq!(fit_branch("abc", 0.0, |s| s.len() as f32), "…");
+    }
+
+    #[test]
     fn parked_worktrees_with_unfinished_work_are_never_let_go_of() {
         assert_eq!(parked_to_drop(&[true, true, true], 0), Vec::<usize>::new());
     }
@@ -631,6 +679,34 @@ mod tests {
         };
         let list = [main_tree("/code/acme"), gone];
         assert_eq!(entries(&list, &[], ""), ["main"]);
+    }
+
+    #[test]
+    fn the_switcher_leaves_out_a_bare_repository() {
+        let bare = Worktree {
+            bare: true,
+            branch: None,
+            ..main_tree("/code/acme.git")
+        };
+        let list = [bare, linked("/wt/a", Some("a")), other("/wt/b", "b")];
+        assert_eq!(entries(&list, &[], ""), ["a", "b"]);
+    }
+
+    #[test]
+    fn only_operations_and_terminals_run_on_by_themselves() {
+        assert!(Unfinished::running(Unfinished {
+            operation: true,
+            ..Unfinished::default()
+        }));
+        assert!(Unfinished::running(Unfinished {
+            terminal: true,
+            ..Unfinished::default()
+        }));
+        assert!(!Unfinished::running(Unfinished {
+            commit_message: true,
+            editor: true,
+            ..Unfinished::default()
+        }));
     }
 
     #[test]
