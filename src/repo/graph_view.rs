@@ -34,6 +34,29 @@ const HANDLE_WIDTH: f32 = 2.0;
 const HANDLE_GAP: f32 = 5.0;
 const AVATAR_D: f32 = 20.0;
 
+/// Keeps the widths after a drag of `bar` from the preferred `prefs` in the settings.
+/// Only what changed: hidden columns keep their width. The graph keeps its fit to the lanes
+/// unless its own bar is dragged: dragging another bar in a narrow view would otherwise save
+/// the squeezed graph width, and the graph would stay that narrow once the view widens.
+fn save_drag(next: &mut Settings, bar: Bar, prefs: &Cols, widths: &Cols) {
+    next.last_resized = Some(bar);
+    for (col, setting) in [
+        (Bar::Refs, &mut next.refs_width),
+        (Bar::Graph, &mut next.graph_width),
+        (Bar::Hash, &mut next.hash_width),
+        (Bar::Author, &mut next.author_width),
+        (Bar::Date, &mut next.date_width),
+    ] {
+        if col == Bar::Graph && bar != Bar::Graph {
+            continue;
+        }
+        if widths.width(col) != prefs.width(col) {
+            *setting = widths.width(col);
+        }
+    }
+    next.column_push = widths.push;
+}
+
 impl RepoTab {
     /// Drag handles on the column borders of the header. A drag changes the preferred width
     /// of the handle's column in the settings (the app saves them from there); `columns`
@@ -96,20 +119,7 @@ impl RepoTab {
                 continue;
             }
             let widths = bar.drag(prefs, settings.last_resized, dx, header.width());
-            next.last_resized = Some(bar);
-            // Only what changed: hidden columns keep their width, the graph its fit to the lanes.
-            for (col, setting) in [
-                (Bar::Refs, &mut next.refs_width),
-                (Bar::Graph, &mut next.graph_width),
-                (Bar::Hash, &mut next.hash_width),
-                (Bar::Author, &mut next.author_width),
-                (Bar::Date, &mut next.date_width),
-            ] {
-                if widths.width(col) != prefs.width(col) {
-                    *setting = widths.width(col);
-                }
-            }
-            next.column_push = widths.push;
+            save_drag(&mut next, bar, prefs, &widths);
         }
         if next != *settings {
             next.set(ui.ctx());
@@ -1450,6 +1460,30 @@ mod tests {
         assert!(b[0].head && b[0].local && b[0].remotes == ["origin"]);
         assert!(!b[1].local && b[1].remotes == ["origin"]);
         assert_eq!(b[2].kind, BadgeKind::Tag);
+    }
+
+    #[test]
+    fn dragging_another_bar_keeps_the_graph_fitted_to_its_lanes() {
+        let prefs = Cols {
+            refs: 200.0,
+            graph: 100.0,
+            hash: 0.0,
+            author: 150.0,
+            date: 0.0,
+            push: 0.0,
+        };
+        // A narrow view: the graph is squeezed on screen.
+        let widths = Bar::Author.drag(&prefs, None, -10.0, 550.0);
+        assert_ne!(widths.graph, prefs.graph);
+        let mut next = Settings::default();
+        save_drag(&mut next, Bar::Author, &prefs, &widths);
+        assert_eq!(next.graph_width, 0.0);
+        assert_eq!(next.author_width, widths.author);
+        assert_eq!(next.last_resized, Some(Bar::Author));
+        // Its own bar still sets it.
+        let widths = Bar::Graph.drag(&prefs, None, 10.0, 700.0);
+        save_drag(&mut next, Bar::Graph, &prefs, &widths);
+        assert_eq!(next.graph_width, 110.0);
     }
 
     #[test]

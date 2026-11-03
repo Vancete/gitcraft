@@ -87,7 +87,8 @@ impl Cols {
     /// bar dragged last.
     pub fn squeezed(self, available: f32, last: Option<Bar>) -> Cols {
         let mut out = Cols { push: 0.0, ..self };
-        if let Some(bar) = last {
+        // A hidden column pushes nothing: the columns right of it get their width back.
+        if let Some(bar) = last.filter(|&bar| self.width(bar) > 0.0) {
             out.give_push(bar, self.push);
         }
         let mut overflow = out.refs + out.graph + out.trailing() + MIN_DESCRIPTION_W - available;
@@ -376,6 +377,17 @@ mod tests {
             .squeezed(AVAILABLE, Some(Bar::Date));
         assert_eq!(shown.date, 60.0);
         assert_eq!(shown.author, MIN_COL_W);
+    }
+
+    #[test]
+    fn hiding_the_pushing_column_gives_the_pushed_ones_their_width_back() {
+        let pushed = drag(with_date(), None, Bar::Author, 10.0, 13);
+        assert!(pushed.push > 0.0);
+        let hidden = Cols {
+            author: 0.0,
+            ..pushed
+        };
+        assert_eq!(hidden.squeezed(AVAILABLE, Some(Bar::Author)).date, 110.0);
     }
 
     #[test]
