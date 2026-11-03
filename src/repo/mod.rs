@@ -679,6 +679,12 @@ impl RepoTab {
         self.commits.get(row).is_some_and(|c| c.hash == WIP_HASH)
     }
 
+    /// The stash a graph row stands for, if it's one.
+    fn stash_at(&self, row: usize) -> Option<usize> {
+        let hash = &self.commits.get(row)?.hash;
+        self.stashes.iter().position(|s| &s.hash == hash)
+    }
+
     fn selected_hash(&self) -> Option<String> {
         self.selected
             .and_then(|r| self.commits.get(r))
@@ -701,7 +707,22 @@ impl RepoTab {
                 ..Commit::default()
             });
         }
-        self.commits.extend(self.history.iter().cloned());
+        // Each stash sits right above the commit it was made on, as a commit on no branch.
+        for commit in &self.history {
+            for stash in self.stashes.iter().filter(|s| s.base == commit.hash) {
+                self.commits.push(Commit {
+                    hash: stash.hash.clone(),
+                    parents: vec![stash.base.clone()],
+                    author: stash.author.clone(),
+                    email: stash.email.clone(),
+                    time: stash.time,
+                    date: stash.date.clone(),
+                    summary: stash.message.clone(),
+                    ..Commit::default()
+                });
+            }
+            self.commits.push(commit.clone());
+        }
         self.graph = graph::layout(&self.commits);
         self.index = self
             .commits
@@ -732,6 +753,10 @@ impl RepoTab {
                     self.detail = None;
                 }
             }
+        } else {
+            self.selected = self
+                .stash_view
+                .and_then(|i| self.index.get(&self.stashes.get(i)?.hash).copied());
         }
 
         // A merge or cherry-pick leaves a message to commit with.
@@ -779,12 +804,13 @@ impl RepoTab {
         let Some(commit) = self.commits.get(row) else {
             return;
         };
-        if self.selected == Some(row) && self.stash_view.is_none() {
+        let stash = self.stash_at(row);
+        if self.selected == Some(row) && self.stash_view == stash {
             return;
         }
         let hash = commit.hash.clone();
         self.selected = Some(row);
-        self.stash_view = None;
+        self.stash_view = stash;
         self.file_view = None;
         self.compare = None;
         if matches!(
@@ -824,7 +850,8 @@ impl RepoTab {
         };
         let hash = stash.hash.clone();
         self.stash_view = Some(i);
-        self.selected = None;
+        self.selected = self.index.get(&hash).copied();
+        self.scroll_to = self.selected;
         self.file_view = None;
         self.compare = None;
         self.diff = None;
@@ -1501,10 +1528,14 @@ impl RepoTab {
                         self.history = loaded.history;
                         self.work = loaded.work;
                         self.worktrees = loaded.worktrees;
+                        // Stash numbers shift when one is pushed or dropped; follow the commit.
+                        let viewed = self
+                            .stash_view
+                            .and_then(|i| self.stashes.get(i))
+                            .map(|s| s.hash.clone());
                         self.stashes = loaded.stashes;
-                        if self.stash_view.is_some_and(|i| i >= self.stashes.len()) {
-                            self.stash_view = None;
-                        }
+                        self.stash_view =
+                            viewed.and_then(|h| self.stashes.iter().position(|s| s.hash == h));
                         self.identity = loaded.identity;
                         let forge = forge::detect(&loaded.remotes);
                         self.remotes = loaded.remotes;

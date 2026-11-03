@@ -868,8 +868,13 @@ pub struct Stash {
     /// `stash@{0}`.
     pub name: String,
     pub hash: String,
+    /// The commit the changes were stashed on (the stash commit's first parent).
+    pub base: String,
     pub message: String,
+    pub author: String,
+    pub email: String,
     pub time: i64,
+    pub date: String,
 }
 
 pub fn stashes(repo: &Path) -> Result<Vec<Stash>, String> {
@@ -878,14 +883,15 @@ pub fn stashes(repo: &Path) -> Result<Vec<Stash>, String> {
         &[
             "stash",
             "list",
-            &format!("--format=%gd{FS}%H{FS}%gs{FS}%at"),
+            "--date=format-local:%Y-%m-%d %H:%M",
+            &format!("--format=%gd{FS}%H{FS}%P{FS}%gs{FS}%an{FS}%ae{FS}%at{FS}%ad"),
         ],
     )?;
     Ok(out
         .lines()
         .filter_map(|line| {
             let f: Vec<&str> = line.split(FS).collect();
-            let [name, hash, message, time] = f[..] else {
+            let [name, hash, parents, message, author, email, time, date] = f[..] else {
                 return None;
             };
             // `On main: wip` / `WIP on main: 1234 msg` → the part after the colon reads better.
@@ -897,8 +903,12 @@ pub fn stashes(repo: &Path) -> Result<Vec<Stash>, String> {
             Some(Stash {
                 name: name.to_owned(),
                 hash: hash.to_owned(),
+                base: parents.split_whitespace().next().unwrap_or_default().to_owned(),
                 message,
+                author: author.to_owned(),
+                email: email.to_owned(),
                 time: time.parse().unwrap_or(0),
+                date: date.to_owned(),
             })
         })
         .collect())
