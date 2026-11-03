@@ -96,11 +96,13 @@ pub fn section_with_button(
 ) -> (bool, bool) {
     let t = Tokens::get(ui.ctx());
     let id = ui.id().with(("section", id));
-    let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(default_open);
+    let mut open = ui
+        .data_mut(|d| d.get_persisted::<bool>(id))
+        .unwrap_or(default_open);
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
     if resp.clicked() {
         open = !open;
-        ui.data_mut(|d| d.insert_temp(id, open));
+        ui.data_mut(|d| d.insert_persisted(id, open));
     }
     let painter = ui.painter();
     if resp.hovered() {
