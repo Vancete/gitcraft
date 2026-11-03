@@ -135,6 +135,21 @@ fn line_entries(extras: &PrExtras) -> Vec<Entry> {
         .collect()
 }
 
+/// What the page says about the reviews so far.
+pub fn reviews_label(decision: &str, open: bool, timeline: &[Entry]) -> &'static str {
+    let reviewed = timeline
+        .iter()
+        .any(|entry| matches!(entry.kind, EntryKind::Review(_) | EntryKind::Inline { .. }));
+    match decision {
+        "APPROVED" => "Approved",
+        "CHANGES_REQUESTED" => "Changes requested",
+        "REVIEW_REQUIRED" => "Review required",
+        _ if reviewed => "Reviewed",
+        _ if open => "No reviews yet",
+        _ => "No reviews",
+    }
+}
+
 /// The changes a pull request proposes, as its web page shows them: from the merge base.
 #[derive(Clone, Debug)]
 pub struct PrFiles {
@@ -145,6 +160,16 @@ pub struct PrFiles {
 
 /// Reads the pull request numbered `number` of the repository at `repo`.
 pub fn details(repo: &Path, number: u64) -> Result<PrDetails, String> {
+    let details = read_details(repo, number)?;
+    // It's read in two goes. A push in between would put the threads' line numbers on another
+    // commit than the one the page takes for the pull request's, so that goes again.
+    if details.inline_error.is_none() && details.extras.head_oid != details.head_oid {
+        return read_details(repo, number);
+    }
+    Ok(details)
+}
+
+fn read_details(repo: &Path, number: u64) -> Result<PrDetails, String> {
     let view = forge::tool(
         Forge::GitHub,
         repo,
@@ -270,7 +295,7 @@ pub(crate) fn items<'a>(v: &'a Value, pointer: &str) -> &'a [Value] {
 pub(crate) fn login(v: &Value, pointer: &str) -> String {
     match at(v, pointer) {
         "" => "ghost".to_owned(),
-        name => name.to_owned(),
+        name => name.strip_prefix("app/").unwrap_or(name).to_owned(),
     }
 }
 
@@ -950,6 +975,52 @@ mod tests {
             Some("up")
         );
         assert_eq!(remote_for(&remotes, "https://github.com/x/y/pull/1"), None);
+    }
+
+    fn entry(kind: EntryKind) -> Entry {
+        Entry {
+            kind,
+            author: "ana".to_owned(),
+            at: 0,
+            body: String::new(),
+            url: String::new(),
+            review_id: None,
+        }
+    }
+
+    #[test]
+    fn a_review_without_a_verdict_still_counts_as_a_review() {
+        let reviewed = [entry(EntryKind::Review("reviewed"))];
+        assert_eq!(reviews_label("", true, &reviewed), "Reviewed");
+        let on_a_line = [entry(EntryKind::Inline {
+            path: "a.rs".to_owned(),
+            line: Some(1),
+            side: DiffSide::Right,
+            outdated: false,
+            resolved: false,
+        })];
+        assert_eq!(reviews_label("", true, &on_a_line), "Reviewed");
+        let talk = [entry(EntryKind::Comment)];
+        assert_eq!(reviews_label("", true, &talk), "No reviews yet");
+    }
+
+    #[test]
+    fn a_verdict_says_more_than_that_there_was_a_review() {
+        let reviewed = [entry(EntryKind::Review("approved"))];
+        assert_eq!(reviews_label("APPROVED", true, &reviewed), "Approved");
+    }
+
+    #[test]
+    fn no_review_is_coming_on_a_finished_pull_request() {
+        assert_eq!(reviews_label("", false, &[]), "No reviews");
+    }
+
+    #[test]
+    fn an_app_goes_by_its_name_alone() {
+        let v: Value = serde_json::json!({"author": {"login": "app/github-actions"}});
+        assert_eq!(login(&v, "/author/login"), "github-actions");
+        let person: Value = serde_json::json!({"author": {"login": "ana"}});
+        assert_eq!(login(&person, "/author/login"), "ana");
     }
 
     #[test]

@@ -100,6 +100,7 @@ pub fn merge_blocker(
     mergeable: &str,
     merge_state: &str,
     can_write: bool,
+    can_bypass_rules: bool,
 ) -> Option<&'static str> {
     if !can_write {
         Some("You don't have the rights to merge here.")
@@ -109,7 +110,7 @@ pub fn merge_blocker(
         Some("It has conflicts to resolve first.")
     } else if mergeable != "MERGEABLE" {
         Some("GitHub is still checking whether it can be merged. Load it again in a moment.")
-    } else if merge_state == "BLOCKED" {
+    } else if merge_state == "BLOCKED" && !can_bypass_rules {
         Some("The repository's rules don't allow it yet: required reviews or checks are missing.")
     } else {
         None
@@ -184,6 +185,29 @@ pub(crate) fn encode_path(path: &str) -> String {
         }
     }
     out
+}
+
+/// The text of a file as the contents API sends it.
+pub(crate) fn decode_file(file: &Value) -> Result<String, String> {
+    // Above 1 MB the answer has no content, whatever the file holds.
+    if file.get("encoding").and_then(Value::as_str) == Some("none") {
+        return Err("GitHub didn't send the file: it's too large".to_owned());
+    }
+    let encoded: String = file
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or("GitHub didn't send the file: it may be too large")?
+        .split_whitespace()
+        .collect();
+    let bytes = BASE64
+        .decode(encoded)
+        .map_err(|e| format!("unexpected file from GitHub: {e}"))?;
+    String::from_utf8(bytes).map_err(|_| "It isn't a text file".to_owned())
+}
+
+/// Whether a failed deletion only says the branch is gone already.
+pub(crate) fn branch_was_gone(error: &str) -> bool {
+    error.contains("Reference does not exist")
 }
 
 /// A suggested change to apply.
@@ -301,6 +325,9 @@ impl Target {
 
     /// Adds a comment on a line to the pending review, starting one if there is none.
     pub fn add_pending(&self, comment: &LineComment) -> Result<(), String> {
+        if self.pr_id.is_empty() {
+            return Err("Couldn't read all of this pull request. Load it again.".to_owned());
+        }
         let review = match &self.pending_review {
             Some(review) => review.clone(),
             None => {
@@ -323,8 +350,18 @@ impl Target {
             "side": side_name(comment.side),
             "body": comment.body,
         });
-        self.mutate("addPullRequestReviewThread", input, "clientMutationId")
-            .map(|_| ())
+        let added = self
+            .mutate("addPullRequestReviewThread", input, "clientMutationId")
+            .map(|_| ());
+        if added.is_err() && self.pending_review.is_none() {
+            // A review started for this and left empty would only stand in the way of the next try.
+            let _ = self.mutate(
+                "deletePullRequestReview",
+                json!({ "pullRequestReviewId": review }),
+                "clientMutationId",
+            );
+        }
+        added
     }
 
     /// Takes a comment out of the pending review; the review goes with its `last` comment.
@@ -396,8 +433,11 @@ impl Target {
                 self.path,
                 encode_path(&self.head_branch)
             );
-            self.api("DELETE", &endpoint, None)
-                .map_err(|e| format!("It's merged, but the branch wasn't deleted: {e}"))?;
+            if let Err(e) = self.api("DELETE", &endpoint, None)
+                && !branch_was_gone(&e)
+            {
+                return Err(format!("It's merged, but the branch wasn't deleted: {e}"));
+            }
         }
         Ok(())
     }
@@ -414,16 +454,7 @@ impl Target {
         let file = self.api("GET", &format!("{endpoint}?ref={}", self.head_oid), None)?;
         let file: Value =
             serde_json::from_str(&file).map_err(|e| format!("unexpected output of gh: {e}"))?;
-        let encoded: String = file
-            .get("content")
-            .and_then(Value::as_str)
-            .ok_or("GitHub didn't send the file: it may be too large")?
-            .split_whitespace()
-            .collect();
-        let bytes = BASE64
-            .decode(encoded)
-            .map_err(|e| format!("unexpected file from GitHub: {e}"))?;
-        let content = String::from_utf8(bytes).map_err(|_| "It isn't a text file".to_owned())?;
+        let content = decode_file(&file)?;
         let changed = apply_lines(&content, suggestion.start, suggestion.end, &suggestion.text)?;
         let payload = json!({
             "message": format!("Apply suggestion from @{}", suggestion.author),
@@ -537,19 +568,72 @@ mod tests {
 
     #[test]
     fn a_ready_pull_request_can_be_merged() {
-        assert_eq!(merge_blocker(false, "MERGEABLE", "CLEAN", true), None);
+        assert_eq!(
+            merge_blocker(false, "MERGEABLE", "CLEAN", true, false),
+            None
+        );
         // Failing checks that aren't required don't stop a merge on GitHub either.
-        assert_eq!(merge_blocker(false, "MERGEABLE", "UNSTABLE", true), None);
-        assert_eq!(merge_blocker(false, "MERGEABLE", "BEHIND", true), None);
+        assert_eq!(
+            merge_blocker(false, "MERGEABLE", "UNSTABLE", true, false),
+            None
+        );
+        assert_eq!(
+            merge_blocker(false, "MERGEABLE", "BEHIND", true, false),
+            None
+        );
     }
 
     #[test]
     fn what_keeps_a_pull_request_from_being_merged() {
-        assert!(merge_blocker(true, "MERGEABLE", "DRAFT", true).is_some());
-        assert!(merge_blocker(false, "CONFLICTING", "DIRTY", true).is_some());
-        assert!(merge_blocker(false, "UNKNOWN", "UNKNOWN", true).is_some());
-        assert!(merge_blocker(false, "MERGEABLE", "BLOCKED", true).is_some());
-        assert!(merge_blocker(false, "MERGEABLE", "CLEAN", false).is_some());
+        assert!(merge_blocker(true, "MERGEABLE", "DRAFT", true, false).is_some());
+        assert!(merge_blocker(false, "CONFLICTING", "DIRTY", true, false).is_some());
+        assert!(merge_blocker(false, "UNKNOWN", "UNKNOWN", true, false).is_some());
+        assert!(merge_blocker(false, "MERGEABLE", "BLOCKED", true, false).is_some());
+        assert!(merge_blocker(false, "MERGEABLE", "CLEAN", false, false).is_some());
+    }
+
+    #[test]
+    fn rules_are_no_blocker_for_who_may_bypass_them() {
+        assert_eq!(
+            merge_blocker(false, "MERGEABLE", "BLOCKED", true, true),
+            None
+        );
+        assert!(merge_blocker(false, "CONFLICTING", "DIRTY", true, true).is_some());
+        assert!(merge_blocker(true, "MERGEABLE", "DRAFT", true, true).is_some());
+    }
+
+    #[test]
+    fn a_file_too_large_for_the_api_is_said_to_be() {
+        let large = json!({"content": "", "encoding": "none"});
+        assert!(decode_file(&large).is_err_and(|e| e.contains("too large")));
+        let small = json!({"content": "aGk=\n", "encoding": "base64"});
+        assert_eq!(decode_file(&small).as_deref(), Ok("hi"));
+    }
+
+    #[test]
+    fn a_branch_gone_already_is_what_deleting_it_wanted() {
+        assert!(branch_was_gone("gh: Reference does not exist (HTTP 422)"));
+        assert!(!branch_was_gone("gh: Must have admin rights (HTTP 403)"));
+    }
+
+    fn target_without_extras() -> Target {
+        Target {
+            repo: PathBuf::new(),
+            host: "github.com".to_owned(),
+            path: "o/r".to_owned(),
+            number: 1,
+            head_oid: "h".to_owned(),
+            head_branch: "b".to_owned(),
+            head_repo: None,
+            pr_id: String::new(),
+            pending_review: None,
+        }
+    }
+
+    #[test]
+    fn nothing_goes_out_without_knowing_the_pull_request() {
+        let error = target_without_extras().add_pending(&line("a", 1, DiffSide::Right, "x"));
+        assert!(error.is_err_and(|e| e.contains("Load it again")));
     }
 
     #[test]

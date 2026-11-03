@@ -1795,6 +1795,7 @@ impl RepoTab {
             Action::OpenDiff(key) => self.open_diff(key, ctx),
             Action::OpenPr(number) => self.open_pr(number, ctx),
             Action::ClosePr => {
+                self.leave_pr();
                 self.pr_view = None;
                 self.diff = None;
             }

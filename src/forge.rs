@@ -151,7 +151,13 @@ fn parse(forge: Forge, json: &str) -> Result<Vec<PullRequest>, String> {
                 number: item.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
                 title: s(item, &["title"]),
                 branch: s(item, &["headRefName"]),
-                author: s(item, &["author", "login"]),
+                author: {
+                    let author = s(item, &["author", "login"]);
+                    match author.strip_prefix("app/") {
+                        Some(app) => app.to_owned(),
+                        None => author,
+                    }
+                },
                 url: s(item, &["url"]),
                 draft: item
                     .get("isDraft")
@@ -325,6 +331,17 @@ mod tests {
             Some(Forge::GitLab)
         );
         assert_eq!(detect(&[r("origin", "C:/repos/bare.git")]), None);
+    }
+
+    #[test]
+    fn an_app_opening_a_pull_request_goes_by_its_name_alone() {
+        let json = r#"[{"number": 1, "title": "t", "headRefName": "b",
+            "author": {"login": "app/github-actions"}, "url": "u", "isDraft": false}]"#;
+        let list = parse(Forge::GitHub, json);
+        assert_eq!(
+            list.map(|l| l[0].author.clone()).as_deref(),
+            Ok("github-actions")
+        );
     }
 
     #[test]

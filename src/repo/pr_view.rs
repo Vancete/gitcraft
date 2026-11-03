@@ -37,6 +37,7 @@ pub(crate) struct PrView {
 impl RepoTab {
     /// Shows the pull request numbered `number` in the big area.
     pub(super) fn open_pr(&mut self, number: u64, ctx: &egui::Context) {
+        self.leave_pr();
         self.diff = None;
         self.file_view = None;
         self.compare = None;
@@ -80,10 +81,18 @@ impl RepoTab {
             return;
         };
         view.loading = false;
-        if let Some(draft) = self.pr_drafts.get_mut(&view.number)
-            && std::mem::take(&mut draft.settling)
-        {
-            draft.posting = false;
+        let moved = match (&view.details, &result) {
+            (Some(Ok(before)), Ok(now)) => before.head_oid != now.head_oid,
+            _ => false,
+        };
+        if let Some(draft) = self.pr_drafts.get_mut(&view.number) {
+            if moved {
+                draft.head_moved();
+            }
+            // With details come the files, which is when it's settled. Without, nothing comes.
+            if result.is_err() && std::mem::take(&mut draft.settling) {
+                draft.posting = false;
+            }
         }
         if let Ok(details) = &result {
             let host = pr::repo_of_url(&details.url).map_or(String::new(), |(host, _)| host);
@@ -134,6 +143,11 @@ impl RepoTab {
         let Some(view) = self.pr_view.as_mut().filter(|v| v.request == request) else {
             return;
         };
+        if let Some(draft) = self.pr_drafts.get_mut(&view.number)
+            && std::mem::take(&mut draft.settling)
+        {
+            draft.posting = false;
+        }
         let before = view.files.take().and_then(Result::ok);
         view.files = Some(result);
         let (Some(before), Some(Ok(now))) = (before, view.files.as_ref()) else {
@@ -239,6 +253,10 @@ impl RepoTab {
                                 if details.state == "OPEN" {
                                     section(ui, "MERGE");
                                     super::pr_merge::merge_box(ui, draft, details, acts);
+                                } else if let Some(error) = draft.error_at(Place::Merge) {
+                                    // The box is gone, but what went wrong with it still counts.
+                                    ui.add_space(8.0);
+                                    ui.colored_label(t.warning, error);
                                 }
                                 section(ui, &format!("COMMENTS ({})", details.timeline.len()));
                                 let files = view.files.as_ref().and_then(|f| f.as_ref().ok());
@@ -278,7 +296,13 @@ impl RepoTab {
         if let Some(Ok(details)) = view
             .details
             .as_ref()
-            .filter(|d| d.as_ref().is_ok_and(|d| d.state == "OPEN"))
+            // What's pending stays to send or discard, whatever has become of the pull request.
+            .filter(|d| {
+                d.as_ref().is_ok_and(|d| {
+                    !d.extras.pr_id.is_empty()
+                        && (d.state == "OPEN" || d.extras.pending_review.is_some())
+                })
+            })
         {
             let own = crate::pr_post::is_own(&details.author, details.extras.viewer.as_deref());
             let draft = self.pr_drafts.entry(view.number).or_default();
@@ -290,7 +314,8 @@ impl RepoTab {
                         .stroke(egui::Stroke::new(1.0, t.separator)),
                 )
                 .show(ui, |ui| {
-                    super::pr_review::review_box(ui, draft, &details.extras, own, acts);
+                    let open = details.state == "OPEN";
+                    super::pr_review::review_box(ui, draft, &details.extras, own, open, acts);
                 });
         }
         match &view.files {
@@ -467,12 +492,14 @@ fn header(ui: &mut Ui, d: &PrDetails) {
     });
     ui.add_space(6.0);
     ui.horizontal_wrapped(|ui| {
-        match d.review_decision.as_str() {
-            "APPROVED" => widgets::chip(ui, "Approved", t.success),
-            "CHANGES_REQUESTED" => widgets::chip(ui, "Changes requested", t.danger),
-            "REVIEW_REQUIRED" => widgets::chip(ui, "Review required", t.warning),
-            _ => widgets::chip(ui, "No reviews yet", t.text_dim),
+        let label = pr::reviews_label(&d.review_decision, d.state == "OPEN", &d.timeline);
+        let color = match label {
+            "Approved" => t.success,
+            "Changes requested" => t.danger,
+            "Review required" => t.warning,
+            _ => t.text_dim,
         };
+        widgets::chip(ui, label, color);
         // Whether it can be merged only means something while it can still be.
         if d.state == "OPEN" {
             match d.mergeable.as_str() {

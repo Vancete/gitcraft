@@ -13,15 +13,18 @@ const QUERY: &str = "query($owner: String!, $name: String!, $number: Int!, $afte
   repository(owner: $owner, name: $name) {
     mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed deleteBranchOnMerge viewerPermission
     pullRequest(number: $number) {
-      id
+      id headRefOid viewerCanMergeAsAdmin
       headRepository { nameWithOwner }
       pending: reviews(first: 1, states: PENDING) { nodes { id } }
       reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          id isResolved isOutdated path line originalLine diffSide startLine
+          id isResolved isOutdated path line originalLine diffSide startLine startDiffSide
           viewerCanResolve viewerCanUnresolve viewerCanReply
-          comments(first: 100) { nodes { id body createdAt url state author { login } } }
+          comments(first: 100) {
+            pageInfo { hasNextPage }
+            nodes { id body createdAt url state author { login } }
+          }
         }
       }
     }
@@ -52,6 +55,10 @@ pub struct Thread {
     pub can_unresolve: bool,
     pub can_reply: bool,
     pub comments: Vec<ThreadComment>,
+    /// It starts on the old version of the file and ends on the new one.
+    pub starts_left: bool,
+    /// It has more comments than were read.
+    pub more_comments: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -66,6 +73,10 @@ pub struct PrExtras {
     /// `owner/name` of where the proposed branch lives; `None` when that repository is gone.
     pub head_repo: Option<String>,
     pub pending_review: Option<String>,
+    /// The commit the threads' line numbers belong to.
+    pub head_oid: String,
+    /// The person logged in may merge past the repository's rules.
+    pub can_bypass_rules: bool,
     pub threads: Vec<Thread>,
     /// Where the next page of threads starts, when there is one.
     next_page: Option<String>,
@@ -153,6 +164,11 @@ pub(crate) fn parse(json: &str) -> Result<PrExtras, String> {
         delete_branch_on_merge: allowed("deleteBranchOnMerge"),
         head_repo: (!head_repo.is_empty()).then(|| head_repo.to_owned()),
         pending_review: (!pending.is_empty()).then(|| pending.to_owned()),
+        head_oid: at(pr, "/headRefOid").to_owned(),
+        can_bypass_rules: pr
+            .get("viewerCanMergeAsAdmin")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         threads: items(pr, "/reviewThreads/nodes")
             .iter()
             .map(thread)
@@ -183,6 +199,8 @@ fn thread(v: &Value) -> Thread {
         can_resolve: flag("/viewerCanResolve"),
         can_unresolve: flag("/viewerCanUnresolve"),
         can_reply: flag("/viewerCanReply"),
+        starts_left: at(v, "/startDiffSide") == "LEFT",
+        more_comments: flag("/comments/pageInfo/hasNextPage"),
         comments: items(v, "/comments/nodes")
             .iter()
             .map(|c| ThreadComment {
@@ -200,6 +218,25 @@ fn thread(v: &Value) -> Thread {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_what_the_page_needs_to_be_careful() {
+        let extras = parse(
+            r#"{"data": {"viewer": {"login": "me"}, "repository": {"pullRequest": {
+                "id": "PR", "headRefOid": "abc", "viewerCanMergeAsAdmin": true,
+                "reviewThreads": {"nodes": [{
+                    "id": "T", "path": "a.rs", "line": 3, "startLine": 2, "diffSide": "RIGHT",
+                    "startDiffSide": "LEFT",
+                    "comments": {"pageInfo": {"hasNextPage": true}, "nodes": []}
+                }]}
+            }}}}"#,
+        );
+        let extras = extras.unwrap_or_default();
+        assert_eq!(extras.head_oid, "abc");
+        assert!(extras.can_bypass_rules);
+        assert!(extras.threads[0].starts_left);
+        assert!(extras.threads[0].more_comments);
+    }
 
     /// What GitHub answered for the throwaway repository: one thread from a bot, one comment of
     /// the viewer in a pending review.
