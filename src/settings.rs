@@ -30,6 +30,10 @@ pub struct Settings {
     pub author_width: f32,
     pub date_width: f32,
     pub hash_width: f32,
+    /// The column bar dragged last: that column keeps its width while the others make room.
+    pub last_resized: Option<crate::repo::columns::Bar>,
+    /// How far that bar was pulled past its column's minimum, shrinking the columns right of it.
+    pub column_push: f32,
     pub show_author: bool,
     /// An absolute date column (tips show a relative date either way).
     pub show_date: bool,
@@ -60,6 +64,8 @@ impl Default for Settings {
             author_width: 150.0,
             date_width: 118.0,
             hash_width: 70.0,
+            last_resized: None,
+            column_push: 0.0,
             show_author: true,
             show_date: false,
             show_hash: false,
@@ -110,7 +116,7 @@ impl Settings {
             ui.add(egui::Slider::new(&mut self.ui_scale, 0.7..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0} %", v * 100.0)));
             ui.end_row();
             ui.label("Branch column width");
-            ui.add(egui::Slider::new(&mut self.refs_width, 150.0..=800.0).step_by(10.0).suffix(" px"));
+            ui.add(egui::Slider::new(&mut self.refs_width, 150.0..=2000.0).step_by(10.0).suffix(" px"));
             ui.end_row();
             ui.label("Graph columns");
             ui.horizontal(|ui| {
