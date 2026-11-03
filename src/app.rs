@@ -989,6 +989,9 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let t = Tokens::get(&ctx);
+        // Settings changed outside the Settings tab (the diff view's side by side and whole file)
+        // live in the context; keep them for saving.
+        self.settings = Settings::get(&ctx);
 
         // eframe shows the window after the first frame; maximize it on the next one.
         if MAXIMIZE_WHEN_SHOWN.load(Ordering::Relaxed) {

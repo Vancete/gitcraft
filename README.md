@@ -81,6 +81,9 @@ so your config, credentials and hooks apply as usual.
 
 - Unified or side by side, syntax colours, the changed part of each line marked, whitespace
   changes optional, images shown before / after. Esc closes.
+- Only the changes or the whole file, and side by side or unified, both kept for next time. A
+  strip beside the scrollbar marks where the changes are; click it to jump there. Drag over the
+  lines to select text, Ctrl+C or right-click to copy it.
 - Code takes the colours of the theme VS Code (or Insiders, VSCodium) is using, read from its
   settings and extensions, when it is dark or light like gitcraft's; a setting turns it off.
 - Conflicts open in a three-pane editor: each conflict's two sides with _Ours_, _Theirs_ and
