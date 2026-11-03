@@ -759,10 +759,20 @@ impl RepoTab {
         let shift = ui.input(|i| i.modifiers.shift);
         // A changed line clicked: (line, extend the selection).
         let mut clicked: Option<usize> = None;
-        let mut paint = |ui: &mut Ui, rect: Rect, i: usize, side: Side| {
+        let mut paint = |ui: &mut Ui, rect: Rect, i: usize, side: Side, scroll_x: f32| {
             let kind = data.lines.get(i).map(|l| l.kind);
             let pickable = partial && matches!(kind, Some(Kind::Add | Kind::Del));
-            paint_line(ui, rect, data, i, side, &font, &t, view.chosen.contains(&i));
+            paint_line(
+                ui,
+                rect,
+                data,
+                i,
+                side,
+                scroll_x,
+                &font,
+                &t,
+                view.chosen.contains(&i),
+            );
             if pickable {
                 let resp = ui
                     .interact(rect, ui.id().with(("diff_line", i)), Sense::click())
@@ -791,19 +801,26 @@ impl RepoTab {
             .auto_shrink(false)
             .show_rows(ui, LINE_H, rows, |ui, range| {
                 if split {
-                    let half =
-                        (NUM_W + 24.0 + longest * char_w + 16.0).max(ui.available_width() / 2.0);
+                    // Each half is half of what's visible, however long the lines: scrolling
+                    // sideways moves the text in both, the line numbers stay.
+                    let view = ui.clip_rect();
+                    let half = (view.width() / 2.0).floor();
+                    let overflow = (NUM_W + 24.0 + longest * char_w + 16.0 - half).max(0.0);
                     for row in range {
                         let Some(&(l, r)) = data.split.get(row) else {
                             continue;
                         };
-                        let (rect, _) =
-                            ui.allocate_exact_size(vec2(half * 2.0, LINE_H), Sense::hover());
-                        let left = Rect::from_min_size(rect.min, vec2(half, LINE_H));
-                        let right = Rect::from_min_size(
-                            pos2(rect.left() + half, rect.top()),
+                        let (rect, _) = ui.allocate_exact_size(
+                            vec2(half * 2.0 + overflow, LINE_H),
+                            Sense::hover(),
+                        );
+                        let scroll_x = (view.left() - rect.left()).clamp(0.0, overflow);
+                        let left = Rect::from_min_size(
+                            pos2(rect.left() + scroll_x, rect.top()),
                             vec2(half, LINE_H),
                         );
+                        let right =
+                            Rect::from_min_size(pos2(left.right(), rect.top()), vec2(half, LINE_H));
                         // Hunk headers and notes span both halves.
                         if l == r
                             && let Some(i) = l
@@ -812,15 +829,15 @@ impl RepoTab {
                                 Some(Kind::Hunk | Kind::Meta)
                             )
                         {
-                            paint(ui, rect, i, Side::Both);
+                            paint(ui, left.union(right), i, Side::Both, 0.0);
                             continue;
                         }
                         match l {
-                            Some(i) => paint(ui, left, i, Side::Old),
+                            Some(i) => paint(ui, left, i, Side::Old, scroll_x),
                             None => filler(ui, left, &t),
                         }
                         match r {
-                            Some(i) => paint(ui, right, i, Side::New),
+                            Some(i) => paint(ui, right, i, Side::New, scroll_x),
                             None => filler(ui, right, &t),
                         }
                         ui.painter().line_segment(
@@ -833,7 +850,7 @@ impl RepoTab {
                         (NUM_W * 2.0 + 24.0 + longest * char_w + 24.0).max(ui.available_width());
                     for i in range {
                         let (rect, _) = ui.allocate_exact_size(vec2(width, LINE_H), Sense::hover());
-                        paint(ui, rect, i, Side::Unified);
+                        paint(ui, rect, i, Side::Unified, 0.0);
                     }
                 }
             });
@@ -953,6 +970,8 @@ fn paint_line(
     data: &DiffData,
     i: usize,
     side: Side,
+    // How far the text is scrolled sideways inside `rect` (the numbers stay).
+    scroll_x: f32,
     font: &egui::FontId,
     t: &Tokens,
     selected: bool,
@@ -1047,7 +1066,13 @@ fn paint_line(
     let job = line_job(&spans, changed, font, strong);
     let galley = ui.fonts_mut(|f| f.layout_job(job));
     let x = rect.left() + gutter + 24.0;
-    p.galley(pos2(x, y - galley.size().y / 2.0), galley, fg);
+    // Scrolled text goes under the marker column, not over the numbers.
+    let p = if scroll_x > 0.0 {
+        p.with_clip_rect(p.clip_rect().intersect(rect.with_min_x(x - 4.0)))
+    } else {
+        p
+    };
+    p.galley(pos2(x - scroll_x, y - galley.size().y / 2.0), galley, fg);
 }
 
 /// A layout job for `spans`, with the chars in `changed` on `strong`.
