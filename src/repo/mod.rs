@@ -931,7 +931,7 @@ impl RepoTab {
 
     /// Starts comparing two points of history (replacing the comparison shown).
     fn compare(&mut self, compare: Compare, ctx: &egui::Context) {
-        self.pr_view = None;
+        self.close_pr();
         if matches!(
             self.diff,
             Some(DiffView {
@@ -1820,22 +1820,21 @@ impl RepoTab {
         let plain = OpKind::Normal(Undo::None, String::new());
         match action {
             Action::Select(row) => {
-                self.pr_view = None;
+                self.close_pr();
                 self.select(row, ctx);
             }
             Action::SelectHash(hash) => {
-                self.pr_view = None;
+                self.close_pr();
                 self.goto(&hash, ctx);
             }
             Action::SelectStash(i) => {
-                self.pr_view = None;
+                self.close_pr();
                 self.select_stash(i, ctx);
             }
             Action::OpenDiff(key) => self.open_diff(key, ctx),
             Action::OpenPr(number) => self.open_pr(number, ctx),
             Action::ClosePr => {
-                self.leave_pr();
-                self.pr_view = None;
+                self.close_pr();
                 self.diff = None;
             }
             Action::ReloadPr => self.load_pr(ctx),

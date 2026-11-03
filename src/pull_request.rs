@@ -163,10 +163,20 @@ pub fn details(repo: &Path, number: u64) -> Result<PrDetails, String> {
     let details = read_details(repo, number)?;
     // It's read in two goes. A push in between would put the threads' line numbers on another
     // commit than the one the page takes for the pull request's, so that goes again.
-    if details.inline_error.is_none() && details.extras.head_oid != details.head_oid {
-        return read_details(repo, number);
+    if read_in_step(&details) {
+        return Ok(details);
     }
-    Ok(details)
+    let details = read_details(repo, number)?;
+    if read_in_step(&details) {
+        Ok(details)
+    } else {
+        Err("The pull request changed while it was read. Load it again.".to_owned())
+    }
+}
+
+/// Whether both goes of reading `details` saw the same commit (or the threads weren't read).
+fn read_in_step(details: &PrDetails) -> bool {
+    details.inline_error.is_some() || details.extras.head_oid == details.head_oid
 }
 
 fn read_details(repo: &Path, number: u64) -> Result<PrDetails, String> {
@@ -210,18 +220,23 @@ pub fn files(
         // No refs and no FETCH_HEAD: nothing here changes but the objects being available.
         let head = format!("refs/pull/{}/head", details.number);
         let base = format!("refs/heads/{}", details.base_branch);
-        git::run_with(
-            Some(repo),
-            &[
-                "fetch",
-                "--no-tags",
-                "--no-write-fetch-head",
-                remote,
-                &head,
-                &base,
-            ],
-            credentials,
-        )?;
+        // The branches may have moved on since the details were read (a force push even leaves
+        // the old commits out), so the very commits are asked for too.
+        let mut args = vec![
+            "fetch",
+            "--no-tags",
+            "--no-write-fetch-head",
+            remote,
+            &head,
+            &base,
+        ];
+        args.extend(
+            [&details.head_oid, &details.base_oid]
+                .into_iter()
+                .filter(|oid| !oid.is_empty())
+                .map(String::as_str),
+        );
+        git::run_with(Some(repo), &args, credentials)?;
     }
     let from = git::merge_base(repo, &details.base_oid, &details.head_oid)?;
     let files = git::diff_files(repo, &from, Some(&details.head_oid))?;
@@ -1168,6 +1183,21 @@ mod tests {
     fn plain_text_with_exclamation_marks_is_left_alone() {
         let body = "Wow![not an image] and [link](https://a.example) ![unfinished](";
         assert_eq!(safe_markdown(body, "github.com"), body);
+    }
+
+    #[test]
+    fn threads_read_on_another_commit_are_not_shown_on_this_one() {
+        let mut details = PrDetails {
+            head_oid: "h1".to_owned(),
+            ..PrDetails::default()
+        };
+        details.extras.head_oid = "h1".to_owned();
+        assert!(read_in_step(&details));
+        details.extras.head_oid = "h0".to_owned();
+        assert!(!read_in_step(&details));
+        // Without threads there are no line numbers to put on the wrong commit.
+        details.inline_error = Some("offline".to_owned());
+        assert!(read_in_step(&details));
     }
 
     #[test]

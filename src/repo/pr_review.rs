@@ -339,6 +339,12 @@ impl RepoTab {
         }
     }
 
+    /// Leaves the page of the pull request shown, whatever is shown instead.
+    pub(super) fn close_pr(&mut self) {
+        self.leave_pr();
+        self.pr_view = None;
+    }
+
     /// Does what the page, the review box or a thread asked for.
     pub(super) fn pr_act(&mut self, act: PrAct, ctx: &egui::Context) {
         match act {
