@@ -50,6 +50,7 @@ const SOURCES: &[(&str, &str)] = icons![
     "heart",
     "history",
     "laptop",
+    "list",
     "log-in",
     "minus",
     "package",

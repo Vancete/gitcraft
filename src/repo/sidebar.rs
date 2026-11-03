@@ -64,11 +64,11 @@ impl RepoTab {
                 }
                 if open {
                     let tree = branch_tree::build(local.iter().map(|b| (b.name.as_str(), *b)));
-                    let view = TreeView {
-                        id: egui::Id::new(("branch-folder", &self.path, "local")),
-                        filtering: !filter.is_empty(),
-                        indent: 0.0,
-                    };
+                    let view = TreeView::branches(
+                        egui::Id::new(("branch-folder", &self.path, "local")),
+                        !filter.is_empty(),
+                        0.0,
+                    );
                     branch_tree::show(
                         ui,
                         &tree,
@@ -544,11 +544,11 @@ impl RepoTab {
                     .unwrap_or(&b.name);
                 (short, *b)
             }));
-            let view = TreeView {
-                id: egui::Id::new(("branch-folder", &self.path, "remote", &remote.name)),
-                filtering: !filter.is_empty(),
-                indent: REMOTE_INDENT,
-            };
+            let view = TreeView::branches(
+                egui::Id::new(("branch-folder", &self.path, "remote", &remote.name)),
+                !filter.is_empty(),
+                REMOTE_INDENT,
+            );
             branch_tree::show(
                 ui,
                 &tree,
@@ -602,19 +602,13 @@ impl RepoTab {
                         acts.push(fast_forward_action(&b.name, current));
                     }
                     if ui
-                        .add_enabled(
-                            idle,
-                            egui::Button::new(format!("Merge into {current}")),
-                        )
+                        .add_enabled(idle, egui::Button::new(format!("Merge into {current}")))
                         .clicked()
                     {
                         acts.push(merge_action(&b.name, current));
                     }
                     if ui
-                        .add_enabled(
-                            idle,
-                            egui::Button::new(format!("Rebase {current} onto it")),
-                        )
+                        .add_enabled(idle, egui::Button::new(format!("Rebase {current} onto it")))
                         .clicked()
                     {
                         acts.push(rebase_action(&b.name, current));
@@ -636,14 +630,14 @@ impl RepoTab {
                     .clicked()
                 {
                     acts.push(Action::Dialog(Dialog::confirm(
-                    "Delete remote branch",
-                    format!(
-                        "Delete “{short}” from {remote}? This changes the remote for everyone.",
-                    ),
-                    "Delete",
-                    ops(&[&["push", remote, "--delete", short]]),
-                    None,
-                )));
+                        "Delete remote branch",
+                        format!(
+                            "Delete “{short}” from {remote}? This changes the remote for everyone.",
+                        ),
+                        "Delete",
+                        ops(&[&["push", remote, "--delete", short]]),
+                        None,
+                    )));
                 }
             });
     }

@@ -182,14 +182,17 @@ pub struct FileRowResponse {
 }
 
 /// One changed file: status letter, file name, its folder dimmed, and `extra` on the right.
+/// In a tree (`indent` is how far in) the folder is above the row instead.
 pub fn file_row(
     ui: &mut Ui,
     code: char,
     path: &str,
     old_path: Option<&str>,
+    indent: Option<f32>,
     selected: bool,
     extra: RowExtra<'_>,
 ) -> FileRowResponse {
+    let shift = indent.unwrap_or(0.0);
     let t = Tokens::get(ui.ctx());
     let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     let hovered = ui.rect_contains_pointer(rect);
@@ -203,7 +206,7 @@ pub fn file_row(
 
     // Status letter in a small rounded square.
     let color = status_color(&t, code);
-    let badge = Rect::from_center_size(pos2(rect.left() + 18.0, y), vec2(16.0, 16.0));
+    let badge = Rect::from_center_size(pos2(rect.left() + 18.0 + shift, y), vec2(16.0, 16.0));
     painter.rect_filled(badge, CornerRadius::same(3), color.gamma_multiply(0.22));
     let letter = if code == '?' { 'A' } else { code };
     painter.text(
@@ -282,7 +285,7 @@ pub fn file_row(
         None => ("", path),
     };
     let text_clip = Rect::from_min_max(
-        pos2(rect.left() + 32.0, rect.top()),
+        pos2(rect.left() + 32.0 + shift, rect.top()),
         pos2(right, rect.bottom()),
     );
     let tp = painter.with_clip_rect(text_clip);
@@ -299,7 +302,9 @@ pub fn file_row(
         faint.push_str(old);
         faint.push_str("  ");
     }
-    faint.push_str(dir);
+    if indent.is_none() {
+        faint.push_str(dir);
+    }
     if !faint.is_empty() {
         tp.text(
             pos2(name_rect.right() + 8.0, y),
