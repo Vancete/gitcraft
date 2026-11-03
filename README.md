@@ -1,3 +1,6 @@
+<p align="center"><img src="assets/app-icon/gitcraft-256.png" width="128" alt="gitcraft"></p>
+<p align="center"><a href="https://buymeacoffee.com/vancete"><img src="https://raw.githubusercontent.com/pachadotdev/buymeacoffee-badges/main/bmc-yellow.svg" alt="Buy Me a Coffee"></a></p>
+
 # gitcraft
 
 A visual git client: a simplified yet powerful take on the usual graph-based git GUIs.
