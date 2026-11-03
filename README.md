@@ -54,7 +54,7 @@ so your config, credentials and hooks apply as usual.
   merge into / (interactively) rebase onto the current branch, push, create a pull request,
   rename, delete…
 - Remotes: add, edit (name and URL), fetch one, remove; their branches below each.
-- Worktrees: add (existing or new branch), open in a tab, open a terminal there, lock, remove,
+- Worktrees: add (existing or new branch), open in the same tab (the tab then shows the branch, a searchable switcher and a button to close the worktree, and what you left keeps running; can be turned off in Settings) or a new one, open a terminal there, lock, remove,
   prune.
 - Stashes: stash (with a message, untracked files included), see what a stash holds, apply, pop,
   drop.
@@ -185,6 +185,7 @@ was made this way, on a demo repository.
 | `src/terminal.rs`        | integrated terminal: pty, VT parsing (`vt100`), painting, keys, selection          |
 | `src/repo/mod.rs`        | one repository tab: state, background git work, undo / redo, toolbar               |
 | `src/repo/sidebar.rs`    | branches, remotes, worktrees, stashes, pull requests, tags                         |
+| `src/repo/worktree_tab.rs` | worktrees in the same tab: parked views, the tab's chip and switcher |
 | `src/repo/graph_view.rs` | commit graph, pills, search bar, commit menu                                       |
 | `src/repo/detail.rs`     | commit / stash detail, changes and commit box                                      |
 | `src/repo/diff.rs`       | diff loading, pairing and the diff view (unified, split, images)                   |

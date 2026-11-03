@@ -11,6 +11,7 @@ mod highlight;
 mod rebase;
 mod sidebar;
 pub(crate) mod widgets;
+pub(crate) mod worktree_tab;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -269,6 +270,8 @@ pub(crate) enum Action {
     StashPush(String),
     /// Open a folder (a worktree) in its own tab.
     OpenTab(PathBuf),
+    /// Open a worktree the way the settings say: in this tab, or in its own.
+    OpenWorktree(PathBuf),
     ToggleTerminal,
     NewTerminal {
         shell: Option<ShellSpec>,
@@ -341,6 +344,13 @@ pub(crate) enum Action {
     CloseCompare,
     /// Search commit messages, or what commits changed in files.
     SearchCode(bool),
+}
+
+/// How a tab asks the app to open a folder.
+pub enum OpenRequest {
+    NewTab(PathBuf),
+    /// In the same tab or a new one, as the settings say.
+    Worktree(PathBuf),
 }
 
 pub struct RepoTab {
@@ -426,12 +436,19 @@ pub struct RepoTab {
 
     /// Actions queued from outside (the command palette).
     queued: Vec<Action>,
-    /// A folder the app should open in a new tab (taken by `App`).
-    pub open_request: Option<PathBuf>,
+    /// A folder the app should open (taken by `App`).
+    pub open_request: Option<OpenRequest>,
+    /// The other worktrees this tab was on, oldest first, for coming back to. Boxed as in
+    /// `Tab::Repo`, which they move in and out of.
+    #[allow(clippy::vec_box)]
+    parked: Vec<Box<RepoTab>>,
+    /// Those of them with work going on, and what work.
+    parked_status: Vec<(PathBuf, &'static str)>,
     /// The app has a dialog of its own open (palette, settings): leave the keys to it.
     pub keys_blocked: bool,
-    /// A long operation that just ended: (message, failed), for a notification (taken by `App`).
-    pub finished: Option<(String, bool)>,
+    /// Long operations that just ended, its own and its parked worktrees': (message, failed),
+    /// for a notification each (taken by `App`).
+    pub finished: Vec<(String, bool)>,
 }
 
 impl RepoTab {
@@ -508,8 +525,10 @@ impl RepoTab {
             fs_pending: None,
             queued: Vec::new(),
             open_request: None,
+            parked: Vec::new(),
+            parked_status: Vec::new(),
             keys_blocked: false,
-            finished: None,
+            finished: Vec::new(),
         };
         tab.watch(ctx);
         tab.reload(ctx);
@@ -1671,7 +1690,7 @@ impl RepoTab {
                     }
                 }
                 if long && !quiet {
-                    self.finished = Some(match &result {
+                    self.finished.push(match &result {
                         Ok(_) => (format!("{} · {label}: done", self.name), false),
                         Err(e) => (
                             format!("{} · {label} failed: {}", self.name, headline(e)),
@@ -1769,7 +1788,8 @@ impl RepoTab {
             Action::Undo => self.undo(ctx),
             Action::Redo => self.redo(ctx),
             Action::StashPush(message) => self.stash_push(&message, ctx),
-            Action::OpenTab(path) => self.open_request = Some(path),
+            Action::OpenTab(path) => self.open_request = Some(OpenRequest::NewTab(path)),
+            Action::OpenWorktree(path) => self.open_request = Some(OpenRequest::Worktree(path)),
             Action::ToggleTerminal => {
                 self.terminal_open = !self.terminal_open;
                 if self.terminal_open && self.terminals.is_empty() {
