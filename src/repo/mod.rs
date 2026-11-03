@@ -155,6 +155,8 @@ pub(crate) struct DiffView {
     chosen: std::collections::BTreeSet<usize>,
     /// The last line clicked, where a Shift+click range starts.
     anchor: Option<usize>,
+    /// Text selected by dragging over the lines, to copy.
+    text_sel: Option<diff::TextSel>,
 }
 
 impl DiffView {
@@ -164,6 +166,7 @@ impl DiffView {
             data: None,
             chosen: Default::default(),
             anchor: None,
+            text_sel: None,
         }
     }
 }
@@ -290,9 +293,11 @@ pub(crate) enum Action {
     OpenPath(PathBuf),
     OpenInEditor(PathBuf),
     SetIdentity(String, String),
+    /// How diffs show: side by side, without whitespace changes, the whole file.
     SetDiffOptions {
         split: bool,
         ignore_ws: bool,
+        whole_file: bool,
     },
     SaveConflict,
     /// A file's history or blame in the central pane (`rev`: the commit to blame at).
@@ -391,7 +396,6 @@ pub struct RepoTab {
     last_op: Option<PendingOp>,
     /// The forge has been asked for avatars.
     avatars_hinted: bool,
-    diff_split: bool,
     diff_ignore_ws: bool,
     conflict: Option<conflict::ConflictEditor>,
 
@@ -482,7 +486,6 @@ impl RepoTab {
             credentials: None,
             last_op: None,
             avatars_hinted: false,
-            diff_split: false,
             diff_ignore_ws: false,
             conflict: None,
             commit_summary: String::new(),
@@ -837,10 +840,13 @@ impl RepoTab {
         let Some(view) = &self.diff else { return };
         let key = view.key.clone();
         let path = self.path.clone();
-        let ignore_ws = self.diff_ignore_ws;
+        let opts = git::DiffOptions {
+            ignore_ws: self.diff_ignore_ws,
+            whole_file: Settings::get(ctx).diff_whole_file,
+        };
         let dark = Tokens::get(ctx).dark();
         spawn(&self.tx, ctx, move || {
-            let result = diff::load(&path, &key, ignore_ws, dark);
+            let result = diff::load(&path, &key, opts, dark);
             Msg::Diff(key, result)
         });
     }
@@ -1587,6 +1593,7 @@ impl RepoTab {
                     // The lines may have moved.
                     view.chosen.clear();
                     view.anchor = None;
+                    view.text_sel = None;
                 }
             }
             Msg::Compare(request, result) => {
@@ -1851,10 +1858,20 @@ impl RepoTab {
                 plain,
                 ctx,
             ),
-            Action::SetDiffOptions { split, ignore_ws } => {
-                self.diff_split = split;
-                if ignore_ws != self.diff_ignore_ws {
-                    self.diff_ignore_ws = ignore_ws;
+            Action::SetDiffOptions {
+                split,
+                ignore_ws,
+                whole_file,
+            } => {
+                // Side by side and the whole file are kept for next time; whitespace is per tab.
+                let mut settings = Settings::get(ctx);
+                let reload =
+                    ignore_ws != self.diff_ignore_ws || whole_file != settings.diff_whole_file;
+                settings.diff_split = split;
+                settings.diff_whole_file = whole_file;
+                settings.set(ctx);
+                self.diff_ignore_ws = ignore_ws;
+                if reload {
                     self.reopen_diff(ctx);
                 }
             }

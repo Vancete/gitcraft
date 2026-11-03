@@ -3,23 +3,27 @@
 //! can be staged, unstaged or discarded a hunk or a few lines at a time.
 
 use std::collections::BTreeSet;
+use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
 use egui::{
-    Align2, Color32, Rect, Sense, Stroke, Ui, load::Bytes, pos2, text::LayoutJob, text::TextFormat,
-    vec2,
+    Align2, Color32, Pos2, Rect, Sense, Stroke, Ui, load::Bytes, pos2, text::CCursor,
+    text::LayoutJob, text::TextFormat, vec2,
 };
 
 use super::highlight::{self, Spans};
 use super::widgets;
 use super::{Action, DiffKey, Refresh, RepoTab, ops, short};
-use crate::git::{self, Area};
+use crate::git::{self, Area, DiffOptions};
 use crate::icons;
+use crate::settings::Settings;
 use crate::theme::{self, Tokens};
 
 const LINE_H: f32 = 19.0;
 const NUM_W: f32 = 46.0;
+/// Width of the strip of changes beside the scrollbar.
+const MAP_W: f32 = 12.0;
 /// Very long diffs are cut here; the UI stays responsive and git is one click away.
 const MAX_LINES: usize = 50_000;
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp", "webp", "ico"];
@@ -104,14 +108,12 @@ pub struct ImagePair {
 }
 
 /// Reads and prepares the diff for `key`.
-pub fn load(repo: &Path, key: &DiffKey, ignore_ws: bool, dark: bool) -> Result<DiffData, String> {
+pub fn load(repo: &Path, key: &DiffKey, opts: DiffOptions, dark: bool) -> Result<DiffData, String> {
     let (text, path) = match key {
-        DiffKey::Commit { hash, path } => {
-            (git::file_diff(repo, hash, path, ignore_ws)?, path.clone())
-        }
-        DiffKey::Work(file) => (git::work_diff(repo, file, ignore_ws)?, file.path.clone()),
+        DiffKey::Commit { hash, path } => (git::file_diff(repo, hash, path, opts)?, path.clone()),
+        DiffKey::Work(file) => (git::work_diff(repo, file, opts)?, file.path.clone()),
         DiffKey::Range { from, to, path } => (
-            git::range_file_diff(repo, from, to.as_deref(), path, ignore_ws)?,
+            git::range_file_diff(repo, from, to.as_deref(), path, opts)?,
             path.clone(),
         ),
     };
@@ -120,7 +122,7 @@ pub fn load(repo: &Path, key: &DiffKey, ignore_ws: bool, dark: bool) -> Result<D
     // A patch made from a `-w` diff wouldn't apply; new, deleted, renamed and binary files, and
     // truncated diffs, only go whole.
     let partial = matches!(key, DiffKey::Work(f) if matches!(f.area, Area::Staged | Area::Unstaged))
-        && !ignore_ws
+        && !opts.ignore_ws
         && !header.is_empty()
         && ![
             "new file mode",
@@ -585,7 +587,12 @@ impl RepoTab {
         };
         let partial = matches!(&view.data, Some(Ok(d)) if d.partial) && idle;
         let chosen = view.chosen.len();
-        let (split, ignore_ws) = (self.diff_split, self.diff_ignore_ws);
+        let settings = Settings::get(ui.ctx());
+        let (split, ignore_ws, whole_file) = (
+            settings.diff_split,
+            self.diff_ignore_ws,
+            settings.diff_whole_file,
+        );
         let mut clear = false;
         egui::Frame::new()
             .fill(t.chrome)
@@ -674,6 +681,26 @@ impl RepoTab {
                             acts.push(Action::SetDiffOptions {
                                 split,
                                 ignore_ws: !ignore_ws,
+                                whole_file,
+                            });
+                        }
+                        let whole = icons::small_button(
+                            ui,
+                            "unfold-vertical",
+                            if whole_file {
+                                "Show only the changes"
+                            } else {
+                                "Show the whole file"
+                            },
+                        );
+                        if whole_file {
+                            widgets::active_underline(ui, whole.rect, t.accent);
+                        }
+                        if whole.clicked() {
+                            acts.push(Action::SetDiffOptions {
+                                split,
+                                ignore_ws,
+                                whole_file: !whole_file,
                             });
                         }
                         let s = icons::small_button(ui, "columns-2", "Side by side");
@@ -684,6 +711,7 @@ impl RepoTab {
                             acts.push(Action::SetDiffOptions {
                                 split: true,
                                 ignore_ws,
+                                whole_file,
                             });
                         }
                         let u = icons::small_button(ui, "rows-2", "Unified");
@@ -694,6 +722,7 @@ impl RepoTab {
                             acts.push(Action::SetDiffOptions {
                                 split: false,
                                 ignore_ws,
+                                whole_file,
                             });
                         }
                     });
@@ -759,20 +788,33 @@ impl RepoTab {
         let shift = ui.input(|i| i.modifiers.shift);
         // A changed line clicked: (line, extend the selection).
         let mut clicked: Option<usize> = None;
+        // Text selection by dragging: where the press and the pointer are in the lines drawn.
+        let text_sel = view.text_sel;
+        let (press, pointer) = ui.input(|i| (i.pointer.press_origin(), i.pointer.interact_pos()));
+        let mut press_hit: Option<(usize, Side, usize)> = None;
+        // Each with whether the pointer is over that line's half, not only at its height.
+        let mut pointer_hits: Vec<((usize, Side, usize), bool)> = Vec::new();
+        let mut text_hover = false;
         let mut paint = |ui: &mut Ui, rect: Rect, i: usize, side: Side, scroll_x: f32| {
             let kind = data.lines.get(i).map(|l| l.kind);
             let pickable = partial && matches!(kind, Some(Kind::Add | Kind::Del));
-            paint_line(
-                ui,
-                rect,
-                data,
-                i,
-                side,
-                scroll_x,
-                &font,
-                &t,
-                view.chosen.contains(&i),
+            let picked = view.chosen.contains(&i);
+            let sel_chars = text_sel.and_then(|s| s.chars_of(i, side));
+            let placed = paint_line(
+                ui, rect, data, i, side, scroll_x, &font, &t, picked, sel_chars,
             );
+            // Where the drag started and where the pointer is, in this line's text.
+            if let Some((origin, galley)) = placed.filter(|_| kind.is_some_and(|k| side.shows(k))) {
+                let hit = |p: Pos2| (i, side, galley.cursor_from_pos(p - origin).index.0);
+                if let Some(p) = press.filter(|p| rect.contains(*p)) {
+                    press_hit = Some(hit(p));
+                }
+                if let Some(p) = pointer.filter(|p| rect.y_range().contains(p.y)) {
+                    let over = rect.x_range().contains(p.x);
+                    pointer_hits.push((hit(p), over));
+                    text_hover |= over && !pickable;
+                }
+            }
             if pickable {
                 let resp = ui
                     .interact(rect, ui.id().with(("diff_line", i)), Sense::click())
@@ -796,10 +838,48 @@ impl RepoTab {
                 }
             }
         };
-        egui::ScrollArea::both()
+        // Every change of the file in a strip beside the scrollbar, to see where to scroll to
+        // (above all when the whole file is shown). Clicking or dragging it scrolls there.
+        let runs = if split {
+            change_runs(data.split.iter().map(|&(l, r)| {
+                let kind = |i: Option<usize>| i.and_then(|i| data.lines.get(i)).map(|x| x.kind);
+                (kind(l) == Some(Kind::Del), kind(r) == Some(Kind::Add))
+            }))
+        } else {
+            change_runs(
+                data.lines
+                    .iter()
+                    .map(|l| (l.kind == Kind::Del, l.kind == Kind::Add)),
+            )
+        };
+        let area = ui.available_rect_before_wrap();
+        let strip = Rect::from_min_max(pos2(area.right() - MAP_W, area.top()), area.max);
+        let body = Rect::from_min_max(area.min, pos2(strip.left() - 1.0, area.bottom()));
+        let total_h = rows as f32 * LINE_H;
+        let map = ui
+            .interact(
+                strip,
+                ui.id().with(("diff_map", &path)),
+                Sense::click_and_drag(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        // Under the lines, so dragging over them selects text (a click still picks a line).
+        let text_drag = ui.interact(
+            body,
+            ui.id().with(("diff_text", &path)),
+            Sense::click_and_drag(),
+        );
+        let mut scroll = egui::ScrollArea::both()
             .id_salt(("diff_scroll", &path, split))
-            .auto_shrink(false)
-            .show_rows(ui, LINE_H, rows, |ui, range| {
+            .auto_shrink(false);
+        if (map.clicked() || map.dragged())
+            && let Some(p) = map.interact_pointer_pos()
+        {
+            let at = ((p.y - strip.top()) / strip.height()).clamp(0.0, 1.0) * total_h;
+            scroll = scroll.vertical_scroll_offset((at - body.height() / 2.0).max(0.0));
+        }
+        let out = ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
+            scroll.show_rows(ui, LINE_H, rows, |ui, range| {
                 if split {
                     // Each half is half of what's visible, however long the lines: scrolling
                     // sideways moves the text in both, the line numbers stay.
@@ -853,9 +933,61 @@ impl RepoTab {
                         paint(ui, rect, i, Side::Unified, 0.0);
                     }
                 }
+            })
+        });
+        let shown = out.inner;
+        change_map(
+            ui,
+            strip,
+            &runs,
+            split,
+            (shown.state.offset.y, shown.inner_rect.height(), total_h),
+            &t,
+        );
+
+        // Select from where the drag started to the pointer, on the side it started on.
+        let mut sel = text_sel;
+        if text_drag.drag_started() {
+            sel = press_hit.map(|(i, side, c)| TextSel {
+                side,
+                anchor: (i, c),
+                cursor: (i, c),
+            });
+        } else if text_drag.dragged()
+            && let Some(s) = &mut sel
+            && let Some(((i, _, c), _)) = pointer_hits
+                .iter()
+                .find(|((_, side, _), _)| *side == s.side)
+        {
+            s.cursor = (*i, *c);
+        } else if text_drag.clicked() {
+            sel = None;
+        }
+        if text_hover || text_drag.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        }
+        let selected_text = sel.map(|s| s.text(&data.lines)).filter(|s| !s.is_empty());
+        if let Some(text) = &selected_text {
+            let copy = !ui.ctx().egui_wants_keyboard_input()
+                && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
+            if copy {
+                ui.ctx().copy_text(text.clone());
+            }
+        }
+        egui::Popup::context_menu(&text_drag)
+            .style(crate::theme::menu_style)
+            .show(|ui| {
+                if ui
+                    .add_enabled(selected_text.is_some(), egui::Button::new("Copy"))
+                    .clicked()
+                    && let Some(text) = &selected_text
+                {
+                    ui.ctx().copy_text(text.clone());
+                }
             });
 
         if let Some(view) = &mut self.diff {
+            view.text_sel = sel;
             if clear {
                 view.chosen.clear();
                 view.anchor = None;
@@ -949,7 +1081,7 @@ fn hunk_button(ui: &mut Ui, right: f32, y: f32, pick: Pick, hunk: usize) -> (egu
     (resp.on_hover_text(tip), r.left())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Side {
     Unified,
     Old,
@@ -958,9 +1090,140 @@ enum Side {
     Both,
 }
 
+impl Side {
+    /// Whether a line of `kind` shows on this side.
+    fn shows(self, kind: Kind) -> bool {
+        match self {
+            Side::Unified => matches!(kind, Kind::Context | Kind::Add | Kind::Del),
+            Side::Old => matches!(kind, Kind::Context | Kind::Del),
+            Side::New => matches!(kind, Kind::Context | Kind::Add),
+            Side::Both => false,
+        }
+    }
+}
+
+/// Text selected in a diff by dragging, on one side of it: from where the drag started to
+/// where the pointer is, as (line, character) positions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TextSel {
+    side: Side,
+    anchor: (usize, usize),
+    cursor: (usize, usize),
+}
+
+impl TextSel {
+    fn ordered(&self) -> ((usize, usize), (usize, usize)) {
+        (self.anchor.min(self.cursor), self.anchor.max(self.cursor))
+    }
+
+    /// The characters of line `i` selected where it shows on `side` (`usize::MAX`: through
+    /// the end of the line, line break included).
+    fn chars_of(&self, i: usize, side: Side) -> Option<Range<usize>> {
+        let (start, end) = self.ordered();
+        if side != self.side || i < start.0 || i > end.0 {
+            return None;
+        }
+        let from = if i == start.0 { start.1 } else { 0 };
+        let to = if i == end.0 { end.1 } else { usize::MAX };
+        (from < to).then_some(from..to)
+    }
+
+    /// The selected text, one line of the side per line.
+    fn text(&self, lines: &[DiffLine]) -> String {
+        let (start, end) = self.ordered();
+        let mut out: Vec<String> = Vec::new();
+        for i in start.0..=end.0 {
+            let Some(line) = lines.get(i).filter(|l| self.side.shows(l.kind)) else {
+                continue;
+            };
+            let from = if i == start.0 { start.1 } else { 0 };
+            let to = if i == end.0 { end.1 } else { usize::MAX };
+            out.push(
+                line.text
+                    .chars()
+                    .skip(from)
+                    .take(to.saturating_sub(from))
+                    .collect(),
+            );
+        }
+        out.join("\n")
+    }
+}
+
 fn filler(ui: &Ui, rect: Rect, t: &Tokens) {
     ui.painter()
         .rect_filled(rect, 0.0, t.card.gamma_multiply(0.35));
+}
+
+/// The rows of removed and of added lines, in runs: from flags (removed, added) per row.
+#[derive(Debug, Default, PartialEq)]
+struct ChangeRuns {
+    removed: Vec<Range<usize>>,
+    added: Vec<Range<usize>>,
+}
+
+fn change_runs(rows: impl Iterator<Item = (bool, bool)>) -> ChangeRuns {
+    let mut runs = ChangeRuns::default();
+    let extend = |list: &mut Vec<Range<usize>>, row: usize| match list.last_mut() {
+        Some(last) if last.end == row => last.end = row + 1,
+        _ => list.push(row..row + 1),
+    };
+    for (row, (removed, added)) in rows.enumerate() {
+        if removed {
+            extend(&mut runs.removed, row);
+        }
+        if added {
+            extend(&mut runs.added, row);
+        }
+    }
+    runs
+}
+
+/// The strip beside the diff's scrollbar: a mark for each run of changes where it sits in the
+/// file (side by side: removals on the left half, additions on the right), and the part on
+/// screen. `view`: (scroll offset, visible height, content height).
+fn change_map(
+    ui: &Ui,
+    strip: Rect,
+    runs: &ChangeRuns,
+    split: bool,
+    view: (f32, f32, f32),
+    t: &Tokens,
+) {
+    let p = ui.painter_at(strip);
+    p.rect_filled(strip, 0.0, t.chrome);
+    let (offset, visible, total) = view;
+    if total <= 0.0 {
+        return;
+    }
+    let y = |px: f32| strip.top() + px / total * strip.height();
+    let rows = total / LINE_H;
+    let span = |run: &Range<usize>, left: f32, right: f32| {
+        let top = y(run.start as f32 * LINE_H);
+        // Thin runs stay visible however long the file.
+        let bottom = y(run.end as f32 * LINE_H).max(top + 2.0);
+        Rect::from_min_max(pos2(left, top), pos2(right, bottom))
+    };
+    let mid = if split {
+        strip.center().x
+    } else {
+        strip.right()
+    };
+    let added_left = if split { mid } else { strip.left() };
+    for run in &runs.removed {
+        p.rect_filled(span(run, strip.left(), mid), 0.0, t.danger);
+    }
+    for run in &runs.added {
+        p.rect_filled(span(run, added_left, strip.right()), 0.0, t.success);
+    }
+    // The part on screen, when there is more than fits.
+    if visible < total && rows > 0.0 {
+        let seen = Rect::from_min_max(
+            pos2(strip.left(), y(offset)),
+            pos2(strip.right(), y(offset + visible).min(strip.bottom())),
+        );
+        p.rect_filled(seen, 0.0, t.text.gamma_multiply(0.12));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -975,10 +1238,10 @@ fn paint_line(
     font: &egui::FontId,
     t: &Tokens,
     selected: bool,
-) {
-    let Some(line) = data.lines.get(i) else {
-        return;
-    };
+    // Characters of the text selected by dragging.
+    text_sel: Option<Range<usize>>,
+) -> Option<(Pos2, Arc<egui::Galley>)> {
+    let line = data.lines.get(i)?;
     let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     let (bg, fg) = match line.kind {
         Kind::Add => (Some(t.diff_add_bg), t.text),
@@ -1072,7 +1335,24 @@ fn paint_line(
     } else {
         p
     };
-    p.galley(pos2(x - scroll_x, y - galley.size().y / 2.0), galley, fg);
+    let origin = pos2(x - scroll_x, y - galley.size().y / 2.0);
+    if let Some(chars) = text_sel {
+        let at = |c: usize| origin.x + galley.pos_from_cursor(CCursor::new(c)).min.x;
+        let left = at(chars.start);
+        // Selected through the end: a little past the text, for the line break.
+        let right = if chars.end == usize::MAX {
+            origin.x + galley.size().x + 6.0
+        } else {
+            at(chars.end)
+        };
+        p.rect_filled(
+            Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.bottom())),
+            0.0,
+            t.accent.gamma_multiply(0.35),
+        );
+    }
+    p.galley(origin, galley.clone(), fg);
+    Some((origin, galley))
 }
 
 /// A layout job for `spans`, with the chars in `changed` on `strong`.
@@ -1172,6 +1452,36 @@ pub(super) fn unstage_args<'a>(head: &str, path: &'a str) -> Vec<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changes_group_into_runs_per_kind() {
+        let (n, d, a, both) = ((false, false), (true, false), (false, true), (true, true));
+        let runs = change_runs([n, d, d, a, n, both, a].into_iter());
+        assert_eq!(runs.removed, vec![1..3, 5..6]);
+        assert_eq!(runs.added, vec![3..4, 5..7]);
+    }
+
+    #[test]
+    fn selected_text_follows_the_side_it_was_made_on() {
+        // 0 hunk, 1 " a", 2 "-let x = 1;", 3 "-gone", 4 "+let x = 2;", 5 " b"
+        let lines = parse("@@ -1,3 +1,3 @@\n a\n-let x = 1;\n-gone\n+let x = 2;\n b\n");
+        let sel = |side, anchor, cursor| TextSel {
+            side,
+            anchor,
+            cursor,
+        };
+        // Dragged backwards, from "let x" in the removal to the end of "a".
+        let unified = sel(Side::Unified, (2, 5), (1, 1));
+        assert_eq!(unified.text(&lines), "\nlet x");
+        // On the new side the removals are not there.
+        let new = sel(Side::New, (1, 0), (5, 1));
+        assert_eq!(new.text(&lines), "a\nlet x = 2;\nb");
+        assert_eq!(new.chars_of(4, Side::New), Some(0..usize::MAX));
+        assert_eq!(new.chars_of(4, Side::Old), None);
+        assert_eq!(new.chars_of(5, Side::New), Some(0..1));
+        // Pressed and not moved: nothing.
+        assert_eq!(sel(Side::Old, (2, 3), (2, 3)).chars_of(2, Side::Old), None);
+    }
 
     #[test]
     fn numbers_follow_hunk_headers() {
@@ -1298,10 +1608,22 @@ mod tests {
         assert_eq!(lines[2].raw, "+b\r");
     }
 
-    /// Stages, unstages and discards a few lines in a real repository.
     #[test]
     fn partial_patches_apply_with_git() {
-        let dir = std::env::temp_dir().join(format!("gitcraft-partial-{}", std::process::id()));
+        partial_patches_apply(false);
+    }
+
+    #[test]
+    fn partial_patches_of_the_whole_file_apply_with_git() {
+        partial_patches_apply(true);
+    }
+
+    /// Stages, unstages and discards a few lines in a real repository.
+    fn partial_patches_apply(whole_file: bool) {
+        let dir = std::env::temp_dir().join(format!(
+            "gitcraft-partial-{}-{whole_file}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::create_dir_all(&dir);
         let git = |args: &[&str]| git::run(Some(&dir), args);
@@ -1331,7 +1653,11 @@ mod tests {
             area,
         };
         let pick = |area, which: &dyn Fn(&DiffLine) -> bool, how: Pick| -> Result<(), String> {
-            let data = load(&dir, &DiffKey::Work(work(area)), false, true)?;
+            let opts = DiffOptions {
+                whole_file,
+                ..DiffOptions::default()
+            };
+            let data = load(&dir, &DiffKey::Work(work(area)), opts, true)?;
             assert!(data.partial);
             let chosen = (0..data.lines.len())
                 .filter(|&i| which(&data.lines[i]))
