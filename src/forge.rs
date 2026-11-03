@@ -2,8 +2,9 @@
 //! GitLab. They hold the user's login, so gitcraft never stores a token.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::git::Remote;
 
@@ -57,7 +58,17 @@ pub struct PullRequest {
     pub draft: bool,
 }
 
-fn tool(forge: Forge, repo: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn tool(forge: Forge, repo: &Path, args: &[&str]) -> Result<String, String> {
+    tool_with_input(forge, repo, args, None)
+}
+
+/// [`tool`], with `input` on its stdin.
+pub(crate) fn tool_with_input(
+    forge: Forge,
+    repo: &Path,
+    args: &[&str],
+    input: Option<&str>,
+) -> Result<String, String> {
     let mut cmd = Command::new(forge.tool());
     cmd.current_dir(repo).args(args);
     cmd.env("GH_PROMPT_DISABLED", "1").env("NO_PROMPT", "1");
@@ -67,13 +78,30 @@ fn tool(forge: Forge, repo: &Path, args: &[&str]) -> Result<String, String> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    let out = cmd.output().map_err(|_| {
+    let not_installed = |_| {
         format!(
             "{} isn't installed: gitcraft uses it for {}s",
             forge.tool(),
             forge.noun()
         )
-    })?;
+    };
+    let out = match input {
+        None => cmd.output().map_err(not_installed)?,
+        Some(input) => {
+            let mut child = cmd
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(not_installed)?;
+            if let Some(mut stdin) = child.stdin.take() {
+                // A tool that stops reading has stopped for a reason, which its exit code and
+                // error output below tell better than the broken pipe would.
+                let _ = stdin.write_all(input.as_bytes());
+            }
+            child.wait_with_output().map_err(|e| e.to_string())?
+        }
+    };
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -123,7 +151,13 @@ fn parse(forge: Forge, json: &str) -> Result<Vec<PullRequest>, String> {
                 number: item.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
                 title: s(item, &["title"]),
                 branch: s(item, &["headRefName"]),
-                author: s(item, &["author", "login"]),
+                author: {
+                    let author = s(item, &["author", "login"]);
+                    match author.strip_prefix("app/") {
+                        Some(app) => app.to_owned(),
+                        None => author,
+                    }
+                },
                 url: s(item, &["url"]),
                 draft: item
                     .get("isDraft")
@@ -297,6 +331,17 @@ mod tests {
             Some(Forge::GitLab)
         );
         assert_eq!(detect(&[r("origin", "C:/repos/bare.git")]), None);
+    }
+
+    #[test]
+    fn an_app_opening_a_pull_request_goes_by_its_name_alone() {
+        let json = r#"[{"number": 1, "title": "t", "headRefName": "b",
+            "author": {"login": "app/github-actions"}, "url": "u", "isDraft": false}]"#;
+        let list = parse(Forge::GitHub, json);
+        assert_eq!(
+            list.map(|l| l[0].author.clone()).as_deref(),
+            Ok("github-actions")
+        );
     }
 
     #[test]

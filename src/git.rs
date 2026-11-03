@@ -537,6 +537,12 @@ pub fn range_file_diff(
     args.push(from);
     args.extend(to);
     args.extend(["--", path]);
+    // Limited to its new name, a renamed file looks new from top to bottom.
+    let old_path = diff_files(repo, from, to)
+        .ok()
+        .and_then(|files| files.into_iter().find(|file| file.path == path))
+        .and_then(|file| file.old_path);
+    args.extend(old_path.as_deref());
     run(Some(repo), &args)
 }
 
@@ -1216,6 +1222,42 @@ pub fn now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_renamed_file_shows_what_changed_rather_than_all_of_it() -> Result<(), String> {
+        let text = |e: std::io::Error| e.to_string();
+        let dir = std::env::temp_dir().join(format!("gitcraft-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(text)?;
+        let git = |args: &[&str]| -> Result<String, String> {
+            let out = Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "core.autocrlf=false"])
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .map_err(text)?;
+            assert!(out.status.success(), "{args:?}");
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        };
+        git(&["init", "-q"])?;
+        let lines: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(dir.join("old.txt"), &lines).map_err(text)?;
+        git(&["add", "-A"])?;
+        git(&["commit", "-qm", "one"])?;
+        let from = git(&["rev-parse", "HEAD"])?;
+        std::fs::remove_file(dir.join("old.txt")).map_err(text)?;
+        std::fs::write(dir.join("new.txt"), lines.replace("line 7\n", "seven\n")).map_err(text)?;
+        git(&["add", "-A"])?;
+        git(&["commit", "-qm", "two"])?;
+        let to = git(&["rev-parse", "HEAD"])?;
+        let diff = range_file_diff(&dir, &from, Some(&to), "new.txt", false)?;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(diff.contains("rename from old.txt"), "{diff}");
+        assert!(diff.contains("+seven"), "{diff}");
+        assert!(!diff.contains("+line 1\n"), "{diff}");
+        Ok(())
+    }
 
     #[test]
     fn gitignore_lines() {

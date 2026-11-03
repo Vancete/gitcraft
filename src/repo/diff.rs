@@ -12,10 +12,12 @@ use egui::{
 };
 
 use super::highlight::{self, Spans};
+use super::pr_review::{LineTarget, PrAct, paint_gutter_mark, target_of, unified_spot};
 use super::widgets;
 use super::{Action, DiffKey, Refresh, RepoTab, ops, short};
 use crate::git::{self, Area};
 use crate::icons;
+use crate::pull_request::DiffSide;
 use crate::theme::{self, Tokens};
 
 const LINE_H: f32 = 19.0;
@@ -731,6 +733,38 @@ impl RepoTab {
             return;
         }
 
+        // A file of the pull request shown: its lines take comments.
+        let review = self.diff_review(&view.key);
+        if review.as_ref().is_some_and(|r| r.target.is_some())
+            && let Some(pr) = &mut self.pr_view
+        {
+            let draft = self.pr_drafts.entry(pr.number).or_default();
+            egui::Panel::bottom("pr_line_comment")
+                .frame(
+                    egui::Frame::new()
+                        .fill(t.card)
+                        .inner_margin(egui::Margin::symmetric(12, 10))
+                        .stroke(Stroke::new(1.0, t.separator)),
+                )
+                .show(ui, |ui| {
+                    // The line as it is in the pull request, to suggest a change to.
+                    let current = draft
+                        .target
+                        .as_ref()
+                        .filter(|t| t.side == DiffSide::Right)
+                        .and_then(|t| {
+                            data.lines
+                                .iter()
+                                .find(|l| {
+                                    l.kind != Kind::Del && l.new.map(u64::from) == Some(t.line)
+                                })
+                                .and_then(|l| l.raw.get(1..))
+                        });
+                    super::pr_review::line_panel(ui, pr, draft, current, acts);
+                    super::pr_view::only_web_links(ui.ctx());
+                });
+        }
+
         let font = theme::mono(12.0);
         let char_w = ui
             .painter()
@@ -762,7 +796,52 @@ impl RepoTab {
         let mut paint = |ui: &mut Ui, rect: Rect, i: usize, side: Side| {
             let kind = data.lines.get(i).map(|l| l.kind);
             let pickable = partial && matches!(kind, Some(Kind::Add | Kind::Del));
-            paint_line(ui, rect, data, i, side, &font, &t, view.chosen.contains(&i));
+            let column = match side {
+                Side::Old => Some(DiffSide::Left),
+                Side::New => Some(DiffSide::Right),
+                Side::Unified | Side::Both => None,
+            };
+            let spot = data
+                .lines
+                .get(i)
+                .filter(|_| side != Side::Both)
+                .and_then(|l| match (&review, column) {
+                    (Some(review), None) => unified_spot(l.kind, l.old, l.new, &review.marks),
+                    _ => target_of(l.kind, l.old, l.new, column),
+                });
+            let active = spot.is_some_and(|(s, n)| {
+                review
+                    .as_ref()
+                    .and_then(|r| r.target.as_ref())
+                    .is_some_and(|t| t.side == s && t.line == n)
+            });
+            let picked = view.chosen.contains(&i) || active;
+            paint_line(ui, rect, data, i, side, &font, &t, picked);
+            if let (Some(review), Some((spot_side, number))) = (&review, spot) {
+                let gutter = if side == Side::Unified {
+                    NUM_W * 2.0
+                } else {
+                    NUM_W
+                };
+                let area = Rect::from_min_size(rect.min, vec2(gutter, LINE_H));
+                let resp = ui
+                    .interact(
+                        area,
+                        ui.id().with(("diff_gutter", i, column)),
+                        Sense::click(),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("Comment on this line");
+                let count = review.marks.get(&(spot_side, number)).copied();
+                paint_gutter_mark(ui, area, count, resp.hovered(), active);
+                if resp.clicked() {
+                    acts.push(Action::Pr(PrAct::OpenLine(LineTarget {
+                        path: review.path.clone(),
+                        line: number,
+                        side: spot_side,
+                    })));
+                }
+            }
             if pickable {
                 let resp = ui
                     .interact(rect, ui.id().with(("diff_line", i)), Sense::click())
@@ -855,6 +934,7 @@ impl RepoTab {
             self.compare
                 .as_ref()
                 .and_then(|c| c.name_of(rev))
+                .or_else(|| self.pr_name_of(rev))
                 .unwrap_or_else(|| short(rev).to_owned())
         };
         match to {
