@@ -28,6 +28,8 @@ pub struct Settings {
     /// An absolute date column (tips show a relative date either way).
     pub show_date: bool,
     pub show_hash: bool,
+    /// Changed files in a tree of their folders rather than a flat list.
+    pub files_as_tree: bool,
     /// Background fetch interval in minutes; 0 turns it off.
     pub auto_fetch_minutes: u32,
     /// Load avatars: GitHub / GitLab accounts on repositories hosted there, Gravatar otherwise.
@@ -53,6 +55,7 @@ impl Default for Settings {
             show_author: true,
             show_date: false,
             show_hash: false,
+            files_as_tree: true,
             auto_fetch_minutes: 10,
             avatars: true,
             editor: "code".to_owned(),

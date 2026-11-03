@@ -2,6 +2,7 @@
 
 use egui::{Align2, Key, RichText, Sense, Ui, pos2, vec2};
 
+use super::branch_tree;
 use super::diff::unstage_args;
 use super::widgets::{self, RowExtra};
 use super::{Action, Dialog, DiffKey, DiffView, Refresh, RepoTab, Reword, abort_action, ops};
@@ -39,6 +40,7 @@ impl RepoTab {
                         super::sidebar::stash_menu_items(ui, acts, &stash.name, idle);
                     });
             }
+            branch_tree::files_toggle(ui);
         });
         if let Some(stash) = &stash {
             egui::Frame::new()
@@ -244,7 +246,7 @@ impl RepoTab {
                 let note = (detail.parents.len() > 1).then_some("vs. first parent");
                 files_header(ui, &detail.files, note);
                 ui.spacing_mut().item_spacing.y = 0.0;
-                self.file_list(ui, acts, &detail.files, Some(&detail.hash), |path| {
+                self.file_list(ui, acts, "commit", &detail.files, Some(&detail.hash), |path| {
                     DiffKey::Commit {
                         hash: detail.hash.clone(),
                         path: path.to_owned(),
@@ -255,31 +257,41 @@ impl RepoTab {
     }
 
     /// Changed files, each opening its diff (`key`) when clicked; `rev`: where the files are,
-    /// for their menu (`None`: the working tree).
+    /// for their menu (`None`: the working tree); `tree`: which list this is, for the folders
+    /// opened and closed in it.
     fn file_list(
         &self,
         ui: &mut Ui,
         acts: &mut Vec<Action>,
+        tree: &str,
         files: &[ChangedFile],
         rev: Option<&str>,
         key: impl Fn(&str) -> DiffKey,
     ) {
-        for f in files {
-            let key = key(&f.path);
-            let selected = self.open_key() == Some(&key);
-            let r = widgets::file_row(
-                ui,
-                f.status,
-                &f.path,
-                f.old_path.as_deref(),
-                selected,
-                RowExtra::Stats(f.added, f.removed),
-            );
-            widgets::file_menu(&r.row, &f.path, rev, false, acts);
-            if r.row.clicked() {
-                acts.push(Action::OpenDiff(key));
-            }
-        }
+        let id = egui::Id::new(("file-folder", &self.path, tree));
+        let selected = |f: &&ChangedFile| self.open_key() == Some(&key(&f.path));
+        branch_tree::files(
+            ui,
+            id,
+            files,
+            |f| &f.path,
+            &selected,
+            &mut |ui, indent, f| {
+                let r = widgets::file_row(
+                    ui,
+                    f.status,
+                    &f.path,
+                    f.old_path.as_deref(),
+                    indent,
+                    selected(&f),
+                    RowExtra::Stats(f.added, f.removed),
+                );
+                widgets::file_menu(&r.row, &f.path, rev, false, acts);
+                if r.row.clicked() {
+                    acts.push(Action::OpenDiff(key(&f.path)));
+                }
+            },
+        );
     }
 
     /// Right pane while comparing: the two ends, how far apart they are, and the files that
@@ -291,6 +303,7 @@ impl RepoTab {
             if icons::small_button(ui, "x", "Close (Esc)").clicked() {
                 acts.push(Action::CloseCompare);
             }
+            branch_tree::files_toggle(ui);
         });
         let data = c.data.as_ref().and_then(|d| d.as_ref().ok());
         let target_name = if c.target.is_some() {
@@ -390,7 +403,7 @@ impl RepoTab {
                     .auto_shrink(false)
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
-                        self.file_list(ui, acts, &d.files, d.to.as_deref(), |path| {
+                        self.file_list(ui, acts, "compare", &d.files, d.to.as_deref(), |path| {
                             DiffKey::Range {
                                 from: d.from.clone(),
                                 to: d.to.clone(),
@@ -405,7 +418,7 @@ impl RepoTab {
     fn changes_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
         let t = Tokens::get(ui.ctx());
         let idle = self.busy_op.is_none();
-        widgets::panel_header(ui, "Changes", |_| {});
+        widgets::panel_header(ui, "Changes", branch_tree::files_toggle);
 
         // The commit box stays at the bottom.
         egui::Panel::bottom("commit_box")
@@ -459,16 +472,22 @@ impl RepoTab {
                 let head = self.refs.head.clone();
                 if !self.work.conflicted.is_empty() {
                     list_header(ui, "CONFLICTED", self.work.conflicted.len(), None);
-                    for f in &self.work.conflicted {
-                        match self.work_row(ui, acts, f, &[("check", "Mark resolved (stage)")]) {
+                    let buttons = [("check", "Mark resolved (stage)")];
+                    self.work_list(
+                        ui,
+                        acts,
+                        "conflicted",
+                        &self.work.conflicted,
+                        &buttons,
+                        |acts, f, click| match click {
                             RowClick::Open => acts.push(Action::OpenDiff(DiffKey::Work(f.clone()))),
                             RowClick::Button(_) => acts.push(stage_action(
                                 "Mark resolved",
                                 vec![vec!["add", "--", &f.path]],
                             )),
                             RowClick::None => {}
-                        }
-                    }
+                        },
+                    );
                 }
 
                 let unstaged = &self.work.unstaged;
@@ -480,21 +499,22 @@ impl RepoTab {
                 ) {
                     acts.push(stage_action("Stage all", vec![vec!["add", "-A"]]));
                 }
-                for f in unstaged {
-                    match self.work_row(
-                        ui,
-                        acts,
-                        f,
-                        &[("undo-2", "Discard changes…"), ("plus", "Stage")],
-                    ) {
+                let buttons = [("undo-2", "Discard changes…"), ("plus", "Stage")];
+                self.work_list(
+                    ui,
+                    acts,
+                    "unstaged",
+                    unstaged,
+                    &buttons,
+                    |acts, f, click| match click {
                         RowClick::Open => acts.push(Action::OpenDiff(DiffKey::Work(f.clone()))),
                         RowClick::Button(0) => acts.push(Action::Dialog(discard_dialog(f))),
                         RowClick::Button(_) => {
                             acts.push(stage_action("Stage", vec![vec!["add", "--", &f.path]]))
                         }
                         RowClick::None => {}
-                    }
-                }
+                    },
+                );
                 if unstaged.is_empty() {
                     empty_hint(ui, "Nothing to stage");
                 }
@@ -513,19 +533,51 @@ impl RepoTab {
                     };
                     acts.push(stage_action("Unstage all", vec![all]));
                 }
-                for f in staged {
-                    match self.work_row(ui, acts, f, &[("minus", "Unstage")]) {
+                let buttons = [("minus", "Unstage")];
+                self.work_list(
+                    ui,
+                    acts,
+                    "staged",
+                    staged,
+                    &buttons,
+                    |acts, f, click| match click {
                         RowClick::Open => acts.push(Action::OpenDiff(DiffKey::Work(f.clone()))),
                         RowClick::Button(_) => {
                             acts.push(stage_action("Unstage", vec![unstage_args(&head, &f.path)]))
                         }
                         RowClick::None => {}
-                    }
-                }
+                    },
+                );
                 if staged.is_empty() {
                     empty_hint(ui, "Stage files to choose what goes in the commit");
                 }
             });
+    }
+
+    /// Working-tree files, each with `buttons`; `on` handles what was clicked on a row. `tree`:
+    /// which list this is, for the folders opened and closed in it.
+    fn work_list(
+        &self,
+        ui: &mut Ui,
+        acts: &mut Vec<Action>,
+        tree: &str,
+        files: &[StatusFile],
+        buttons: &[(&str, &str)],
+        mut on: impl FnMut(&mut Vec<Action>, &StatusFile, RowClick),
+    ) {
+        let id = egui::Id::new(("file-folder", &self.path, tree));
+        let selected = |f: &&StatusFile| self.open_key() == Some(&DiffKey::Work((*f).clone()));
+        branch_tree::files(
+            ui,
+            id,
+            files,
+            |f| &f.path,
+            &selected,
+            &mut |ui, indent, f| {
+                let click = self.work_row(ui, acts, f, indent, buttons);
+                on(acts, f, click);
+            },
+        );
     }
 
     /// One working-tree file with hover buttons (hidden while an operation runs).
@@ -534,6 +586,7 @@ impl RepoTab {
         ui: &mut Ui,
         acts: &mut Vec<Action>,
         f: &StatusFile,
+        indent: Option<f32>,
         buttons: &[(&str, &str)],
     ) -> RowClick {
         let key = DiffKey::Work(f.clone());
@@ -544,6 +597,7 @@ impl RepoTab {
             f.code,
             &f.path,
             f.old_path.as_deref(),
+            indent,
             selected,
             RowExtra::Buttons(buttons),
         );
