@@ -53,7 +53,8 @@ enum Msg {
     More(Result<Vec<Commit>, String>),
     Status(Result<WorkStatus, String>),
     Detail(String, Result<CommitDetail, String>),
-    Diff(DiffKey, Result<diff::DiffData, String>),
+    /// The answer to the diff request numbered so (see [`DiffView::next_request`]).
+    Diff(u64, Result<diff::DiffData, String>),
     FileHistory(String, Result<Vec<git::FileCommit>, String>),
     Blame(String, Option<String>, Result<file_view::BlameData, String>),
     RebaseCommits {
@@ -173,7 +174,13 @@ pub(crate) struct DiffView {
     anchor: Option<usize>,
     /// Text selected by dragging over the lines, to copy.
     text_sel: Option<diff::TextSel>,
+    /// The latest read of this diff: only its answer is shown, so a slower answer to an older
+    /// read (before the whitespace or whole-file setting changed…) can't replace it.
+    request: u64,
 }
+
+/// Numbers the diff reads of every tab, so no two diffs ever wait for the same number.
+static DIFF_REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl DiffView {
     fn new(key: DiffKey) -> Self {
@@ -183,7 +190,26 @@ impl DiffView {
             chosen: Default::default(),
             anchor: None,
             text_sel: None,
+            request: 0,
         }
+    }
+
+    /// Numbers a new read of this diff; from now on only its answer is shown.
+    fn next_request(&mut self) -> u64 {
+        self.request = DIFF_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        self.request
+    }
+
+    /// Shows the answer to the read numbered `request`, unless a newer read was made since.
+    fn arrived(&mut self, request: u64, result: Result<diff::DiffData, String>) {
+        if request != self.request {
+            return;
+        }
+        self.data = Some(result);
+        // The lines may have moved.
+        self.chosen.clear();
+        self.anchor = None;
+        self.text_sel = None;
     }
 }
 
@@ -915,7 +941,8 @@ impl RepoTab {
 
     /// Reads the open diff again, showing the old one meanwhile.
     fn refresh_diff(&mut self, ctx: &egui::Context) {
-        let Some(view) = &self.diff else { return };
+        let Some(view) = &mut self.diff else { return };
+        let request = view.next_request();
         let key = view.key.clone();
         let path = self.path.clone();
         let opts = git::DiffOptions {
@@ -925,7 +952,7 @@ impl RepoTab {
         let dark = Tokens::get(ctx).dark();
         spawn(&self.tx, ctx, move || {
             let result = diff::load(&path, &key, opts, dark);
-            Msg::Diff(key, result)
+            Msg::Diff(request, result)
         });
     }
 
@@ -1668,15 +1695,9 @@ impl RepoTab {
                     view.blame = Some(result);
                 }
             }
-            Msg::Diff(key, result) => {
-                if let Some(view) = &mut self.diff
-                    && view.key == key
-                {
-                    view.data = Some(result);
-                    // The lines may have moved.
-                    view.chosen.clear();
-                    view.anchor = None;
-                    view.text_sel = None;
+            Msg::Diff(request, result) => {
+                if let Some(view) = &mut self.diff {
+                    view.arrived(request, result);
                 }
             }
             Msg::PrDetails(request, result) => self.pr_details_arrived(request, *result, ctx),
@@ -2715,7 +2736,28 @@ fn spawn(tx: &Sender<Msg>, ctx: &egui::Context, job: impl FnOnce() -> Msg + Send
 
 #[cfg(test)]
 mod tests {
-    use super::headline;
+    use super::{DiffKey, DiffView, headline};
+
+    #[test]
+    fn an_older_diff_answer_does_not_replace_a_newer_one() {
+        let key = DiffKey::Commit {
+            hash: "abc".to_owned(),
+            path: "a.rs".to_owned(),
+        };
+        let mut view = DiffView::new(key.clone());
+        let older = view.next_request();
+        let newer = view.next_request();
+        view.arrived(newer, Err("newer".to_owned()));
+        view.arrived(older, Err("older".to_owned()));
+        assert!(matches!(&view.data, Some(Err(e)) if e == "newer"));
+        // Nor an answer to a diff opened before, of the same file.
+        let mut reopened = DiffView::new(key);
+        let request = reopened.next_request();
+        reopened.arrived(newer, Err("closed".to_owned()));
+        assert!(reopened.data.is_none());
+        reopened.arrived(request, Err("open".to_owned()));
+        assert!(matches!(&reopened.data, Some(Err(e)) if e == "open"));
+    }
 
     #[test]
     fn headline_prefers_conflicts_and_errors() {
