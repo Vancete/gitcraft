@@ -24,6 +24,7 @@ mod pinned_sections;
 mod pr_merge;
 mod pr_review;
 mod pr_view;
+pub(crate) mod pull;
 mod rebase;
 mod rewrite;
 mod sidebar;

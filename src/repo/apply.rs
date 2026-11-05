@@ -73,13 +73,8 @@ impl RepoTab {
                     ctx,
                 )
             }
-            Action::Pull => self.run_undoable(
-                "Pull",
-                ops(&[&["pull", "--ff-only"]]),
-                Refresh::All,
-                Undo::HeadMove { mode: "--keep" },
-                ctx,
-            ),
+            Action::Pull => self.pull(Settings::get(ctx).pull_mode, ctx),
+            Action::PullWith(mode) => self.pull(mode, ctx),
             Action::Push => self.push(ctx),
             Action::Reload => self.reload(ctx),
             Action::LoadMore => self.load_more(ctx),

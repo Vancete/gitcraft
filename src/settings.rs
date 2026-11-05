@@ -55,6 +55,8 @@ pub struct Settings {
     pub diff_whole_file: bool,
     /// Background fetch interval in minutes; 0 turns it off.
     pub auto_fetch_minutes: u32,
+    /// What the toolbar's Pull does.
+    pub pull_mode: crate::repo::pull::PullMode,
     /// Load avatars: GitHub / GitLab accounts on repositories hosted there, Gravatar otherwise.
     pub avatars: bool,
     /// Command that opens a folder or file in the user's editor.
@@ -95,6 +97,7 @@ impl Default for Settings {
             diff_split: false,
             diff_whole_file: false,
             auto_fetch_minutes: 10,
+            pull_mode: Default::default(),
             avatars: true,
             editor: "code".to_owned(),
             notifications: true,
@@ -291,6 +294,15 @@ impl Settings {
                     ui.label(RichText::new("0 = off").color(t.text_faint).small());
                 });
                 ui.end_row();
+                ui.label("Pull");
+                egui::ComboBox::from_id_salt("settings-pull")
+                    .selected_text(self.pull_mode.label())
+                    .show_ui(ui, |ui| {
+                        for mode in crate::repo::pull::PullMode::ALL {
+                            ui.selectable_value(&mut self.pull_mode, mode, mode.label());
+                        }
+                    });
+                ui.end_row();
                 ui.label("Editor command");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.editor)
@@ -427,6 +439,7 @@ mod tests {
             last_resized: Some(crate::repo::columns::Bar::Graph),
             column_push: 12.5,
             diff_whole_file: true,
+            pull_mode: crate::repo::pull::PullMode::Rebase,
             ..Settings::default()
         };
         let mut storage = Memory::default();

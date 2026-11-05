@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use super::pull::PullMode;
 use super::toolbar::reveal_label;
 use super::{Dialog, DiffKey, Refresh, RepoTab, Undo, ci_view, diff, file_view, ops, pr_review};
 use crate::git::{self, InProgress};
@@ -46,7 +47,9 @@ pub(crate) enum Action {
     Dialog(Dialog),
     Commit,
     Fetch,
+    /// Pull the way the settings say.
     Pull,
+    PullWith(PullMode),
     Push,
     Reload,
     LoadMore,
@@ -196,6 +199,11 @@ impl RepoTab {
             ("Fetch".into(), "remote".into(), Action::Fetch),
             ("Pull".into(), "remote".into(), Action::Pull),
             ("Push".into(), "remote".into(), Action::Push),
+        ];
+        items.extend(
+            PullMode::ALL.map(|m| (m.label().into(), "remote".into(), Action::PullWith(m))),
+        );
+        items.extend([
             ("Undo".into(), "Ctrl+Z".into(), Action::Undo),
             ("Redo".into(), "Ctrl+Y".into(), Action::Redo),
             (
@@ -232,7 +240,7 @@ impl RepoTab {
                 "folder".into(),
                 Action::OpenInEditor(PathBuf::new()),
             ),
-        ];
+        ]);
         if let Some(url) = self.web_page() {
             items.push((
                 "Open in browser".into(),

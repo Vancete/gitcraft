@@ -6,8 +6,10 @@ use std::time::Duration;
 
 use egui::Ui;
 
+use super::pull::pull_menu;
 use super::{Action, Dialog, RepoTab, abort_action, ci_status, widgets};
 use crate::icons;
+use crate::settings::Settings;
 use crate::theme::Tokens;
 
 impl RepoTab {
@@ -81,12 +83,22 @@ impl RepoTab {
             .and_then(|c| self.refs.local.iter().find(|b| &b.name == c))
             .map(|b| b.ahead_behind())
             .unwrap_or((0, 0));
-        if icons::tool_button_count(ui, "arrow-down-to-line", "Pull", behind, idle && has_remote)
-            .on_hover_text("Fast-forward the current branch (git pull --ff-only)")
-            .clicked()
-        {
+        let mode = Settings::get(ui.ctx()).pull_mode;
+        let pull =
+            icons::tool_button_count(ui, "arrow-down-to-line", "Pull", behind, idle && has_remote)
+                .on_hover_text(mode.tip());
+        if pull.clicked() {
             acts.push(Action::Pull);
         }
+        egui::Popup::context_menu(&pull)
+            .style(crate::theme::menu_style)
+            .show(|ui| pull_menu(ui, acts));
+        let more = ui.add_enabled_ui(idle && has_remote, |ui| {
+            icons::small_button(ui, "chevron-down", "What Pull does, and Fetch all")
+        });
+        egui::Popup::menu(&more.inner)
+            .style(crate::theme::menu_style)
+            .show(|ui| pull_menu(ui, acts));
         if icons::tool_button_count(ui, "arrow-up-from-line", "Push", ahead, idle && has_remote)
             .on_hover_text("Push the current branch (publishes it if it has no upstream yet)")
             .clicked()

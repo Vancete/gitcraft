@@ -98,6 +98,8 @@ so your config, credentials and hooks apply as usual.
 
 - Undo, redo, Fetch, Pull and Push (with incoming / outgoing counts), new branch, stash, terminal,
   search, open the folder (Explorer / Finder, your editor), refresh (F5).
+- Pull's arrow (or a right-click on it) sets what it does: fast-forward, merging when the branch
+  has diverged; fast-forward only; or rebase. Also in Settings, and the menu has _Fetch all_.
 - Background fetch every few minutes (Settings; 0 turns it off).
 - HTTPS sign-in: when a remote wants a username and password (or token) and no credential helper
   provides them, a dialog asks and the operation runs again. They stay in memory for the tab;
