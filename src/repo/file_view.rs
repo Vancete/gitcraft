@@ -37,6 +37,8 @@ pub(crate) struct BlameData {
     spans: Option<Vec<Spans>>,
     /// Oldest and newest commit time, for the age colour.
     span: (i64, i64),
+    /// Characters in the longest line, for the width to scroll (counted once, not every frame).
+    longest: usize,
 }
 
 impl FileView {
@@ -70,7 +72,18 @@ pub(crate) fn load_blame(
     let spans = highlight::highlight(path, lines.iter().map(|l| l.text.as_str()), dark);
     let times = lines.iter().filter(|l| !l.uncommitted()).map(|l| l.time);
     let span = (times.clone().min().unwrap_or(0), times.max().unwrap_or(0));
-    Ok(BlameData { lines, spans, span })
+    // A tab is drawn four spaces wide (the diff expands them; blame keeps them).
+    let longest = lines
+        .iter()
+        .map(|l| l.text.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum())
+        .max()
+        .unwrap_or(0);
+    Ok(BlameData {
+        lines,
+        spans,
+        span,
+        longest,
+    })
 }
 
 impl RepoTab {
@@ -245,12 +258,7 @@ impl RepoTab {
             .layout_no_wrap("M".to_owned(), font.clone(), t.text)
             .size()
             .x;
-        let longest = data
-            .lines
-            .iter()
-            .map(|l| l.text.chars().count())
-            .max()
-            .unwrap_or(0) as f32;
+        let longest = data.longest as f32;
         let width = (GUTTER_W + NUM_W + 16.0 + longest * char_w + 24.0).max(ui.available_width());
         ui.spacing_mut().item_spacing.y = 0.0;
         egui::ScrollArea::both()

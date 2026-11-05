@@ -113,6 +113,10 @@ impl Cols {
 
     /// The shown columns right of `bar` give `push` between them, nearest first.
     fn give_push(&mut self, bar: Bar, mut push: f32) {
+        // Not a number (an edited settings file) pushes nothing.
+        if push.is_nan() {
+            return;
+        }
         for col in TRAILING.iter().skip_while(|&&c| c != bar).skip(1) {
             let width = self.width_mut(*col);
             let taken = push.clamp(0.0, (*width - MIN_COL_W).max(0.0));
@@ -156,6 +160,13 @@ impl Bar {
     pub fn drag(self, prefs: &Cols, last: Option<Bar>, dx: f32, available: f32) -> Cols {
         let shown = prefs.squeezed(available, last);
         let mut next = if last == Some(self) { *prefs } else { shown };
+        // Only what the columns right of it can still give counts: once a pushed column is
+        // hidden, the rest of the push is gone, or the bar would wait for the pointer to cross it.
+        next.push = if next.push > 0.0 {
+            next.push.min(prefs.slack_right_of(self))
+        } else {
+            0.0
+        };
         // Where the bar is, counting how far it was pulled past the column's minimum.
         let own = shown.width(self) - next.push;
         (*next.width_mut(self), next.push) = self.dragged(&shown, own, dx, available);
@@ -397,6 +408,45 @@ mod tests {
             ..pushed
         };
         assert_eq!(hidden.squeezed(AVAILABLE, Some(Bar::Author)).when, 110.0);
+    }
+
+    #[test]
+    fn hiding_the_pushed_column_leaves_no_dead_zone_on_the_pushing_bar() {
+        // The author pushed the when column 60 past its own minimum.
+        let pushed = drag(with_when(), None, Bar::Author, 10.0, 100);
+        assert_eq!(pushed.push, 60.0);
+        // Then the when column is hidden: nothing is left to push.
+        let hidden = Cols {
+            when: 0.0,
+            ..pushed
+        };
+        assert_eq!(
+            hidden.squeezed(AVAILABLE, Some(Bar::Author)).author,
+            MIN_COL_W
+        );
+        // Dragging the author bar 10 to the left widens the author by 10 straight away.
+        let next = Bar::Author.drag(&hidden, Some(Bar::Author), -10.0, AVAILABLE);
+        assert_eq!(next.squeezed(AVAILABLE, Some(Bar::Author)).author, 60.0);
+        assert_eq!(next.push, 0.0);
+    }
+
+    #[test]
+    fn a_push_that_is_not_a_number_pushes_nothing() {
+        let prefs = Cols {
+            push: f32::NAN,
+            ..with_when()
+        };
+        let shown = prefs.squeezed(AVAILABLE, Some(Bar::Author));
+        assert_eq!(
+            shown,
+            Cols {
+                push: 0.0,
+                ..with_when()
+            }
+        );
+        let next = Bar::Author.drag(&prefs, Some(Bar::Author), 10.0, AVAILABLE);
+        assert_eq!(next.author, 140.0);
+        assert_eq!(next.push, 0.0);
     }
 
     #[test]
