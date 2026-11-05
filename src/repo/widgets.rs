@@ -17,6 +17,21 @@ pub fn toolbar_separator(ui: &mut Ui) {
 
 /// Width of a folded side panel: its footer's toggle and the footer's margins.
 pub const FOLDED_W: f32 = 36.0;
+/// Height of [`panel_header`].
+pub const PANEL_HEADER_H: f32 = 30.0;
+
+/// How far a side panel whose outer edge belongs at `outer_edge` (the right one for a panel
+/// on the right) is slid out of place. A panel folding or opening slides toward its outer
+/// edge, where the part still in view is: what is moved back by this stays put there instead
+/// of sliding out of sight and back.
+pub fn slide_offset(ui: &Ui, outer_edge: f32, right: bool) -> f32 {
+    let panel = ui.max_rect();
+    if right {
+        outer_edge - panel.right()
+    } else {
+        outer_edge - panel.left()
+    }
+}
 
 /// The row of buttons along the bottom of a side panel, starting from its outer edge (the
 /// right one for a panel on the right), which lies at `outer_edge`. Call it before the
@@ -29,14 +44,7 @@ pub fn panel_footer(
     add_buttons: impl FnOnce(&mut Ui),
 ) {
     let t = Tokens::get(ui.ctx());
-    // A panel folding or opening slides toward its outer edge, where the part still in view
-    // is; the buttons stay put there instead of sliding out of sight and back.
-    let panel = ui.max_rect();
-    let slid = if right {
-        outer_edge - panel.right()
-    } else {
-        outer_edge - panel.left()
-    };
+    let slid = slide_offset(ui, outer_edge, right);
     egui::Panel::bottom(id)
         .frame(
             egui::Frame::new()
@@ -81,7 +89,8 @@ pub fn chip(ui: &mut Ui, text: &str, color: Color32) -> Response {
 /// title, and room on the right for buttons.
 pub fn panel_header(ui: &mut Ui, title: &str, add_buttons: impl FnOnce(&mut Ui)) {
     let t = Tokens::get(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), PANEL_HEADER_H), Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, 0.0, t.tab_strip);
     let font = theme::semibold(11.5);

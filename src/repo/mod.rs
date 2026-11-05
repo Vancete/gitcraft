@@ -325,6 +325,8 @@ pub(crate) enum Action {
     ToggleTerminal,
     /// Collapse or bring back the branches panel.
     ToggleBranches,
+    /// Open the branches panel at a section (by its key), or in its filter when `None`.
+    OpenBranches(Option<&'static str>),
     /// Collapse or bring back the detail panel.
     ToggleDetail,
     NewTerminal {
@@ -482,6 +484,10 @@ pub struct RepoTab {
     branch_filter: String,
     /// Where a clicked jump mark wants the sidebar scrolled to.
     sidebar_jump: Option<f32>,
+    /// A sidebar section to open and scroll to, asked for from the folded sidebar.
+    sidebar_reveal: Option<&'static str>,
+    /// Put the cursor in the branch filter on the next frame.
+    focus_branch_filter: bool,
     /// Jump to the changes row on the next rebuild (after an operation left conflicts).
     focus_wip: bool,
     last_fetch: Instant,
@@ -579,6 +585,8 @@ impl RepoTab {
             status: None,
             branch_filter: String::new(),
             sidebar_jump: None,
+            sidebar_reveal: None,
+            focus_branch_filter: false,
             focus_wip: false,
             last_fetch: Instant::now(),
             terminals: Vec::new(),
@@ -1914,6 +1922,15 @@ impl RepoTab {
                 settings.show_branches = !settings.show_branches;
                 settings.set(ctx);
             }
+            Action::OpenBranches(section) => {
+                let mut settings = Settings::get(ctx);
+                settings.show_branches = true;
+                settings.set(ctx);
+                match section {
+                    Some(key) => self.sidebar_reveal = Some(key),
+                    None => self.focus_branch_filter = true,
+                }
+            }
             Action::ToggleDetail => {
                 let mut settings = Settings::get(ctx);
                 settings.show_detail = !settings.show_detail;
@@ -2284,6 +2301,8 @@ impl RepoTab {
                 });
                 if open {
                     self.sidebar(ui, &mut acts);
+                } else {
+                    self.folded_sidebar(ui, area.left(), &mut acts);
                 }
             },
         );

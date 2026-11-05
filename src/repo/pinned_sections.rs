@@ -45,13 +45,16 @@ pub(super) struct Sections {
     /// Identifies the pane; their open state is saved under this.
     id: Id,
     placed: Vec<Placed>,
+    /// The key of a section to open and scroll to, as its jump mark does.
+    reveal: Option<&'static str>,
 }
 
 impl Sections {
-    pub fn new(id: Id) -> Self {
+    pub fn new(id: Id, reveal: Option<&'static str>) -> Self {
         Self {
             id,
             placed: Vec::new(),
+            reveal,
         }
     }
 
@@ -59,6 +62,9 @@ impl Sections {
     pub fn add(&mut self, ui: &mut Ui, header: Header) -> bool {
         let id = self.id.with(header.key);
         let (_, natural) = ui.allocate_space(vec2(ui.available_width(), HEADER_H));
+        if self.reveal == Some(header.key) {
+            ui.data_mut(|d| d.insert_persisted(id, true));
+        }
         let open = ui
             .data_mut(|d| d.get_persisted::<bool>(id))
             .unwrap_or(header.default_open);
@@ -80,6 +86,9 @@ impl Sections {
             let natural = placed.natural.top();
             let y = pinned_y(natural, index, count, pane.top(), pane.bottom(), HEADER_H);
             let rect = Rect::from_min_size(pos2(placed.natural.left(), y), placed.natural.size());
+            if self.reveal == Some(placed.header.key) {
+                jump = Some(jump_offset(natural, index, pane.top(), offset, HEADER_H));
+            }
             let clicked = header_row(ui, rect, natural, &mut placed, acts);
             if clicked {
                 let is_pinned = (y - natural).abs() > 0.5;
