@@ -4,6 +4,7 @@
 mod actions;
 mod apply;
 mod branch_tree;
+mod branch_visibility;
 mod ci_status;
 mod ci_view;
 pub(crate) mod columns;
@@ -87,6 +88,10 @@ pub struct RepoTab {
     history: Vec<Commit>,
     has_more: bool,
     loading_more: bool,
+    /// The branches hidden from the graph or soloed in it.
+    visibility: branch_visibility::Visibility,
+    /// What `history` was logged from: `None` for every branch.
+    log_from: Option<Vec<String>>,
     /// Counts the reloads of `history`, so that a page asked for before one is dropped.
     history_gen: u64,
     work: WorkStatus,
@@ -207,6 +212,8 @@ impl RepoTab {
             history: Vec::new(),
             has_more: false,
             loading_more: false,
+            visibility: Default::default(),
+            log_from: None,
             history_gen: 0,
             work: WorkStatus::default(),
             commits: Vec::new(),

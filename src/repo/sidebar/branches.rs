@@ -2,11 +2,12 @@
 
 use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
 
-use super::{ROW_H, matches, remote_short};
+use super::{ROW_H, matches, remote_short, visibility};
 use crate::ci::Status;
 use crate::git::Branch;
 use crate::icons;
 use crate::repo::branch_tree::{self, LeafRow, TreeView};
+use crate::repo::branch_visibility::local_ref;
 use crate::repo::graph_view;
 use crate::repo::pinned_sections::{Button, Header, Sections};
 use crate::repo::{
@@ -82,14 +83,20 @@ impl RepoTab {
             .find(|w| !w.current && w.branch.as_deref() == Some(b.name.as_str()));
         let has_pr = self.prs.iter().any(|p| p.branch == b.name);
         let ci = self.ci_status(&b.target);
+        let full = local_ref(&b.name);
+        let shown = self.branch_shown(&full, b.is_head);
         let marks = Marks {
             gone: b.upstream_gone(),
             in_worktree: elsewhere.is_some(),
             has_pr,
             ci: ci.map(|status| (b.target.as_str(), status)),
+            hidden: !shown,
         };
         let (r, ci_act) = branch_row(ui, row, b.is_head, ahead, behind, marks);
         acts.extend(ci_act);
+        if !b.is_head {
+            acts.extend(visibility::eye(ui, &r, &full, shown));
+        }
         let mut tip = match (b.upstream.is_empty(), b.upstream_gone()) {
             (true, _) => "Not tracking a remote branch".to_owned(),
             (false, true) => format!("{} was deleted on the remote", b.upstream),
@@ -168,6 +175,8 @@ impl RepoTab {
         if ui.button("Copy name").clicked() {
             ui.ctx().copy_text(b.name.clone());
         }
+        ui.separator();
+        self.visibility_items(ui, acts, &local_ref(&b.name), b.is_head);
         ui.separator();
         self.delete_items(ui, acts, b, idle);
     }
@@ -356,7 +365,7 @@ fn integrate_items(ui: &mut Ui, acts: &mut Vec<Action>, b: &Branch, current: &st
     graph_view::compare_items(ui, acts, &b.name, current);
 }
 
-/// What a branch's row shows on the right besides how far ahead and behind it is.
+/// What a branch's row shows besides its name and how far ahead and behind it is.
 struct Marks<'a> {
     /// Its upstream was deleted on the remote.
     gone: bool,
@@ -365,6 +374,8 @@ struct Marks<'a> {
     has_pr: bool,
     /// Its tip and the tip's build status.
     ci: Option<(&'a str, &'a Status)>,
+    /// Left out of the graph: the name is dimmed.
+    hidden: bool,
 }
 
 /// A branch: icon (a check for the checked-out one), name, ahead/behind counts; and what
@@ -382,6 +393,7 @@ fn branch_row(
         in_worktree,
         has_pr,
         ci,
+        hidden,
     } = marks;
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
@@ -458,7 +470,7 @@ fn branch_row(
             Align2::LEFT_CENTER,
             row.name,
             font,
-            t.text,
+            if hidden { t.text_faint } else { t.text },
         );
     (resp, ci_act)
 }

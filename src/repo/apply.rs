@@ -88,6 +88,7 @@ impl RepoTab {
                 settings.show_branches = !settings.show_branches;
                 settings.set(ctx);
             }
+            Action::BranchVisibility(change) => self.change_visibility(change, ctx),
             Action::OpenBranches(section) => {
                 let mut settings = Settings::get(ctx);
                 settings.show_branches = true;

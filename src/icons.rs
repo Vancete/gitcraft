@@ -35,6 +35,8 @@ const SOURCES: &[(&str, &str)] = icons![
     "copy",
     "database",
     "external-link",
+    "eye",
+    "eye-off",
     "file-diff",
     "flask-conical",
     "folder-git-2",

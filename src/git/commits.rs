@@ -23,26 +23,32 @@ pub struct Commit {
     pub refs: Vec<String>,
 }
 
-/// The commits of every branch (stashes aside), newest first, in an order fit for drawing the
-/// graph: `limit` of them after the first `skip`.
-pub fn log(repo: &Path, skip: usize, limit: usize) -> Result<Vec<Commit>, String> {
+/// The commits of every branch (stashes aside), or of the revisions `from` when given, newest
+/// first, in an order fit for drawing the graph: `limit` of them after the first `skip`.
+pub fn log(
+    repo: &Path,
+    from: Option<&[String]>,
+    skip: usize,
+    limit: usize,
+) -> Result<Vec<Commit>, String> {
+    // No revisions would make git log HEAD.
+    if from.is_some_and(|revs| revs.is_empty()) {
+        return Ok(Vec::new());
+    }
     let format = format!("--format=%H{FS}%P{FS}%an{FS}%ae{FS}%at{FS}%ad{FS}%s{FS}%D{FS}%b{RS}");
     let limit = format!("--max-count={limit}");
     let skip = format!("--skip={skip}");
-    let out = match run(
-        Some(repo),
-        &[
-            "log",
-            NO_SIGNATURE,
-            "--exclude=refs/stash",
-            "--all",
-            "--date-order",
-            "--date=format-local:%Y-%m-%d %H:%M",
-            &skip,
-            &limit,
-            &format,
-        ],
-    ) {
+    let mut args = vec![
+        "log",
+        NO_SIGNATURE,
+        "--date-order",
+        "--date=format-local:%Y-%m-%d %H:%M",
+        &skip,
+        &limit,
+        &format,
+    ];
+    push_revisions(&mut args, from);
+    let out = match run(Some(repo), &args) {
         Ok(out) => out,
         // A freshly initialised repository has no commits yet.
         Err(e) if e.contains("does not have any commits") => String::new(),
@@ -196,23 +202,32 @@ pub fn count_apart(repo: &Path, a: &str, b: &str) -> Result<(u32, u32), String> 
     Ok((n.next().unwrap_or(0), n.next().unwrap_or(0)))
 }
 
+/// Where a log starts, the last of its arguments: the revisions `from` when given, else every
+/// branch (stashes aside).
+fn push_revisions<'a>(args: &mut Vec<&'a str>, from: Option<&'a [String]>) {
+    match from {
+        Some(revs) => {
+            args.push(END_OPTS);
+            args.extend(revs.iter().map(String::as_str));
+            args.push("--");
+        }
+        None => args.extend(["--exclude=refs/stash", "--all"]),
+    }
+}
+
 /// Commits whose message or author matches `query` (case-insensitive), or whose hash starts
-/// with it, newest first.
-pub fn search(repo: &Path, query: &str) -> Result<Vec<String>, String> {
+/// with it, newest first; among those of the revisions `from` when given, as `log`.
+pub fn search(repo: &Path, from: Option<&[String]>, query: &str) -> Result<Vec<String>, String> {
+    if from.is_some_and(|revs| revs.is_empty()) {
+        return Ok(Vec::new());
+    }
     let mut hashes: Vec<String> = Vec::new();
-    let base = [
-        "log",
-        NO_SIGNATURE,
-        "--exclude=refs/stash",
-        "--all",
-        "--date-order",
-        "-i",
-        "--format=%H",
-    ];
+    let base = ["log", NO_SIGNATURE, "--date-order", "-i", "--format=%H"];
     for filter in [format!("--grep={query}"), format!("--author={query}")] {
         let mut args = base.to_vec();
         args.push("--fixed-strings");
         args.push(&filter);
+        push_revisions(&mut args, from);
         if let Ok(out) = run(Some(repo), &args) {
             for h in out.lines() {
                 if !hashes.iter().any(|x| x == h) {
@@ -234,21 +249,20 @@ pub fn search(repo: &Path, query: &str) -> Result<Vec<String>, String> {
     Ok(hashes)
 }
 
-/// Commits that added or removed `query` in a file's contents (`git log -S`), newest first.
-pub fn search_code(repo: &Path, query: &str) -> Result<Vec<String>, String> {
+/// Commits that added or removed `query` in a file's contents (`git log -S`), newest first;
+/// among those of the revisions `from` when given, as `log`.
+pub fn search_code(
+    repo: &Path,
+    from: Option<&[String]>,
+    query: &str,
+) -> Result<Vec<String>, String> {
+    if from.is_some_and(|revs| revs.is_empty()) {
+        return Ok(Vec::new());
+    }
     let pickaxe = format!("-S{query}");
-    let out = run(
-        Some(repo),
-        &[
-            "log",
-            NO_SIGNATURE,
-            "--exclude=refs/stash",
-            "--all",
-            "--date-order",
-            "--format=%H",
-            &pickaxe,
-        ],
-    )?;
+    let mut args = vec!["log", NO_SIGNATURE, "--date-order", "--format=%H", &pickaxe];
+    push_revisions(&mut args, from);
+    let out = run(Some(repo), &args)?;
     Ok(out.lines().map(str::to_owned).collect())
 }
 

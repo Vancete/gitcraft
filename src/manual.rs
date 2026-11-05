@@ -55,6 +55,7 @@ const FEATURES: &[(&str, &[&str])] = &[
         "Branches, remotes and more",
         &[
             "Left pane: local branches with ahead / behind counts, remotes, worktrees, stashes, pull requests and tags.",
+            "Hover a branch and click its eye to hide it from the graph, or Solo it from its menu to see only the branches soloed; “Show all” at the top brings them all back.",
             "Conflicts open in a three-pane editor with Ours, Theirs and Both for each conflict.",
             "Right-click a file for its history and blame.",
             "A terminal panel with tabs, in the repository's folder.",

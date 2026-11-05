@@ -7,6 +7,7 @@ mod pull_requests;
 mod remotes;
 mod stashes;
 mod tags;
+mod visibility;
 mod worktrees;
 
 use egui::{Sense, Ui, vec2};
@@ -45,6 +46,7 @@ impl RepoTab {
             }
         });
         ui.add_space(8.0);
+        self.visibility_counter(ui, acts);
 
         let filter = self.branch_filter.to_lowercase();
         let idle = self.busy_op.is_none();

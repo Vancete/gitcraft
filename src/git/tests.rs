@@ -36,9 +36,17 @@ fn hostile_config_and_option_like_refs() -> Result<(), String> {
     git(&["update-ref", &format!("refs/tags/{tag}"), "HEAD~1"])?;
     let head = head(&dir);
 
-    let commits = log(&dir, 0, 10)?;
+    let commits = log(&dir, None, 0, 10)?;
     assert_eq!(commits.len(), 2);
     assert_eq!(commits[0].hash, head);
+    // From the option-like tag alone: only the commit it is on.
+    let from_tag = log(&dir, Some(&[format!("refs/tags/{tag}")]), 0, 10)?;
+    assert_eq!(from_tag.len(), 1);
+    assert!(log(&dir, Some(&[]), 0, 10)?.is_empty());
+    let tag_only = [format!("refs/tags/{tag}")];
+    assert_eq!(search(&dir, None, "two")?, std::slice::from_ref(&head));
+    assert!(search(&dir, Some(&tag_only), "two")?.is_empty());
+    assert_eq!(search_code(&dir, Some(&tag_only), "a")?.len(), 1);
     let patch = file_diff(&dir, &head, name, DiffOptions::default())?;
     assert!(patch.starts_with("diff --git \"a/q"), "{patch}");
     assert!(!patch.contains('\x1b'), "{patch}");

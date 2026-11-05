@@ -2,10 +2,11 @@
 
 use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
 
-use super::{REMOTE_INDENT, ROW_H, matches};
+use super::{REMOTE_INDENT, ROW_H, matches, visibility};
 use crate::git::{Branch, Remote};
 use crate::icons;
 use crate::repo::branch_tree::{self, LeafRow, TreeView};
+use crate::repo::branch_visibility::remote_ref;
 use crate::repo::graph_view;
 use crate::repo::pinned_sections::{Button, Header, Sections};
 use crate::repo::{
@@ -108,8 +109,11 @@ impl RepoTab {
     ) {
         let short = remote_short(&b.name, remote).unwrap_or(&b.name);
         let has_pr = self.prs.iter().any(|p| p.branch == short);
-        let r = remote_row(ui, row, has_pr)
-            .on_hover_text(format!("{}\nDouble-click to check out", b.name));
+        let full = remote_ref(&b.name);
+        let shown = self.branch_shown(&full, false);
+        let r = remote_row(ui, row, has_pr, !shown);
+        acts.extend(visibility::eye(ui, &r, &full, shown));
+        let r = r.on_hover_text(format!("{}\nDouble-click to check out", b.name));
         if r.double_clicked() && idle {
             acts.push(Action::CheckoutRemote(b.name.clone()));
         } else if r.clicked() {
@@ -168,6 +172,8 @@ impl RepoTab {
         if ui.button("Copy name").clicked() {
             ui.ctx().copy_text(b.name.clone());
         }
+        ui.separator();
+        self.visibility_items(ui, acts, &remote_ref(&b.name), false);
         ui.separator();
         if ui
             .add_enabled(idle, egui::Button::new("Delete from remote…"))
@@ -286,8 +292,9 @@ fn remote_menu_items(ui: &mut Ui, acts: &mut Vec<Action>, remote: &Remote, idle:
     }
 }
 
-/// A remote's branch: only the icon and the name, in from its remote.
-fn remote_row(ui: &mut Ui, row: LeafRow<'_>, has_pr: bool) -> Response {
+/// A remote's branch: only the icon and the name, in from its remote; the name dimmed while
+/// the graph leaves the branch out.
+fn remote_row(ui: &mut Ui, row: LeafRow<'_>, has_pr: bool, hidden: bool) -> Response {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     if resp.hovered() {
@@ -312,7 +319,7 @@ fn remote_row(ui: &mut Ui, row: LeafRow<'_>, has_pr: bool) -> Response {
         Align2::LEFT_CENTER,
         row.name,
         egui::FontId::proportional(12.5),
-        t.text,
+        if hidden { t.text_faint } else { t.text },
     );
     resp
 }

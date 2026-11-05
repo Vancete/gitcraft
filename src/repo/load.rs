@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+use super::branch_visibility::Visibility;
 use super::{DiffKey, DiffView, MAX_HISTORY, Msg, RepoTab, WIP_HASH, spawn};
 use crate::forge::{self, Forge};
 use crate::git::{self, Commit, Identity, Refs, Remote, Stash, WorkStatus, Worktree};
@@ -19,6 +20,8 @@ pub(super) struct Loaded {
     pub(super) identity: Identity,
     /// How many commits were asked for (more exist when that many came back).
     pub(super) requested: usize,
+    /// What `history` was logged from.
+    pub(super) log_from: Option<Vec<String>>,
 }
 
 impl RepoTab {
@@ -33,10 +36,13 @@ impl RepoTab {
         let path = self.path.clone();
         // Keep the pages already loaded.
         let count = self.history.len().clamp(git::LOG_PAGE, MAX_HISTORY);
+        let mut visibility = Visibility::load(ctx, self.repo_key());
         spawn(&self.tx, ctx, move || {
             Msg::Loaded((|| {
                 let refs = git::refs(&path)?;
-                let history = git::log(&path, 0, count)?;
+                visibility.prune(&refs);
+                let log_from = visibility.revisions(&refs);
+                let history = git::log(&path, log_from.as_deref(), 0, count)?;
                 let work = git::status(&path)?;
                 // Very old gits have no `worktree list`; the section just stays empty.
                 let worktrees = git::worktrees(&path).unwrap_or_default();
@@ -52,6 +58,7 @@ impl RepoTab {
                     remotes,
                     identity,
                     requested: count,
+                    log_from,
                 }))
             })())
         });
@@ -70,8 +77,10 @@ impl RepoTab {
         let path = self.path.clone();
         let skip = self.history.len();
         let generation = self.history_gen;
+        let from = self.log_from.clone();
         spawn(&self.tx, ctx, move || {
-            Msg::More(generation, git::log(&path, skip, git::LOG_PAGE))
+            let page = git::log(&path, from.as_deref(), skip, git::LOG_PAGE);
+            Msg::More(generation, page)
         });
     }
 
@@ -105,6 +114,7 @@ impl RepoTab {
         self.history = loaded.history;
         self.work = loaded.work;
         self.worktrees = loaded.worktrees;
+        self.take_visibility(loaded.log_from, ctx);
         // Stash numbers shift when one is pushed or dropped; follow the commit.
         let viewed = self
             .stash_view

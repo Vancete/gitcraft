@@ -288,11 +288,13 @@ impl RepoTab {
         self.search.running = true;
         let path = self.path.clone();
         let code = self.search.code;
+        // In the branches the graph shows.
+        let from = self.log_from.clone();
         spawn(&self.tx, ctx, move || {
             let result = if code {
-                git::search_code(&path, &query)
+                git::search_code(&path, from.as_deref(), &query)
             } else {
-                git::search(&path, &query)
+                git::search(&path, from.as_deref(), &query)
             };
             Msg::Search(query, code, result)
         });

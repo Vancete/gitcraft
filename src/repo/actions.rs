@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use super::pull::PullMode;
 use super::toolbar::reveal_label;
 use super::{
-    Dialog, DiffKey, Refresh, RepoTab, Undo, ci_view, diff, file_view, ops, pr_review, quick_edit,
+    Dialog, DiffKey, Refresh, RepoTab, Undo, branch_visibility, ci_view, diff, file_view, ops,
+    pr_review, quick_edit,
 };
 use crate::git::{self, InProgress};
 use crate::terminal::ShellSpec;
@@ -67,6 +68,8 @@ pub(crate) enum Action {
     ToggleBranches,
     /// Open the branches panel at a section (by its key), or in its filter when `None`.
     OpenBranches(Option<&'static str>),
+    /// Hide, show or solo branches in the graph.
+    BranchVisibility(branch_visibility::Change),
     /// Collapse or bring back the detail panel.
     ToggleDetail,
     NewTerminal {
