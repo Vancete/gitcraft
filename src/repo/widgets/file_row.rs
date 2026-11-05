@@ -20,7 +20,7 @@ pub struct FileRowResponse {
     pub button: Option<usize>,
 }
 
-/// One changed file: status letter, file name, its folder dimmed, and `extra` on the right.
+/// One file: status letter, file name, its folder dimmed, and `extra` on the right.
 /// In a tree (`indent` is how far in) the folder is above the row instead.
 pub fn file_row(
     ui: &mut Ui,
@@ -43,18 +43,20 @@ pub fn file_row(
     }
     let y = rect.center().y;
 
-    // Status letter in a small rounded square.
-    let color = status_color(&t, code);
-    let badge = Rect::from_center_size(pos2(rect.left() + 18.0 + shift, y), vec2(16.0, 16.0));
-    painter.rect_filled(badge, CornerRadius::same(3), color.gamma_multiply(0.22));
-    let letter = if code == '?' { 'A' } else { code };
-    painter.text(
-        badge.center(),
-        Align2::CENTER_CENTER,
-        letter.to_string(),
-        theme::semibold(10.5),
-        color,
-    );
+    // Status letter in a small rounded square; none for a file that isn't changed (`' '`).
+    if code != ' ' {
+        let color = status_color(&t, code);
+        let badge = Rect::from_center_size(pos2(rect.left() + 18.0 + shift, y), vec2(16.0, 16.0));
+        painter.rect_filled(badge, CornerRadius::same(3), color.gamma_multiply(0.22));
+        let letter = if code == '?' { 'A' } else { code };
+        painter.text(
+            badge.center(),
+            Align2::CENTER_CENTER,
+            letter.to_string(),
+            theme::semibold(10.5),
+            color,
+        );
+    }
 
     // Right edge first, so the name is clipped before it.
     let mut right = rect.right() - 8.0;

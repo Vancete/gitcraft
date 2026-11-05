@@ -3,7 +3,7 @@
 
 use super::{
     Compare, CompareData, DiffKey, DiffView, MAX_HISTORY, Msg, RepoTab, WIP_HASH, conflict, diff,
-    file_view, spawn,
+    file_text, file_view, spawn,
 };
 use crate::git;
 use crate::settings::Settings;
@@ -150,6 +150,28 @@ impl RepoTab {
             let result = diff::load(&path, &key, opts, dark);
             Msg::Diff(request, result)
         });
+        self.load_diff_file(ctx);
+    }
+
+    /// Reads the whole file of the open diff, when diffs show the file.
+    pub(super) fn load_diff_file(&mut self, ctx: &egui::Context) {
+        let Some(view) = self.diff.as_ref().filter(|_| self.diff_as_file) else {
+            return;
+        };
+        let (request, key, path) = (view.request, view.key.clone(), self.path.clone());
+        let dark = Tokens::get(ctx).dark();
+        spawn(&self.tx, ctx, move || {
+            let result = file_text::load_for_diff(&path, &key, dark);
+            Msg::DiffFile(request, result)
+        });
+    }
+
+    /// Shows diffs as the whole file, or as the changes.
+    pub(super) fn show_diff_as_file(&mut self, on: bool, ctx: &egui::Context) {
+        self.diff_as_file = on;
+        if self.diff.as_ref().is_some_and(|d| d.file.is_none()) {
+            self.load_diff_file(ctx);
+        }
     }
 
     pub(super) fn reopen_diff(&mut self, ctx: &egui::Context) {
@@ -273,7 +295,24 @@ impl RepoTab {
                     Msg::Blame(path, rev, result)
                 })
             }
+            file_view::FileTab::File => {
+                let dark = Tokens::get(ctx).dark();
+                spawn(&self.tx, ctx, move || {
+                    let result = file_text::load(&repo, rev.as_deref(), &path, dark);
+                    Msg::FileText(path, rev, result)
+                })
+            }
         }
+    }
+
+    /// Reads every file of commit `hash`, for the commit pane's "View all files".
+    pub(super) fn load_tree_files(&mut self, hash: String, ctx: &egui::Context) {
+        self.all_files.wait_for(&hash);
+        let repo = self.path.clone();
+        spawn(&self.tx, ctx, move || {
+            let result = git::tree_files(&repo, &hash);
+            Msg::TreeFiles(hash, result)
+        });
     }
 
     pub(super) fn run_search(&mut self, ctx: &egui::Context) {

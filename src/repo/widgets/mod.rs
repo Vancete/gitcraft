@@ -196,6 +196,32 @@ fn name_hash(name: &str) -> usize {
         .fold(7usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize))
 }
 
+/// Labels of which one is on, like tabs. Returns the one clicked when it wasn't on.
+pub fn switch(ui: &mut Ui, labels: &[&str], on: usize) -> Option<usize> {
+    let t = Tokens::get(ui.ctx());
+    let mut order: Vec<usize> = (0..labels.len()).collect();
+    // Laid out right to left, the first label goes last.
+    if ui.layout().prefer_right_to_left() {
+        order.reverse();
+    }
+    let mut picked = None;
+    for i in order {
+        let active = i == on;
+        let color = if active { t.text } else { t.text_dim };
+        let b = ui.add(
+            egui::Button::new(egui::RichText::new(labels[i]).color(color))
+                .frame_when_inactive(active),
+        );
+        if active {
+            active_underline(ui, b.rect, t.accent);
+        }
+        if b.clicked() && !active {
+            picked = Some(i);
+        }
+    }
+    picked
+}
+
 /// The accent line under an active toolbar toggle.
 pub fn active_underline(ui: &Ui, button: Rect, color: Color32) {
     ui.painter().line_segment(

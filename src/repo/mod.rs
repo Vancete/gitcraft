@@ -13,6 +13,7 @@ mod conflict;
 mod detail;
 mod dialogs;
 mod diff;
+mod file_text;
 mod file_view;
 mod graph_view;
 mod highlight;
@@ -139,6 +140,10 @@ pub struct RepoTab {
     /// The forge has been asked for avatars.
     avatars_hinted: bool,
     diff_ignore_ws: bool,
+    /// Diffs show the whole file instead of the changes.
+    diff_as_file: bool,
+    /// Whether the commit pane lists every file of the commit, and those read.
+    all_files: detail::AllFiles,
     conflict: Option<conflict::ConflictEditor>,
 
     commit_summary: String,
@@ -251,6 +256,8 @@ impl RepoTab {
             last_op: None,
             avatars_hinted: false,
             diff_ignore_ws: false,
+            diff_as_file: false,
+            all_files: Default::default(),
             conflict: None,
             commit_summary: String::new(),
             commit_body: String::new(),

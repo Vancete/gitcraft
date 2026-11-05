@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use super::file_text::FileText;
 use super::{diff, short};
 use crate::git::{self, StatusFile};
 
@@ -85,6 +86,8 @@ pub(crate) struct DiffView {
     pub(super) anchor: Option<usize>,
     /// Text selected by dragging over the lines, to copy.
     pub(super) text_sel: Option<diff::TextSel>,
+    /// The whole file, read when the diff is switched to it.
+    pub(super) file: Option<Result<FileText, String>>,
     /// The latest read of this diff: only its answer is shown, so a slower answer to an older
     /// read (before the whitespace or whole-file setting changed…) can't replace it.
     pub(super) request: u64,
@@ -101,6 +104,7 @@ impl DiffView {
             chosen: Default::default(),
             anchor: None,
             text_sel: None,
+            file: None,
             request: 0,
         }
     }
@@ -121,6 +125,14 @@ impl DiffView {
         self.chosen.clear();
         self.anchor = None;
         self.text_sel = None;
+    }
+
+    /// Shows the whole file read along with the read numbered `request`, unless a newer read
+    /// was made since.
+    pub(super) fn file_arrived(&mut self, request: u64, result: Result<FileText, String>) {
+        if request == self.request {
+            self.file = Some(result);
+        }
     }
 }
 

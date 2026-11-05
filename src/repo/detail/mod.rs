@@ -1,9 +1,12 @@
 //! Right pane: the selected commit, or the working-tree changes with staging and the commit box.
 
+mod all_files;
 mod changes;
 mod commit;
 mod commit_box;
 mod compare;
+
+pub(super) use all_files::AllFiles;
 
 use egui::{Align2, Sense, Ui, pos2, vec2};
 

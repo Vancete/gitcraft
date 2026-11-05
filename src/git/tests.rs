@@ -57,6 +57,7 @@ fn hostile_config_and_option_like_refs() -> Result<(), String> {
     assert!(merge_base(&dir, tag, "HEAD").is_ok());
     assert_eq!(rebase_commits(&dir, tag)?.len(), 1);
     assert_eq!(file_at(&dir, Some(tag), name)?, b"a\n");
+    assert_eq!(tree_files(&dir, tag)?, [name]);
     assert!(resolve(&dir, tag).is_err());
     assert!(blame(&dir, Some(tag), name).is_err());
     assert!(!dir.join("written").exists());

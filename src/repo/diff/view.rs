@@ -11,7 +11,7 @@ use crate::icons;
 use crate::pull_request::DiffSide;
 use crate::repo::pr_review::{self, PrDraft};
 use crate::repo::pr_view::{self, PrView};
-use crate::repo::{Action, DiffKey, DiffView, Refresh, RepoTab, ops, short, widgets};
+use crate::repo::{Action, DiffKey, DiffView, Refresh, RepoTab, file_text, ops, short, widgets};
 use crate::settings::Settings;
 use crate::theme::{self, Tokens};
 
@@ -29,15 +29,20 @@ impl RepoTab {
             self.diff_ignore_ws,
             settings.diff_whole_file,
         );
+        let as_file = self.diff_as_file;
         let clear = self.diff_header(
             ui,
             view,
             (&path, &origin),
             partial,
-            (split, ignore_ws, whole_file),
+            (split, ignore_ws, whole_file, as_file),
             acts,
         );
 
+        if as_file {
+            file_text::show(ui, ("diff_file", &path), view.file.as_ref());
+            return;
+        }
         let Some(data) = ready_data(ui, view, ignore_ws, &t) else {
             return;
         };
@@ -89,14 +94,15 @@ impl RepoTab {
     }
 
     /// Header: file, where it comes from, options, actions, close. `opts`: (side by side,
-    /// ignore whitespace, whole file). True when the picked lines are to be cleared.
+    /// ignore whitespace, whole file, the file instead of the diff). True when the picked lines
+    /// are to be cleared.
     fn diff_header(
         &self,
         ui: &mut Ui,
         view: &DiffView,
         (path, origin): (&str, &str),
         partial: bool,
-        (split, ignore_ws, whole_file): (bool, bool, bool),
+        (split, ignore_ws, whole_file, as_file): (bool, bool, bool, bool),
         acts: &mut Vec<Action>,
     ) -> bool {
         let t = Tokens::get(ui.ctx());
@@ -120,15 +126,25 @@ impl RepoTab {
                     };
                     widgets::file_menu(&title, path, rev, ignorable, acts);
                     widgets::chip(ui, origin, t.text_dim);
+                    if as_file && matches!(&view.file, Some(Ok(f)) if f.before) {
+                        widgets::chip(ui, "before the change", t.warning);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if icons::small_button(ui, "x", "Close (Esc)").clicked() {
                             acts.push(Action::CloseDiff);
                         }
                         if let DiffKey::Work(file) = &view.key {
-                            clear = self.file_actions(ui, view, file, partial, acts);
+                            clear = self.file_actions(ui, view, file, partial && !as_file, acts);
                         }
                         ui.add_space(8.0);
-                        view_options(ui, &t, (split, ignore_ws, whole_file), acts);
+                        if !as_file {
+                            view_options(ui, &t, (split, ignore_ws, whole_file), acts);
+                            ui.add_space(8.0);
+                        }
+                        let on = usize::from(as_file);
+                        if let Some(i) = widgets::switch(ui, &["Diff", "File"], on) {
+                            acts.push(Action::DiffAsFile(i == 1));
+                        }
                     });
                 });
             });

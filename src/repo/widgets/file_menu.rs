@@ -7,7 +7,8 @@ use crate::repo::Action;
 use crate::repo::file_view::FileTab;
 
 /// Right-click menu for a file of the working tree or a commit: open it, its folder, copy path.
-/// Right-click menu of a file. `rev`: the commit it is shown in (history and blame start there);
+/// Right-click menu of a file. `rev`: the commit it is shown in (it is viewed as it is there,
+/// history and blame start there);
 /// `ignorable`: a working-tree file that can be added to `.gitignore`.
 pub fn file_menu(
     resp: &Response,
@@ -32,6 +33,13 @@ pub fn file_menu(
                 ));
             }
             ui.separator();
+            if ui.button("View file").clicked() {
+                acts.push(Action::FileView {
+                    path: path.to_owned(),
+                    rev: rev.map(str::to_owned),
+                    tab: FileTab::File,
+                });
+            }
             if ui.button("File history").clicked() {
                 acts.push(Action::FileView {
                     path: path.to_owned(),

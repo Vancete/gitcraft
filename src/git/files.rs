@@ -13,6 +13,27 @@ pub fn file_at(repo: &Path, rev: Option<&str>, path: &str) -> Result<Vec<u8>, St
     }
 }
 
+/// Every file in the tree of commit `rev`, sorted by path.
+pub fn tree_files(repo: &Path, rev: &str) -> Result<Vec<String>, String> {
+    let out = run(
+        Some(repo),
+        &[
+            "ls-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            "--full-tree",
+            END_OPTS,
+            rev,
+        ],
+    )?;
+    Ok(out
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
 /// Adds `pattern` as a line of the repository's top `.gitignore` (created if missing). `false`
 /// when it was already there.
 pub fn add_to_gitignore(repo: &Path, pattern: &str) -> Result<bool, String> {

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
+use super::file_text::FileText;
 use super::load::Loaded;
 use super::{CompareData, OpKind, Refresh, RepoTab, diff, file_view, ops, pr_review, quick_edit};
 use crate::forge::PullRequest;
@@ -23,8 +24,14 @@ pub(super) enum Msg {
     ///
     /// [`DiffView::next_request`]: super::DiffView::next_request
     Diff(u64, Result<diff::DiffData, String>),
+    /// The whole file of the diff, read along with the diff request numbered so.
+    DiffFile(u64, Result<FileText, String>),
     FileHistory(String, Option<String>, Result<Vec<git::FileCommit>, String>),
     Blame(String, Option<String>, Result<file_view::BlameData, String>),
+    /// A file as it is at a revision, for the file view.
+    FileText(String, Option<String>, Result<FileText, String>),
+    /// Every file in the tree of a commit.
+    TreeFiles(String, Result<Vec<String>, String>),
     RebaseCommits {
         onto: String,
         label: String,
@@ -210,9 +217,23 @@ impl RepoTab {
                     view.blame = Some(result);
                 }
             }
+            Msg::FileText(path, rev, result) => {
+                if let Some(view) = &mut self.file_view
+                    && view.path == path
+                    && view.rev == rev
+                {
+                    view.text = Some(result);
+                }
+            }
+            Msg::TreeFiles(hash, result) => self.all_files.arrived(&hash, result),
             Msg::Diff(request, result) => {
                 if let Some(view) = &mut self.diff {
                     view.arrived(request, result);
+                }
+            }
+            Msg::DiffFile(request, result) => {
+                if let Some(view) = &mut self.diff {
+                    view.file_arrived(request, result);
                 }
             }
             Msg::PrDetails(request, result) => self.pr_details_arrived(request, *result, ctx),

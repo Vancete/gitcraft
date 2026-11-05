@@ -31,6 +31,7 @@ impl RepoTab {
         if let Some(stash) = &stash {
             stash_banner(ui, acts, stash, idle);
         }
+        self.want_all_files(ui.ctx());
         if let Some(err) = &self.detail_error {
             ui.add_space(10.0);
             ui.horizontal(|ui| {
@@ -86,18 +87,23 @@ impl RepoTab {
 
                 let note = (detail.parents.len() > 1).then_some("vs. first parent");
                 files_header(ui, &detail.files, note);
+                self.all_files_toggle(ui, acts);
                 ui.spacing_mut().item_spacing.y = 0.0;
-                self.file_list(
-                    ui,
-                    acts,
-                    "commit",
-                    &detail.files,
-                    Some(&detail.hash),
-                    |path| DiffKey::Commit {
-                        hash: detail.hash.clone(),
-                        path: path.to_owned(),
-                    },
-                );
+                if self.all_files.on {
+                    self.all_files_list(ui, acts, detail);
+                } else {
+                    self.file_list(
+                        ui,
+                        acts,
+                        "commit",
+                        &detail.files,
+                        Some(&detail.hash),
+                        |path| DiffKey::Commit {
+                            hash: detail.hash.clone(),
+                            path: path.to_owned(),
+                        },
+                    );
+                }
                 let below = ui.cursor().top() - message_end;
                 if (below - rest).abs() > 0.5 {
                     ui.data_mut(|d| d.insert_temp(rest_id, below));

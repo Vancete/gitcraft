@@ -145,6 +145,8 @@ impl RepoTab {
                 ignore_ws,
                 whole_file,
             } => self.set_diff_options(split, ignore_ws, whole_file, ctx),
+            Action::DiffAsFile(on) => self.show_diff_as_file(on, ctx),
+            Action::ViewAllFiles(on) => self.all_files.on = on,
             Action::FileView { path, rev, tab } => self.open_file_view(path, rev, tab, ctx),
             Action::CloseFileView => self.file_view = None,
             Action::InteractiveRebase { onto, label } => self.interactive_rebase(onto, label, ctx),

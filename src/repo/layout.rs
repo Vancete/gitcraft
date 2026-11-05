@@ -40,7 +40,7 @@ impl RepoTab {
                     self.conflict_view(ui, &mut acts);
                 } else if self.rebase.is_some() {
                     self.rebase_view(ui, &mut acts);
-                } else if self.diff.is_some() {
+                } else if self.diff.is_some() && !self.history_beside_diff() {
                     self.diff_view(ui, &mut acts);
                 } else if self.file_view.is_some() {
                     self.file_view(ui, &mut acts);

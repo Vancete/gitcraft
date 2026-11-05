@@ -94,6 +94,8 @@ so your config, credentials and hooks apply as usual.
 
 - Unified or side by side, syntax colours, the changed part of each line marked, whitespace
   changes optional, images shown before / after. Esc closes.
+- The _Diff_ / _File_ switch shows the whole file as it is after the change instead (before it,
+  for a deleted file), coloured and with line numbers.
 - Code takes the colours of the theme VS Code (or Insiders, VSCodium) is using, read from its
   settings and extensions, when it is dark or light like gitcraft's; a setting turns it off.
 - Conflicts open in a three-pane editor: each conflict's two sides with _Ours_, _Theirs_ and
@@ -106,9 +108,12 @@ so your config, credentials and hooks apply as usual.
 - A merge, rebase, cherry-pick, revert or patch stopped on conflicts shows a banner with
   _Abort_; the commit box finishes it (_Continue rebase_ during a rebase, _Continue patch_ while
   `git am` applies one).
-- File history (every commit that changed the file, following renames; click one for its diff)
-  and blame (who last changed each line, newer changes marked brighter; click to go to the
-  commit).
+- File history (every commit that changed the file, following renames; click one for its diff
+  or the file as it was, beside the list), blame (who last changed each line, newer changes
+  marked brighter; click to go to the commit) and the whole file at a commit (_View file_ in a
+  file's menu).
+- _View all files_ under a commit's files lists every file of the commit, not only those it
+  changed; click one to read it as it was in that commit.
 
 **Toolbar, terminal, app**
 
@@ -224,7 +229,8 @@ was made this way, on a demo repository.
 | `src/repo/conflict.rs`   | three-pane conflict editor                                                         |
 | `src/mergiraf.rs` | Mergiraf, run as the user's own command when it is installed |
 | `src/repo/rebase.rs`     | interactive rebase editor and its todo list                                        |
-| `src/repo/file_view.rs`  | a file's history and blame                                                         |
+| `src/repo/file_view.rs`  | a file's history, blame and contents at a commit                                   |
+| `src/repo/file_text.rs`  | a whole file at a commit, coloured, for the file view and diffs                    |
 | `src/repo/dialogs.rs`    | branch, tag, stash, remote, worktree, pull request and confirm dialogs             |
 | `src/repo/widgets.rs`    | shared painted widgets (panel headers, file rows, avatars, tabs)                   |
 | `src/app.rs`             | window shell: tabs, start page, cloning, palette, settings, toasts                 |

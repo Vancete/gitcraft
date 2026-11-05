@@ -98,10 +98,14 @@ pub(crate) enum Action {
         ignore_ws: bool,
         whole_file: bool,
     },
+    /// Diffs show the whole file as it is after the change, or the changes.
+    DiffAsFile(bool),
+    /// The commit pane lists every file of the commit, or only those it changed.
+    ViewAllFiles(bool),
     SaveConflict,
     /// Let Mergiraf solve what it can of the open conflict.
     SolveWithMergiraf,
-    /// A file's history or blame in the central pane (`rev`: the commit to blame at).
+    /// A file's history, blame or contents in the central pane (`rev`: the commit they are at).
     FileView {
         path: String,
         rev: Option<String>,
