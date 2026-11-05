@@ -13,19 +13,20 @@ use crate::git::{self, ChangedFile, Credentials, Remote};
 use crate::pr_threads::{self, PrExtras};
 
 pub use markdown::{safe_blocks, safe_markdown};
-pub(crate) use parse::{at, items, login, parse_details, parse_time};
+pub(crate) use parse::{at, check, items, login, parse_details, parse_time};
 pub use tables::Block;
 
 const FIELDS: &str = "number,title,body,state,isDraft,author,url,baseRefName,baseRefOid,\
     headRefName,headRefOid,createdAt,updatedAt,additions,deletions,changedFiles,mergeable,\
     mergeStateStatus,reviewDecision,labels,statusCheckRollup,commits,comments,reviews";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CheckState {
     Passed,
     Failed,
     Running,
     /// Skipped, cancelled by a newer run, neutral: neither good nor bad.
+    #[default]
     Skipped,
 }
 

@@ -4,6 +4,7 @@
 mod actions;
 mod apply;
 mod branch_tree;
+mod ci_status;
 pub(crate) mod columns;
 mod commands;
 mod conflict;
@@ -97,6 +98,8 @@ pub struct RepoTab {
     prs: Vec<PullRequest>,
     pr_error: Option<String>,
     prs_loaded: Option<Instant>,
+    /// The build status of the commits that show one.
+    ci: ci_status::CiStatuses,
 
     selected: Option<usize>,
     /// A stash shown in the detail pane instead of a graph row.
@@ -214,6 +217,7 @@ impl RepoTab {
             prs: Vec::new(),
             pr_error: None,
             prs_loaded: None,
+            ci: ci_status::CiStatuses::default(),
             selected: None,
             stash_view: None,
             scroll_to: None,

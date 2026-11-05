@@ -7,7 +7,7 @@ use egui::{Ui, pos2, vec2};
 use super::{AVATAR_D, LANE_W, ROW_GAP, ROW_H, ROW_PITCH};
 use crate::git::{self, Commit};
 use crate::repo::columns::Cols;
-use crate::repo::{Action, RepoTab, WIP_HASH, widgets};
+use crate::repo::{Action, RepoTab, WIP_HASH, ci_status, widgets};
 use crate::theme::{self, Tokens};
 
 /// The row being painted.
@@ -85,8 +85,14 @@ impl RepoTab {
         if is_wip {
             self.wip_description(&painter, &t, &row);
         } else {
-            description(ui, &painter, &t, &row, is_match);
+            let ci = self.ci_status(&commit.hash);
+            description(ui, &painter, &t, &row, is_match, ci.is_some());
             trailing_columns(ui, &painter, &t, &row, now);
+            if let Some(status) = ci {
+                let center = pos2(rect.right() - cols.trailing() - 9.0, row.mid());
+                let id = ui.id().with(("ci-dot", &commit.hash));
+                acts.extend(ci_status::dot(ui, id, center, status));
+            }
         }
         resp
     }
@@ -171,10 +177,11 @@ fn row_background(
 }
 
 /// The summary, then the rest of the message faded, cut with an ellipsis.
-fn description(ui: &Ui, painter: &Painter, t: &Tokens, row: &Row, is_match: bool) {
+/// `dot`: room is left at the end for the build status.
+fn description(ui: &Ui, painter: &Painter, t: &Tokens, row: &Row, is_match: bool, dot: bool) {
     let (rect, mid) = (row.rect, row.mid());
     let x = row.gx + row.cols.graph + 6.0;
-    let text_right = rect.right() - row.cols.trailing() - 10.0;
+    let text_right = rect.right() - row.cols.trailing() - 10.0 - if dot { 14.0 } else { 0.0 };
     let font = if is_match {
         theme::medium(12.5)
     } else {

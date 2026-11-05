@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use super::{Check, CheckState, Entry, EntryKind, PrCommit, PrDetails};
+use super::{Check, Entry, EntryKind, PrCommit, PrDetails};
 use crate::pr_threads::PrExtras;
 
 pub(crate) fn parse_details(json: &str) -> Result<PrDetails, String> {
@@ -72,32 +72,19 @@ pub(crate) fn login(v: &Value, pointer: &str) -> String {
     }
 }
 
-fn check(v: &Value) -> Check {
+/// One entry of a `statusCheckRollup`: a check run, or a commit status of the older kind.
+pub(crate) fn check(v: &Value) -> Check {
     if at(v, "/__typename") == "StatusContext" {
-        let state = match at(v, "/state") {
-            "SUCCESS" => CheckState::Passed,
-            "FAILURE" | "ERROR" => CheckState::Failed,
-            "PENDING" | "EXPECTED" => CheckState::Running,
-            _ => CheckState::Skipped,
-        };
         return Check {
             name: at(v, "/context").to_owned(),
-            state,
+            state: crate::ci::github::rollup_state(at(v, "/state")),
             detail: at(v, "/description").to_owned(),
             url: at(v, "/targetUrl").to_owned(),
         };
     }
-    let state = match (at(v, "/status"), at(v, "/conclusion")) {
-        ("COMPLETED", "SUCCESS") => CheckState::Passed,
-        ("COMPLETED", "FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE" | "ACTION_REQUIRED") => {
-            CheckState::Failed
-        }
-        ("COMPLETED", _) => CheckState::Skipped,
-        _ => CheckState::Running,
-    };
     Check {
         name: at(v, "/name").to_owned(),
-        state,
+        state: crate::ci::github::state(at(v, "/status"), at(v, "/conclusion")),
         detail: at(v, "/workflowName").to_owned(),
         url: at(v, "/detailsUrl").to_owned(),
     }
@@ -170,7 +157,7 @@ pub(crate) fn parse_time(iso: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pull_request::tally;
+    use crate::pull_request::{CheckState, tally};
 
     const VIEW: &str = r#"{
         "number": 12, "title": "Add search", "body": "Adds **search**.", "state": "OPEN",

@@ -3,14 +3,15 @@
 use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
 
 use super::{ROW_H, matches, remote_short};
+use crate::ci::Status;
 use crate::git::Branch;
 use crate::icons;
 use crate::repo::branch_tree::{self, LeafRow, TreeView};
 use crate::repo::graph_view;
 use crate::repo::pinned_sections::{Button, Header, Sections};
 use crate::repo::{
-    Action, Dialog, RepoTab, Undo, compare_action, fast_forward_action, merge_action, ops,
-    rebase_action,
+    Action, Dialog, RepoTab, Undo, ci_status, compare_action, fast_forward_action, merge_action,
+    ops, rebase_action,
 };
 use crate::settings::Settings;
 use crate::theme::{self, Tokens};
@@ -80,21 +81,23 @@ impl RepoTab {
             .iter()
             .find(|w| !w.current && w.branch.as_deref() == Some(b.name.as_str()));
         let has_pr = self.prs.iter().any(|p| p.branch == b.name);
-        let r = branch_row(
-            ui,
-            row,
-            b.is_head,
-            ahead,
-            behind,
-            b.upstream_gone(),
-            elsewhere.is_some(),
+        let ci = self.ci_status(&b.target);
+        let marks = Marks {
+            gone: b.upstream_gone(),
+            in_worktree: elsewhere.is_some(),
             has_pr,
-        );
-        let tip = match (b.upstream.is_empty(), b.upstream_gone()) {
+            ci,
+        };
+        let (r, ci_act) = branch_row(ui, row, b.is_head, ahead, behind, marks);
+        acts.extend(ci_act);
+        let mut tip = match (b.upstream.is_empty(), b.upstream_gone()) {
             (true, _) => "Not tracking a remote branch".to_owned(),
             (false, true) => format!("{} was deleted on the remote", b.upstream),
             (false, false) => format!("Tracks {}", b.upstream),
         };
+        if let Some(status) = ci {
+            tip.push_str(&format!("\nCI: {}", ci_status::state_word(status.state)));
+        }
         let r = match elsewhere {
             Some(wt) => r.on_hover_text(format!(
                 "{}\n{tip}\nChecked out in worktree {}\nDouble-click to open it",
@@ -374,18 +377,33 @@ fn integrate_items(ui: &mut Ui, acts: &mut Vec<Action>, b: &Branch, current: &st
     graph_view::compare_items(ui, acts, &b.name, current);
 }
 
-/// A branch: icon (a check for the checked-out one), name, ahead/behind counts.
-#[allow(clippy::too_many_arguments)]
+/// What a branch's row shows on the right besides how far ahead and behind it is.
+struct Marks<'a> {
+    /// Its upstream was deleted on the remote.
+    gone: bool,
+    /// Checked out in another worktree.
+    in_worktree: bool,
+    has_pr: bool,
+    /// The build status of its tip.
+    ci: Option<&'a Status>,
+}
+
+/// A branch: icon (a check for the checked-out one), name, ahead/behind counts; and what
+/// clicking its build status asked for.
 fn branch_row(
     ui: &mut Ui,
     row: LeafRow<'_>,
     is_head: bool,
     ahead: u32,
     behind: u32,
-    gone: bool,
-    in_worktree: bool,
-    has_pr: bool,
-) -> Response {
+    marks: Marks,
+) -> (Response, Option<Action>) {
+    let Marks {
+        gone,
+        in_worktree,
+        has_pr,
+        ci,
+    } = marks;
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     let painter = ui.painter_at(rect);
@@ -426,6 +444,12 @@ fn branch_row(
         );
         right = r.left() - 6.0;
     }
+    let mut ci_act = None;
+    if let Some(status) = ci {
+        let center = pos2(right - ci_status::DOT_R, y);
+        ci_act = ci_status::dot(ui, resp.id.with("ci"), center, status);
+        right = center.x - ci_status::DOT_R - 6.0;
+    }
     for (n, icon) in [(behind, "arrow-down"), (ahead, "arrow-up")] {
         if n > 0 {
             let r = painter.text(
@@ -457,5 +481,5 @@ fn branch_row(
             font,
             t.text,
         );
-    resp
+    (resp, ci_act)
 }

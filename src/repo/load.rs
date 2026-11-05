@@ -126,6 +126,7 @@ impl RepoTab {
         {
             self.load_prs(ctx);
         }
+        self.refresh_ci(ctx);
         self.rebuild(ctx);
         self.hint_avatars(ctx);
         self.reload_compare(ctx);

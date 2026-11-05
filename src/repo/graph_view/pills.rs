@@ -9,9 +9,10 @@ use super::DIMMED;
 use super::badge::{Badge, BadgeKind, badges};
 use super::menu::pill_menu_id;
 use super::row::Row;
+use crate::ci::CheckState;
 use crate::icons;
 use crate::repo::columns::Cols;
-use crate::repo::{Action, RepoTab};
+use crate::repo::{Action, RepoTab, ci_status};
 use crate::theme::{self, Tokens};
 
 impl RepoTab {
@@ -43,7 +44,7 @@ impl RepoTab {
             first,
             row.color,
             max_w.max(40.0),
-            self.has_pr(first),
+            self.marks(first, &row.commit.hash),
         );
         self.pill_clicks(ui, &resp, pill, first, &row.commit.hash, acts);
         let mut end = pill.right();
@@ -76,9 +77,17 @@ impl RepoTab {
         resp
     }
 
-    /// Whether `badge` is a branch with an open pull request.
-    fn has_pr(&self, badge: &Badge) -> bool {
-        badge.kind == BadgeKind::Branch && self.prs.iter().any(|p| p.branch == badge.label)
+    /// What a pill of `badge` on commit `hash` carries besides its name: whether the branch has
+    /// an open pull request, and the build status of its tip.
+    fn marks(&self, badge: &Badge, hash: &str) -> Marks {
+        let branch = badge.kind == BadgeKind::Branch;
+        Marks {
+            pr: branch && self.prs.iter().any(|p| p.branch == badge.label),
+            ci: self
+                .ci_status(hash)
+                .filter(|_| branch)
+                .map(|status| status.state),
+        }
     }
 
     /// Clicks on a row's own pill (at `pill`): right-clicking a branch pill puts that branch's
@@ -181,6 +190,7 @@ impl RepoTab {
             return false;
         }
         let slot_w = (cols.refs - 16.0).max(160.0);
+        let hash = self.commits.get(i).map_or("", |c| c.hash.as_str());
         let shown = egui::Area::new(id)
             .order(egui::Order::Foreground)
             .fixed_pos(at)
@@ -203,8 +213,8 @@ impl RepoTab {
                                     t.hover,
                                 );
                             }
-                            let pr = self.has_pr(b);
-                            ref_pill(ui, ui.painter(), slot.left_center(), b, lane, slot_w, pr);
+                            let marks = self.marks(b, hash);
+                            ref_pill(ui, ui.painter(), slot.left_center(), b, lane, slot_w, marks);
                             self.stack_slot_clicks(resp, b, i, acts);
                         }
                     });
@@ -253,6 +263,15 @@ fn more_count(painter: &Painter, t: &Tokens, r: Rect, more: usize, lane: Color32
     );
 }
 
+/// What a pill carries besides its name and where the branch lives.
+#[derive(Clone, Copy, Default)]
+struct Marks {
+    /// The branch has an open pull request.
+    pr: bool,
+    /// The build status of its tip.
+    ci: Option<CheckState>,
+}
+
 /// Paints a pill with white text and icons, at most `max_w` wide; returns its rect.
 fn ref_pill(
     ui: &Ui,
@@ -261,7 +280,7 @@ fn ref_pill(
     badge: &Badge,
     lane: Color32,
     max_w: f32,
-    pr: bool,
+    marks: Marks,
 ) -> Rect {
     const ICON: f32 = 15.0;
     let t = Tokens::get(ui.ctx());
@@ -279,13 +298,14 @@ fn ref_pill(
     } else {
         fill.lerp_to_gamma(Color32::BLACK, DIMMED)
     };
-    let (lead, trail) = pill_icons(badge, pr);
+    let (lead, trail) = pill_icons(badge, marks.pr);
     let font = if badge.head {
         theme::semibold(11.0)
     } else {
         theme::medium(11.0)
     };
-    let icons_w = (lead.len() + trail.len()) as f32 * ICON;
+    let dot_w = if marks.ci.is_some() { 12.0 } else { 0.0 };
+    let icons_w = (lead.len() + trail.len()) as f32 * ICON + dot_w;
     let text_room = (max_w - 16.0 - icons_w).max(16.0);
     let label = truncate(painter, &badge.label, &font, text_room);
     let galley = painter.layout_no_wrap(label, font, white);
@@ -315,6 +335,12 @@ fn ref_pill(
             white,
         );
         x += ICON;
+    }
+    if let Some(state) = marks.ci {
+        // On a ring of the pill's colour, so it reads on any lane.
+        let center = pos2((x + 7.0).min(r.right() - 7.0), r.center().y);
+        painter.circle_filled(center, ci_status::DOT_R + 1.5, Color32::WHITE);
+        ci_status::paint_dot(painter, &t, center, ci_status::DOT_R, state);
     }
     r
 }

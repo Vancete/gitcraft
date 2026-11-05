@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use egui::Ui;
 
-use super::{Action, Dialog, RepoTab, abort_action, widgets};
+use super::{Action, Dialog, RepoTab, abort_action, ci_status, widgets};
 use crate::icons;
 use crate::theme::Tokens;
 
@@ -161,7 +161,10 @@ impl RepoTab {
         match &self.refs.current {
             Some(branch) => {
                 icons::inline(ui, "git-branch", 14.0, t.text_dim);
-                ui.label(egui::RichText::new(branch).font(crate::theme::medium(12.5)));
+                let label = ui.label(egui::RichText::new(branch).font(crate::theme::medium(12.5)));
+                if let Some(e) = &self.ci.error {
+                    label.on_hover_text(format!("No build status: {e}"));
+                }
             }
             None if self.refs.head.is_empty() => {
                 ui.label(egui::RichText::new("No commits yet").color(t.text_dim));
@@ -175,6 +178,12 @@ impl RepoTab {
                     .color(t.warning),
                 );
             }
+        }
+        if let Some(status) = self.ci_status(&self.refs.head) {
+            ui.add_space(4.0);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+            let id = ui.id().with("head-ci");
+            acts.extend(ci_status::dot(ui, id, rect.center(), status));
         }
 
         if let Some(state) = self.work.in_progress {

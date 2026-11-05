@@ -6,7 +6,7 @@ use super::remote_short;
 use crate::forge::{Forge, PullRequest};
 use crate::icons;
 use crate::repo::pinned_sections::{Header, Sections};
-use crate::repo::{Action, RepoTab};
+use crate::repo::{Action, RepoTab, ci_status};
 use crate::theme::Tokens;
 
 impl RepoTab {
@@ -79,7 +79,17 @@ impl RepoTab {
             13.0,
             if pr.draft { t.text_faint } else { t.success },
         );
-        let p = ui.painter_at(rect);
+        let ci = self.ci_status(&pr.sha);
+        // The build status on the right, and the texts up to it.
+        let text_right = if ci.is_some() {
+            rect.right() - 24.0
+        } else {
+            rect.right()
+        };
+        let p = ui.painter_at(rect).with_clip_rect(Rect::from_min_max(
+            rect.min,
+            pos2(text_right, rect.bottom()),
+        ));
         p.text(
             pos2(rect.left() + 48.0, y - 7.0),
             Align2::LEFT_CENTER,
@@ -100,6 +110,10 @@ impl RepoTab {
             egui::FontId::proportional(11.0),
             t.text_faint,
         );
+        if let Some(status) = ci {
+            let center = pos2(rect.right() - 14.0, y);
+            acts.extend(ci_status::dot(ui, r.id.with("ci"), center, status));
+        }
         let has_view = forge == Forge::GitHub;
         let r = r.on_hover_text(if has_view {
             format!("{}\nClick to open, double-click for the browser", pr.url)

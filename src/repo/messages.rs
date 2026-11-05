@@ -1,6 +1,7 @@
 //! Results of background work coming back to the tab, and the per-frame polling that takes
 //! them in (with file-system events, the background fetch and the debounced search).
 
+use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -34,6 +35,8 @@ pub(super) enum Msg {
     /// A comparison's files, for the request numbered so.
     Compare(u64, Result<CompareData, String>),
     Prs(Result<Vec<PullRequest>, String>),
+    /// Build statuses by commit; `true` when new commits were asked about.
+    CiStatuses(bool, Result<HashMap<String, crate::ci::Status>, String>),
     /// A pull request in full, for the request numbered so.
     PrDetails(u64, Box<Result<crate::pull_request::PrDetails, String>>),
     PrFiles(u64, Result<crate::pull_request::PrFiles, String>),
@@ -122,6 +125,8 @@ impl RepoTab {
             ctx.request_repaint_after(Duration::from_secs(30));
         }
 
+        self.poll_ci(ctx);
+
         // Debounced search while typing.
         if let Some(at) = self.search.edited
             && at.elapsed() > Duration::from_millis(350)
@@ -207,9 +212,11 @@ impl RepoTab {
                 Ok(prs) => {
                     self.prs = prs;
                     self.pr_error = None;
+                    self.refresh_ci(ctx);
                 }
                 Err(e) => self.pr_error = Some(e),
             },
+            Msg::CiStatuses(fresh, result) => self.ci_arrived(fresh, result),
             Msg::OpDone {
                 label,
                 result,

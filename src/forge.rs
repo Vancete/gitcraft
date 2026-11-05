@@ -58,6 +58,8 @@ pub struct PullRequest {
     pub title: String,
     /// The branch it proposes (head / source branch).
     pub branch: String,
+    /// Its latest commit.
+    pub sha: String,
     pub author: String,
     pub url: String,
     pub draft: bool,
@@ -141,7 +143,7 @@ pub fn list(repo: &Path, forge: Forge) -> Result<Vec<PullRequest>, String> {
                 "--limit",
                 "100",
                 "--json",
-                "number,title,headRefName,author,url,isDraft",
+                "number,title,headRefName,headRefOid,author,url,isDraft",
             ],
         )?,
         // As many as of GitHub's: glab's own page holds only 30.
@@ -175,6 +177,7 @@ fn parse(forge: Forge, json: &str) -> Result<Vec<PullRequest>, String> {
                 number: item.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
                 title: s(item, &["title"]),
                 branch: s(item, &["headRefName"]),
+                sha: s(item, &["headRefOid"]),
                 author: {
                     let author = s(item, &["author", "login"]);
                     match author.strip_prefix("app/") {
@@ -192,6 +195,7 @@ fn parse(forge: Forge, json: &str) -> Result<Vec<PullRequest>, String> {
                 number: item.get("iid").and_then(|n| n.as_u64()).unwrap_or(0),
                 title: s(item, &["title"]),
                 branch: s(item, &["source_branch"]),
+                sha: s(item, &["sha"]),
                 author: s(item, &["author", "username"]),
                 url: s(item, &["web_url"]),
                 draft: item.get("draft").and_then(|d| d.as_bool()).unwrap_or(false),
@@ -431,15 +435,19 @@ mod tests {
 
     #[test]
     fn parses_both_forges() {
-        let gh = r#"[{"number":7,"title":"Fix","headRefName":"fix/x","author":{"login":"ana"},"url":"https://g/7","isDraft":true}]"#;
+        let gh = r#"[{"number":7,"title":"Fix","headRefName":"fix/x","headRefOid":"c0ffee","author":{"login":"ana"},"url":"https://g/7","isDraft":true}]"#;
         let prs = parse(Forge::GitHub, gh).unwrap_or_default();
         assert_eq!(prs.len(), 1);
         assert_eq!(
             (prs[0].number, prs[0].branch.as_str(), prs[0].draft),
             (7, "fix/x", true)
         );
-        let gl = r#"[{"iid":3,"title":"Add","source_branch":"feat","author":{"username":"bo"},"web_url":"u","draft":false}]"#;
+        let gl = r#"[{"iid":3,"title":"Add","source_branch":"feat","sha":"beef","author":{"username":"bo"},"web_url":"u","draft":false}]"#;
         let mrs = parse(Forge::GitLab, gl).unwrap_or_default();
         assert_eq!((mrs[0].number, mrs[0].author.as_str()), (3, "bo"));
+        assert_eq!(
+            (prs[0].sha.as_str(), mrs[0].sha.as_str()),
+            ("c0ffee", "beef")
+        );
     }
 }
