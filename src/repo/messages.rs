@@ -59,6 +59,8 @@ pub(super) enum Msg {
         message: String,
         result: Result<Vec<git::RebaseCommit>, String>,
     },
+    /// A commit's patch was written to the file, or wasn't.
+    PatchSaved(std::path::PathBuf, Result<(), String>),
     /// The commits to replay for a drop or move from a commit's menu.
     QuickEditCommits {
         edit: quick_edit::Edit,
@@ -187,6 +189,7 @@ impl RepoTab {
                 message,
                 result,
             } => self.reword_older(hash, message, result, ctx),
+            Msg::PatchSaved(file, result) => self.patch_saved(file, result),
             Msg::QuickEditCommits { edit, hash, result } => {
                 self.run_quick_edit(edit, hash, result, ctx)
             }

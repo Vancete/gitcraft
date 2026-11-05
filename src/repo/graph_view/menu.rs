@@ -80,6 +80,27 @@ impl RepoTab {
         ui.separator();
         rewrite_items(ui, &hash, &short, &summary, &target, idle, is_head, acts);
         ui.separator();
+        let merge = commit.parents.len() > 1;
+        if ui
+            .add_enabled(!merge, egui::Button::new("Create patch from commit…"))
+            .on_hover_text("Save it as a file for git am (git format-patch)")
+            .on_disabled_hover_text("A merge commit makes no patch")
+            .clicked()
+        {
+            acts.push(Action::SavePatch {
+                hash: hash.clone(),
+                summary: summary.clone(),
+            });
+        }
+        if is_head
+            && ui
+                .add_enabled(idle, egui::Button::new("Apply patch…"))
+                .on_hover_text(super::APPLY_PATCH_TIP)
+                .clicked()
+        {
+            acts.push(Action::ApplyPatch);
+        }
+        ui.separator();
         copy_items(ui, &hash, &summary, branch_name.as_deref());
     }
 

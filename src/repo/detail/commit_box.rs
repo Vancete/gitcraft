@@ -10,13 +10,14 @@ impl RepoTab {
     pub(super) fn commit_box(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
         let t = Tokens::get(ui.ctx());
         let idle = self.busy_op.is_none();
-        let rebasing = self.work.in_progress == Some(crate::git::InProgress::Rebase);
+        // A rebase or patch stopped on conflicts: the button continues it.
+        let continuing = self.work.in_progress.filter(|s| s.continues());
+        let rebasing = continuing.is_some();
         ui.horizontal(|ui| {
             ui.label(
-                RichText::new(if rebasing {
-                    "CONTINUE REBASE"
-                } else {
-                    "COMMIT"
+                RichText::new(match continuing {
+                    Some(s) => format!("CONTINUE {}", s.label().to_uppercase()),
+                    None => "COMMIT".to_owned(),
                 })
                 .font(theme::semibold(10.5))
                 .color(t.text_faint),
@@ -81,8 +82,8 @@ impl RepoTab {
         }
         ui.add_space(4.0);
         let staged = self.work.staged.len();
-        let label = if rebasing {
-            "Continue rebase".to_owned()
+        let label = if let Some(s) = continuing {
+            format!("Continue {}", s.label().to_lowercase())
         } else if self.amend {
             "Amend last commit".to_owned()
         } else if staged > 0 {
@@ -90,7 +91,9 @@ impl RepoTab {
         } else {
             "Stage all and commit".to_owned()
         };
-        let can = idle && !self.commit_summary.trim().is_empty() && self.work.conflicted.is_empty();
+        let can = idle
+            && (rebasing || !self.commit_summary.trim().is_empty())
+            && self.work.conflicted.is_empty();
         // Only from the message fields, so Ctrl+Enter in the terminal stays the shell's.
         let shortcut = (summary.has_focus() || body.has_focus())
             && ui.input(|i| i.modifiers.command && i.key_pressed(Key::Enter));

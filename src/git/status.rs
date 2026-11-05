@@ -30,6 +30,8 @@ pub enum InProgress {
     CherryPick,
     Revert,
     Rebase,
+    /// `git am` applying patches.
+    Am,
 }
 
 impl InProgress {
@@ -39,6 +41,7 @@ impl InProgress {
             InProgress::CherryPick => "Cherry-pick",
             InProgress::Revert => "Revert",
             InProgress::Rebase => "Rebase",
+            InProgress::Am => "Patch",
         }
     }
 
@@ -49,7 +52,13 @@ impl InProgress {
             InProgress::CherryPick => "cherry-pick",
             InProgress::Revert => "revert",
             InProgress::Rebase => "rebase",
+            InProgress::Am => "am",
         }
+    }
+
+    /// Whether it finishes with `--continue` rather than with a commit.
+    pub fn continues(self) -> bool {
+        matches!(self, InProgress::Rebase | InProgress::Am)
     }
 }
 
@@ -100,7 +109,13 @@ fn in_progress(repo: &Path) -> Option<InProgress> {
         if let Ok(path) = run(Some(repo), &["rev-parse", "--git-path", dir])
             && repo.join(path.trim()).is_dir()
         {
-            return Some(InProgress::Rebase);
+            // `git am` keeps its state there too, marked by this file.
+            let am = repo.join(path.trim()).join("applying").is_file();
+            return Some(if am {
+                InProgress::Am
+            } else {
+                InProgress::Rebase
+            });
         }
     }
     [

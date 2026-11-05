@@ -5,7 +5,7 @@ use std::time::Instant;
 use super::operations::stash_push_args;
 use super::{Action, Msg, OpKind, Refresh, RepoTab, Undo, ops, sidebar, spawn};
 use crate::forge;
-use crate::git::{self, Branch, InProgress};
+use crate::git::{self, Branch};
 
 impl RepoTab {
     /// The checked-out branch, or HEAD's commit when detached (empty without commits).
@@ -254,13 +254,20 @@ impl RepoTab {
     }
 
     pub(super) fn commit(&mut self, ctx: &egui::Context) {
+        if !self.work.conflicted.is_empty() {
+            self.status = Some(("Resolve the conflicted files first".to_owned(), true));
+            return;
+        }
+        // A rebase or patch stopped on conflicts finishes with `--continue`, not a new commit.
+        if let Some(state) = self.work.in_progress.filter(|s| s.continues()) {
+            let label = format!("Continue {}", state.label().to_lowercase());
+            let steps = ops(&[&[state.command(), "--continue"]]);
+            self.run_ops(&label, steps, Refresh::All, OpKind::plain(), ctx);
+            return;
+        }
         let summary = self.commit_summary.trim();
         if summary.is_empty() {
             self.status = Some(("Write a commit summary first".to_owned(), true));
-            return;
-        }
-        if !self.work.conflicted.is_empty() {
-            self.status = Some(("Resolve the conflicted files first".to_owned(), true));
             return;
         }
         let mut commit = vec!["commit".to_owned()];
@@ -273,12 +280,6 @@ impl RepoTab {
             commit.extend(["-m".to_owned(), body.to_owned()]);
         }
         let mut steps = Vec::new();
-        // A rebase stopped on conflicts finishes with `rebase --continue`, not a new commit.
-        if self.work.in_progress == Some(InProgress::Rebase) {
-            steps.push(vec!["rebase".to_owned(), "--continue".to_owned()]);
-            self.run_ops("Continue rebase", steps, Refresh::All, OpKind::plain(), ctx);
-            return;
-        }
         // Nothing staged: commit everything, like "Stage all and commit" (an amend with
         // nothing staged only rewrites the message).
         if self.work.staged.is_empty() && !self.amend {

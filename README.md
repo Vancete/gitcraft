@@ -41,6 +41,10 @@ so your config, credentials and hooks apply as usual.
   diff. On a branch, _Changes x adds to main_ shows only what it changed since the two diverged,
   as a pull request shows it, and _Compare main with x_ every difference; a checkbox switches
   between the two. The right pane says how many commits each side has that the other hasn't.
+- Patches: _Create patch from commit…_ saves a commit as a file (`git format-patch`). _Apply
+  patch…_ (the latest commit's menu, the changes row's menu or the palette) turns one from
+  `git format-patch` into commits (`git am`) and puts any other diff on the working tree
+  (`git apply`). Ctrl+Z undoes either.
 - Interactive rebase: the commits to rewrite, newest on top; pick, reword (edit the message in
   place), squash, fix up or drop each one, move them up and down, then _Start rebase_. Ctrl+Z
   undoes it.
@@ -91,8 +95,9 @@ so your config, credentials and hooks apply as usual.
   before you check the result. Settings → Git installs it in one click and can have git merge
   with it everywhere ([docs/mergiraf.md](docs/mergiraf.md)). gitcraft only runs the `mergiraf`
   program: it neither bundles nor links Mergiraf (GPL-3.0), so gitcraft's licence is unchanged.
-- A merge, rebase, cherry-pick or revert stopped on conflicts shows a banner with _Abort_; the
-  commit box finishes it (_Continue rebase_ during a rebase).
+- A merge, rebase, cherry-pick, revert or patch stopped on conflicts shows a banner with
+  _Abort_; the commit box finishes it (_Continue rebase_ during a rebase, _Continue patch_ while
+  `git am` applies one).
 - File history (every commit that changed the file, following renames; click one for its diff)
   and blame (who last changed each line, newer changes marked brighter; click to go to the
   commit).

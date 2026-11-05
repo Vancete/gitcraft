@@ -135,7 +135,7 @@ impl RepoTab {
             .is_some_and(|t| t.elapsed() > LONG_OP);
         match &result {
             Ok(_) => {
-                if label == "Commit" || label == "Amend" || label == "Continue rebase" {
+                if label == "Commit" || label == "Amend" || label.starts_with("Continue ") {
                     self.commit_summary.clear();
                     self.commit_body.clear();
                     self.amend = false;

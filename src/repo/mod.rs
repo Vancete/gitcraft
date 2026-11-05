@@ -20,6 +20,7 @@ mod load;
 mod messages;
 mod navigate;
 mod operations;
+mod patches;
 mod pinned_sections;
 mod pr_merge;
 mod pr_review;

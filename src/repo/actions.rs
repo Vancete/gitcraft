@@ -114,6 +114,13 @@ pub(crate) enum Action {
     },
     /// Open the editor of a commit's message in the detail pane.
     EditMessage(String),
+    /// Save a commit as a patch file, asking where.
+    SavePatch {
+        hash: String,
+        summary: String,
+    },
+    /// Apply a patch file, asking which.
+    ApplyPatch,
     /// Drop or move a commit of the checked-out branch.
     QuickEdit {
         edit: quick_edit::Edit,
@@ -213,6 +220,7 @@ impl RepoTab {
             PullMode::ALL.map(|m| (m.label().into(), "remote".into(), Action::PullWith(m))),
         );
         items.extend([
+            ("Apply patch…".into(), "patch".into(), Action::ApplyPatch),
             ("Undo".into(), "Ctrl+Z".into(), Action::Undo),
             ("Redo".into(), "Ctrl+Y".into(), Action::Redo),
             (

@@ -289,8 +289,20 @@ fn wip_menu(resp: &Response, idle: bool, acts: &mut Vec<Action>) {
             {
                 acts.push(Action::Dialog(Dialog::stash()));
             }
+            ui.separator();
+            if ui
+                .add_enabled(idle, egui::Button::new("Apply patch…"))
+                .on_hover_text(APPLY_PATCH_TIP)
+                .clicked()
+            {
+                acts.push(Action::ApplyPatch);
+            }
         });
 }
+
+/// What "Apply patch…" does.
+const APPLY_PATCH_TIP: &str = "A patch from git format-patch becomes commits (git am), any other diff goes on the working \
+     tree (git apply)";
 
 /// Menu entries comparing `branch` with `current`: what it would bring in (since they
 /// diverged, as a pull request shows it), and every difference.

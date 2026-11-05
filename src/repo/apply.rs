@@ -149,6 +149,8 @@ impl RepoTab {
             Action::InteractiveRebase { onto, label } => self.interactive_rebase(onto, label, ctx),
             Action::Reword { hash, message } => self.reword_commit(hash, message, ctx),
             Action::EditMessage(hash) => self.edit_message(hash, ctx),
+            Action::SavePatch { hash, summary } => self.save_patch(hash, &summary, ctx),
+            Action::ApplyPatch => self.apply_patch(ctx),
             Action::QuickEdit { edit, hash } => self.quick_edit(edit, hash, ctx),
             Action::RunRebase => self.run_rebase(ctx),
             Action::CloseRebase => self.rebase = None,
