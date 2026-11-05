@@ -5,6 +5,7 @@ mod actions;
 mod apply;
 mod branch_tree;
 mod ci_status;
+mod ci_view;
 pub(crate) mod columns;
 mod commands;
 mod conflict;
@@ -113,6 +114,8 @@ pub struct RepoTab {
     compare: Option<Compare>,
     /// The pull request the big area shows.
     pr_view: Option<pr_view::PrView>,
+    /// The builds of a commit the big area shows.
+    ci_view: Option<ci_view::CiView>,
     pr_requests: u64,
     /// What was written on each pull request and not sent, by its number.
     pr_drafts: HashMap<u64, pr_review::PrDraft>,
@@ -227,6 +230,7 @@ impl RepoTab {
             diff: None,
             compare: None,
             pr_view: None,
+            ci_view: None,
             pr_requests: 0,
             pr_drafts: HashMap::new(),
             compare_requests: 0,

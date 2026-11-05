@@ -16,24 +16,33 @@ impl RepoTab {
         match action {
             Action::Select(row) => {
                 self.close_pr();
+                self.ci_view = None;
                 self.select(row, ctx);
             }
             Action::SelectHash(hash) => {
                 self.close_pr();
+                self.ci_view = None;
                 self.goto(&hash, ctx);
             }
             Action::SelectStash(i) => {
                 self.close_pr();
+                self.ci_view = None;
                 self.select_stash(i, ctx);
             }
             Action::OpenDiff(key) => self.open_diff(key, ctx),
-            Action::OpenPr(number) => self.open_pr(number, ctx),
+            Action::OpenPr(number) => {
+                self.ci_view = None;
+                self.open_pr(number, ctx);
+            }
             Action::ClosePr => {
                 self.close_pr();
                 self.diff = None;
             }
             Action::ReloadPr => self.load_pr(ctx),
             Action::Pr(act) => self.pr_act(act, ctx),
+            Action::OpenCi { sha, run } => self.open_ci(sha, run, ctx),
+            Action::CloseCi => self.ci_view = None,
+            Action::Ci(act) => self.ci_act(act, ctx),
             Action::CloseDiff => {
                 self.diff = None;
                 self.conflict = None;

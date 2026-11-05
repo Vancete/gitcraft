@@ -3,9 +3,12 @@
 use egui::{Key, RichText, Sense, Ui, vec2};
 
 use super::files_header;
+use crate::ci::Status;
 use crate::git::{CommitDetail, Stash};
 use crate::icons;
-use crate::repo::{Action, DiffKey, Refresh, RepoTab, Reword, branch_tree, ops, sidebar, widgets};
+use crate::repo::{
+    Action, DiffKey, Refresh, RepoTab, Reword, branch_tree, ci_status, ops, sidebar, widgets,
+};
 use crate::theme::{self, Tokens};
 
 impl RepoTab {
@@ -47,6 +50,9 @@ impl RepoTab {
             return;
         };
 
+        // On a forge, the commit's builds: how they went, if that's known.
+        let builds = (self.ci_project().is_some() && self.stash_view.is_none())
+            .then(|| self.ci.by_sha.get(&detail.hash));
         // Taken out while the pane borrows `self`; put back after it.
         let mut reword = self.reword.take();
         let head = &self.refs.head;
@@ -75,7 +81,7 @@ impl RepoTab {
                         ui.add_space(12.0);
                         author_line(ui, detail);
                         ui.add_space(10.0);
-                        meta_grid(ui, acts, detail);
+                        meta_grid(ui, acts, detail, builds);
                     });
 
                 let note = (detail.parents.len() > 1).then_some("vs. first parent");
@@ -276,8 +282,14 @@ fn author_line(ui: &mut Ui, detail: &CommitDetail) {
     }
 }
 
-/// The commit's hash, with a copy button, and its parents, each selecting it when clicked.
-fn meta_grid(ui: &mut Ui, acts: &mut Vec<Action>, detail: &CommitDetail) {
+/// The commit's hash, with a copy button, its parents, each selecting it when clicked, and
+/// its `builds` on a forge (with their status if it's known).
+fn meta_grid(
+    ui: &mut Ui,
+    acts: &mut Vec<Action>,
+    detail: &CommitDetail,
+    builds: Option<Option<&Status>>,
+) {
     let t = Tokens::get(ui.ctx());
     egui::Grid::new("commit_meta")
         .num_columns(2)
@@ -312,6 +324,27 @@ fn meta_grid(ui: &mut Ui, acts: &mut Vec<Action>, detail: &CommitDetail) {
                         {
                             acts.push(Action::SelectHash(p.clone()));
                         }
+                    }
+                });
+                ui.end_row();
+            }
+            if let Some(status) = builds {
+                ui.label(RichText::new("Builds").color(t.text_faint));
+                ui.horizontal(|ui| {
+                    if let Some(status) = status {
+                        let (dot, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                        ci_status::paint_dot(ui.painter(), &t, dot.center(), 3.5, status.state);
+                        let tally = match crate::ci::tally_label(&status.checks) {
+                            tally if tally.is_empty() => ci_status::state_word(status.state).into(),
+                            tally => tally,
+                        };
+                        ui.label(RichText::new(tally).color(t.text_dim));
+                    }
+                    if ui.link("Show").clicked() {
+                        acts.push(Action::OpenCi {
+                            sha: detail.hash.clone(),
+                            run: None,
+                        });
                     }
                 });
                 ui.end_row();

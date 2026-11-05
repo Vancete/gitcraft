@@ -44,6 +44,8 @@ impl RepoTab {
                     self.diff_view(ui, &mut acts);
                 } else if self.file_view.is_some() {
                     self.file_view(ui, &mut acts);
+                } else if self.ci_view.is_some() {
+                    self.ci_view_ui(ui, &mut acts);
                 } else if self.pr_view.is_some() {
                     self.pr_view_ui(ui, &mut acts);
                 } else {
@@ -79,6 +81,8 @@ impl RepoTab {
                 acts.push(Action::CloseRebase);
             } else if esc && self.file_view.is_some() {
                 acts.push(Action::CloseFileView);
+            } else if esc && self.ci_view.is_some() {
+                acts.push(Action::CloseCi);
             } else if esc && self.pr_view.is_some() {
                 acts.push(Action::ClosePr);
             } else if esc && self.compare.is_some() {

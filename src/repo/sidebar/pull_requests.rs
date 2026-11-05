@@ -112,7 +112,7 @@ impl RepoTab {
         );
         if let Some(status) = ci {
             let center = pos2(rect.right() - 14.0, y);
-            acts.extend(ci_status::dot(ui, r.id.with("ci"), center, status));
+            acts.extend(ci_status::dot(ui, r.id.with("ci"), center, &pr.sha, status));
         }
         let has_view = forge == Forge::GitHub;
         let r = r.on_hover_text(if has_view {

@@ -91,7 +91,7 @@ impl RepoTab {
             if let Some(status) = ci {
                 let center = pos2(rect.right() - cols.trailing() - 9.0, row.mid());
                 let id = ui.id().with(("ci-dot", &commit.hash));
-                acts.extend(ci_status::dot(ui, id, center, status));
+                acts.extend(ci_status::dot(ui, id, center, &commit.hash, status));
             }
         }
         resp

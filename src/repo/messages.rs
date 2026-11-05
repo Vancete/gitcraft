@@ -37,6 +37,13 @@ pub(super) enum Msg {
     Prs(Result<Vec<PullRequest>, String>),
     /// Build statuses by commit; `true` when new commits were asked about.
     CiStatuses(bool, Result<HashMap<String, crate::ci::Status>, String>),
+    /// The runs of the commit the pipeline view shows, for the read numbered so.
+    CiRuns(u64, Result<Vec<crate::ci::Run>, String>),
+    /// The jobs of a run (by id), for the read numbered so.
+    CiJobs(u64, u64, Result<Vec<crate::ci::Job>, String>),
+    CiLog(u64, Result<String, String>),
+    /// A run was re-run or cancelled, or wasn't.
+    CiActed(String, Result<(), String>),
     /// A pull request in full, for the request numbered so.
     PrDetails(u64, Box<Result<crate::pull_request::PrDetails, String>>),
     PrFiles(u64, Result<crate::pull_request::PrFiles, String>),
@@ -126,6 +133,7 @@ impl RepoTab {
         }
 
         self.poll_ci(ctx);
+        self.poll_ci_view(ctx);
 
         // Debounced search while typing.
         if let Some(at) = self.search.edited
@@ -217,6 +225,10 @@ impl RepoTab {
                 Err(e) => self.pr_error = Some(e),
             },
             Msg::CiStatuses(fresh, result) => self.ci_arrived(fresh, result),
+            Msg::CiRuns(request, result) => self.ci_runs_arrived(request, result, ctx),
+            Msg::CiJobs(request, run, result) => self.ci_jobs_arrived(request, run, result, ctx),
+            Msg::CiLog(request, result) => self.ci_log_arrived(request, result),
+            Msg::CiActed(label, result) => self.ci_acted(label, result),
             Msg::OpDone {
                 label,
                 result,

@@ -86,7 +86,7 @@ impl RepoTab {
             gone: b.upstream_gone(),
             in_worktree: elsewhere.is_some(),
             has_pr,
-            ci,
+            ci: ci.map(|status| (b.target.as_str(), status)),
         };
         let (r, ci_act) = branch_row(ui, row, b.is_head, ahead, behind, marks);
         acts.extend(ci_act);
@@ -384,8 +384,8 @@ struct Marks<'a> {
     /// Checked out in another worktree.
     in_worktree: bool,
     has_pr: bool,
-    /// The build status of its tip.
-    ci: Option<&'a Status>,
+    /// Its tip and the tip's build status.
+    ci: Option<(&'a str, &'a Status)>,
 }
 
 /// A branch: icon (a check for the checked-out one), name, ahead/behind counts; and what
@@ -445,9 +445,9 @@ fn branch_row(
         right = r.left() - 6.0;
     }
     let mut ci_act = None;
-    if let Some(status) = ci {
+    if let Some((sha, status)) = ci {
         let center = pos2(right - ci_status::DOT_R, y);
-        ci_act = ci_status::dot(ui, resp.id.with("ci"), center, status);
+        ci_act = ci_status::dot(ui, resp.id.with("ci"), center, sha, status);
         right = center.x - ci_status::DOT_R - 6.0;
     }
     for (n, icon) in [(behind, "arrow-down"), (ahead, "arrow-up")] {

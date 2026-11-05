@@ -183,7 +183,13 @@ impl RepoTab {
             ui.add_space(4.0);
             let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
             let id = ui.id().with("head-ci");
-            acts.extend(ci_status::dot(ui, id, rect.center(), status));
+            acts.extend(ci_status::dot(
+                ui,
+                id,
+                rect.center(),
+                &self.refs.head,
+                status,
+            ));
         }
 
         if let Some(state) = self.work.in_progress {

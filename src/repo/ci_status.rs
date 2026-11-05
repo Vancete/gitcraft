@@ -198,34 +198,19 @@ pub(crate) fn state_word(state: CheckState) -> &'static str {
     }
 }
 
-/// A clickable dot for `status` around `center`; returns what clicking it does, if clicked.
-pub(super) fn dot(ui: &Ui, id: Id, center: Pos2, status: &Status) -> Option<Action> {
+/// A clickable dot for `status` of commit `sha` around `center`; clicked, it asks for the
+/// commit's builds in the big area.
+pub(super) fn dot(ui: &Ui, id: Id, center: Pos2, sha: &str, status: &Status) -> Option<Action> {
     let t = Tokens::get(ui.ctx());
     let rect = Rect::from_center_size(center, vec2(DOT_R * 2.0 + 6.0, DOT_R * 2.0 + 6.0));
     let resp: Response = ui.interact(rect, id, Sense::click());
     let radius = if resp.hovered() { DOT_R + 1.0 } else { DOT_R };
     paint_dot(ui.painter(), &t, center, radius, status.state);
-    if resp.on_hover_text(tooltip(status)).clicked() {
-        dot_action(status)
-    } else {
-        None
-    }
-}
-
-/// What clicking a dot does: open the check that needs attention most in the browser.
-fn dot_action(status: &Status) -> Option<Action> {
-    let rank = |state: CheckState| match state {
-        CheckState::Failed => 0,
-        CheckState::Running => 1,
-        CheckState::Passed => 2,
-        CheckState::Skipped => 3,
-    };
-    status
-        .checks
-        .iter()
-        .filter(|c| crate::pull_request::is_web_url(&c.url))
-        .min_by_key(|c| rank(c.state))
-        .map(|c| Action::OpenUrl(c.url.clone()))
+    let clicked = resp.on_hover_text(tooltip(status)).clicked();
+    clicked.then(|| Action::OpenCi {
+        sha: sha.to_owned(),
+        run: None,
+    })
 }
 
 #[cfg(test)]

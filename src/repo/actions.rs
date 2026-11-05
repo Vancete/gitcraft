@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use super::toolbar::reveal_label;
-use super::{Dialog, DiffKey, Refresh, RepoTab, Undo, diff, file_view, ops, pr_review};
+use super::{Dialog, DiffKey, Refresh, RepoTab, Undo, ci_view, diff, file_view, ops, pr_review};
 use crate::git::{self, InProgress};
 use crate::terminal::ShellSpec;
 
@@ -19,6 +19,14 @@ pub(crate) enum Action {
     ReloadPr,
     /// Something done on the pull request shown.
     Pr(pr_review::PrAct),
+    /// Show the builds of a commit in the big area, a run of them first if it's given.
+    OpenCi {
+        sha: String,
+        run: Option<u64>,
+    },
+    CloseCi,
+    /// Something done in the pipeline view.
+    Ci(ci_view::CiAct),
     CloseDiff,
     Ops {
         label: String,
@@ -230,6 +238,16 @@ impl RepoTab {
                 "Open in browser".into(),
                 "remote".into(),
                 Action::OpenUrl(url),
+            ));
+        }
+        if !self.refs.head.is_empty() && self.ci_project().is_some() {
+            items.push((
+                "Show CI for HEAD".into(),
+                "builds".into(),
+                Action::OpenCi {
+                    sha: self.refs.head.clone(),
+                    run: None,
+                },
             ));
         }
         if !self.refs.head.is_empty() {

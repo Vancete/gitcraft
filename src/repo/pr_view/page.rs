@@ -335,6 +335,8 @@ fn checks(ui: &mut Ui, d: &PrDetails, acts: &mut Vec<Action>) {
     sorted.sort_by_key(|c| rank(c.state));
     for check in sorted {
         let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+        // A run of GitHub Actions opens in the pipeline view, anything else in the browser.
+        let run = crate::ci::github::run_of_url(&check.url);
         let opens = pr::is_web_url(&check.url);
         if r.hovered() && opens {
             ui.painter().rect_filled(rect, t.radius_sm, t.hover);
@@ -364,8 +366,21 @@ fn checks(ui: &mut Ui, d: &PrDetails, acts: &mut Vec<Action>) {
             egui::FontId::proportional(11.0),
             t.text_faint,
         );
-        if opens && r.on_hover_text(&check.url).clicked() {
-            acts.push(Action::OpenUrl(check.url.clone()));
+        if !opens {
+            continue;
+        }
+        let r = match run {
+            Some(_) => r.on_hover_text(format!("{}\nClick to show the run", check.url)),
+            None => r.on_hover_text(&check.url),
+        };
+        if r.clicked() {
+            acts.push(match run {
+                Some(run) => Action::OpenCi {
+                    sha: d.head_oid.clone(),
+                    run: Some(run),
+                },
+                None => Action::OpenUrl(check.url.clone()),
+            });
         }
     }
 }
