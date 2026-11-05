@@ -78,3 +78,9 @@ winresource = "0.1"
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }
+
+# winit 0.30 with two Windows fixes for moving the window between monitors of different scales:
+# the fix of rust-windowing/winit#4341 (released only in 0.31) and a minimum size that follows
+# the scale. See the lines marked `gitcraft:` in vendor/winit; drop this once on winit 0.31.
+[patch.crates-io]
+winit = { path = "vendor/winit" }

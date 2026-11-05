@@ -63,7 +63,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_OVERLAPPED, WS_POPUP, WS_VISIBLE,
 };
 
-use crate::dpi::{PhysicalPosition, PhysicalSize};
+use crate::dpi::{PhysicalPosition, PhysicalSize, Size};
 use crate::error::EventLoopError;
 use crate::event::{
     DeviceEvent, Event, Force, Ime, InnerSizeWriter, RawKeyEvent, Touch, TouchPhase, WindowEvent,
@@ -2234,6 +2234,18 @@ unsafe fn public_window_callback_inner(
                     return;
                 }
 
+                // gitcraft: a minimum or maximum given in physical pixels was meant for the old
+                // scale (egui-winit converts its logical sizes with the scale at the time). Left
+                // as it is, the minimum made for a 150% screen holds a window wide on a 100% one.
+                let rescale = |size: Option<Size>| match size {
+                    Some(Size::Physical(size)) => Some(Size::Physical(
+                        size.to_logical::<f64>(old_scale_factor).to_physical(new_scale_factor),
+                    )),
+                    other => other,
+                };
+                window_state.min_size = rescale(window_state.min_size);
+                window_state.max_size = rescale(window_state.max_size);
+
                 let allow_resize = window_state.fullscreen.is_none()
                     && !window_state.window_flags().contains(WindowFlags::MAXIMIZED);
 
@@ -2305,8 +2317,16 @@ unsafe fn public_window_callback_inner(
                 }
             }
 
+            // gitcraft: backport of winit #4341 (rust-windowing/winit#4041). On Windows 11 the
+            // adjustment below shifts a window being dragged back onto the monitor it is leaving,
+            // which changes its scale again: it grows, bounces and never fully crosses. Windows'
+            // own suggestion is right there.
+            let windows_11 = super::dark_mode::WIN10_BUILD_VERSION
+                .is_some_and(|build| build >= 22000);
             let new_outer_rect: RECT;
-            {
+            if windows_11 {
+                new_outer_rect = suggested_rect;
+            } else {
                 let suggested_ul =
                     (suggested_rect.left + margin_left, suggested_rect.top + margin_top);
 
