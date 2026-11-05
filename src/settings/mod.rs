@@ -161,7 +161,7 @@ impl Settings {
     fn mergiraf_ui(&mut self, ui: &mut Ui) {
         use crate::mergiraf::{self, Job};
         let t = Tokens::get(ui.ctx());
-        let state = mergiraf::state();
+        let state = mergiraf::state(ui.ctx());
         let job = mergiraf::job();
         let busy = matches!(job, Job::Running(_));
         ui.horizontal(|ui| {

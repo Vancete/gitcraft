@@ -235,7 +235,7 @@ impl RepoTab {
     pub(crate) fn poll_parked(&mut self, ctx: &egui::Context) {
         let mut status = Vec::new();
         for parked in &mut self.parked {
-            parked.poll(ctx);
+            parked.poll_parked_view(ctx);
             self.finished.append(&mut parked.finished);
             if let Some(work) = parked.unfinished() {
                 status.push((parked.path.clone(), work));

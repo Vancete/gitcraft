@@ -87,9 +87,66 @@ pub fn highlight<'a>(
     Some(out)
 }
 
+/// Characters of a line shown at most. Laying out and drawing a line costs as much as it is long,
+/// every frame it is in sight, and a minified file can be a single line of megabytes.
+pub(crate) const MAX_LINE_CHARS: usize = 5000;
+
+/// Cuts a line shown (and its colours) to [`MAX_LINE_CHARS`], saying how much was left out;
+/// returns the line as it was when it was cut. Only what is shown: patches are made from the
+/// line as git printed it.
+pub(crate) fn cap_line(text: &mut String, spans: Option<&mut Spans>) -> Option<String> {
+    let (cut, _) = text.char_indices().nth(MAX_LINE_CHARS)?;
+    let note = format!(" … {} more characters", text[cut..].chars().count());
+    let whole = text.clone();
+    text.truncate(cut);
+    if let Some(spans) = spans {
+        let mut left = MAX_LINE_CHARS;
+        spans.retain_mut(|(_, s)| {
+            if left == 0 {
+                return false;
+            }
+            match s.char_indices().nth(left) {
+                Some((i, _)) => {
+                    s.truncate(i);
+                    left = 0;
+                }
+                None => left -= s.chars().count(),
+            }
+            true
+        });
+        spans.push((Color32::GRAY, note.clone()));
+    }
+    text.push_str(&note);
+    Some(whole)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_lines_are_cut_with_their_colours() {
+        let red = Color32::RED;
+        let mut short = "abc".to_owned();
+        assert_eq!(cap_line(&mut short, None), None);
+        assert_eq!(short, "abc");
+
+        let mut text = "é".repeat(MAX_LINE_CHARS + 7);
+        let mut spans: Spans = vec![
+            (red, "é".repeat(MAX_LINE_CHARS - 1)),
+            (red, "é".repeat(5)),
+            (red, "é".repeat(3)),
+        ];
+        let whole = text.clone();
+        assert_eq!(cap_line(&mut text, Some(&mut spans)), Some(whole));
+        assert_eq!(
+            text,
+            format!("{} … 7 more characters", "é".repeat(MAX_LINE_CHARS))
+        );
+        let joined: String = spans.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(joined, text);
+        assert_eq!(spans.len(), 3);
+    }
 
     #[test]
     fn colours_rust_and_skips_plain_text() {

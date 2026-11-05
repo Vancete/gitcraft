@@ -8,7 +8,7 @@ mod theme_file;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use syntect::highlighting::Theme;
 
@@ -40,9 +40,8 @@ pub fn current() -> Option<Arc<EditorTheme>> {
     type Cache = Option<(PathBuf, Option<SystemTime>, Option<Arc<EditorTheme>>)>;
     static CACHE: Mutex<Cache> = Mutex::new(None);
 
-    let editor = installed_editors()
-        .into_iter()
-        .find(|e| e.settings.is_file())?;
+    let editors = editors();
+    let editor = editors.iter().find(|e| e.settings.is_file())?;
     let modified = std::fs::metadata(&editor.settings)
         .and_then(|m| m.modified())
         .ok();
@@ -53,9 +52,27 @@ pub fn current() -> Option<Arc<EditorTheme>> {
     {
         return theme.clone();
     }
-    let theme = load(&editor).map(Arc::new);
+    let theme = load(editor).map(Arc::new);
     *cache = Some((editor.settings.clone(), modified, theme.clone()));
     theme
+}
+
+/// The installed VS Code flavours, looked for at most every few seconds: the settings page
+/// asks every frame, and looking means dozens of folder reads.
+fn editors() -> Arc<Vec<Editor>> {
+    const RECHECK: Duration = Duration::from_secs(10);
+    static CACHE: Mutex<Option<(Instant, Arc<Vec<Editor>>)>> = Mutex::new(None);
+    let Ok(mut cache) = CACHE.lock() else {
+        return Arc::new(installed_editors());
+    };
+    if let Some((when, editors)) = cache.as_ref()
+        && when.elapsed() < RECHECK
+    {
+        return editors.clone();
+    }
+    let editors = Arc::new(installed_editors());
+    *cache = Some((Instant::now(), editors.clone()));
+    editors
 }
 
 fn load(editor: &Editor) -> Option<EditorTheme> {

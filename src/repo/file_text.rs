@@ -38,8 +38,11 @@ impl FileText {
                 before: false,
             };
         }
-        let lines = split_lines(&String::from_utf8_lossy(bytes));
-        let spans = highlight::highlight(path, lines.iter().map(String::as_str), dark);
+        let mut lines = split_lines(&String::from_utf8_lossy(bytes));
+        let mut spans = highlight::highlight(path, lines.iter().map(String::as_str), dark);
+        for (i, line) in lines.iter_mut().enumerate() {
+            let _ = highlight::cap_line(line, spans.as_mut().and_then(|s| s.get_mut(i)));
+        }
         let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
         Self {
             lines,

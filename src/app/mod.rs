@@ -155,7 +155,9 @@ impl App {
                 let is_dir = path.is_dir();
                 kept.push(is_dir);
                 if is_dir {
-                    app.tabs.push(Tab::Repo(Box::new(RepoTab::new(path, ctx))));
+                    // Read once shown, or once the one shown is read: one at a time first.
+                    app.tabs
+                        .push(Tab::Repo(Box::new(RepoTab::new_deferred(path, ctx))));
                 }
             }
         }
@@ -345,11 +347,16 @@ impl eframe::App for App {
         self.poll_update();
         let focused = self.shortcuts(&ctx);
 
-        // Background repos still need their results drained.
+        // Background repos still need their results drained. Those restored on start are read
+        // once the one shown is: they would otherwise all compete with it.
+        let shown_read = !matches!(self.tabs.get(self.active), Some(Tab::Repo(r)) if r.opening());
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             if let Tab::Repo(r) = tab
                 && i != self.active
             {
+                if shown_read {
+                    r.start_deferred(&ctx);
+                }
                 r.poll(&ctx);
             }
         }
@@ -435,6 +442,15 @@ fn repo_root(path: &Path) -> Result<PathBuf, String> {
     let root = git::toplevel(path)?;
     let root = std::fs::canonicalize(&root).unwrap_or(root);
     Ok(strip_verbatim(root))
+}
+
+/// Work the first frame will need, started before the window is made so that it overlaps with
+/// that: on macOS, asking the login shell for its PATH, which every git call waits for (its
+/// profile scripts can take seconds).
+pub fn warm_up() {
+    std::thread::spawn(|| {
+        let _ = crate::shell_path::path();
+    });
 }
 
 /// The window and taskbar icon (the `.exe` gets the same picture from `build.rs`).

@@ -1,8 +1,11 @@
 //! The command palette (Ctrl+P): app commands, themes and the open repository's actions.
 
+use std::path::PathBuf;
+
 use egui::{Align2, Key, RichText, Sense, Stroke, Ui, pos2, vec2};
 
 use super::{App, Tab};
+use crate::repo::Action;
 use crate::theme::{self, ThemeKind, Tokens};
 
 /// The command palette (Ctrl+P): type to filter, Enter runs.
@@ -10,7 +13,18 @@ pub(super) struct Palette {
     query: String,
     selected: usize,
     focus: bool,
+    /// The entries, made once rather than every frame (a repository with thousands of branches
+    /// has thousands of them), and what they were made from.
+    entries: Option<(EntriesKey, Vec<Item>)>,
 }
+
+/// What the palette's entries were made from: the active tab, and its repository (a tab's
+/// view can change to another worktree) and that repository's palette generation.
+type EntriesKey = (usize, Option<(PathBuf, (u64, u64))>);
+
+/// A palette entry: its label, the label lowercased (what the query is matched against), its
+/// hint, what it runs.
+type Item = (String, String, String, Entry);
 
 /// What a palette entry does outside the open repository.
 enum AppCommand {
@@ -26,8 +40,8 @@ enum AppCommand {
 
 enum Entry {
     App(AppCommand),
-    /// Index into the active repository's palette items.
-    Repo(usize),
+    /// One of the active repository's palette items.
+    Repo(Action),
 }
 
 impl App {
@@ -36,6 +50,7 @@ impl App {
             query: String::new(),
             selected: 0,
             focus: true,
+            entries: None,
         });
     }
 
@@ -91,8 +106,8 @@ impl App {
             ));
         }
         if let Some(Tab::Repo(repo)) = self.tabs.get(self.active) {
-            for (i, (label, hint, _)) in repo.palette_items().into_iter().enumerate() {
-                list.push((label, hint, Entry::Repo(i)));
+            for (label, hint, action) in repo.palette_items() {
+                list.push((label, hint, Entry::Repo(action)));
             }
         }
         list
@@ -108,10 +123,8 @@ impl App {
             Entry::App(AppCommand::Settings) => self.open_settings(),
             Entry::App(AppCommand::Manual) => self.manual_open = true,
             Entry::App(AppCommand::Theme(kind)) => self.set_theme(ctx, kind),
-            Entry::Repo(i) => {
-                if let Some(Tab::Repo(repo)) = self.tabs.get_mut(self.active)
-                    && let Some((_, _, action)) = repo.palette_items().into_iter().nth(i)
-                {
+            Entry::Repo(action) => {
+                if let Some(Tab::Repo(repo)) = self.tabs.get_mut(self.active) {
                     repo.queue(action);
                     ctx.request_repaint();
                 }
@@ -124,16 +137,46 @@ impl App {
             return;
         }
         let t = Tokens::get(ctx);
-        let entries = self.palette_entries();
+        let key = (
+            self.active,
+            match self.tabs.get(self.active) {
+                Some(Tab::Repo(repo)) => Some((repo.path.clone(), repo.palette_generation())),
+                _ => None,
+            },
+        );
+        if self
+            .palette
+            .as_ref()
+            .is_some_and(|p| p.entries.as_ref().is_none_or(|(made, _)| *made != key))
+        {
+            let entries = self
+                .palette_entries()
+                .into_iter()
+                .map(|(label, hint, entry)| {
+                    let lower = label.to_lowercase();
+                    (label, lower, hint, entry)
+                })
+                .collect();
+            if let Some(palette) = &mut self.palette {
+                palette.entries = Some((key, entries));
+            }
+        }
         let Some(palette) = &mut self.palette else {
             return;
         };
-        let query = palette.query.to_lowercase();
+        let Palette {
+            query,
+            selected: chosen,
+            focus,
+            entries,
+        } = palette;
+        let entries: &[Item] = entries.as_ref().map_or(&[], |(_, e)| e);
+        let lowered = query.to_lowercase();
         let shown: Vec<usize> = (0..entries.len())
-            .filter(|&i| fuzzy(&entries[i].0.to_lowercase(), &query))
+            .filter(|&i| fuzzy(&entries[i].1, &lowered))
             .take(60)
             .collect();
-        palette.selected = palette.selected.min(shown.len().saturating_sub(1));
+        *chosen = (*chosen).min(shown.len().saturating_sub(1));
         let (up, down, enter, esc) = ctx.input(|i| {
             (
                 i.key_pressed(Key::ArrowUp),
@@ -143,10 +186,10 @@ impl App {
             )
         });
         if down {
-            palette.selected = (palette.selected + 1).min(shown.len().saturating_sub(1));
+            *chosen = (*chosen + 1).min(shown.len().saturating_sub(1));
         }
         if up {
-            palette.selected = palette.selected.saturating_sub(1);
+            *chosen = chosen.saturating_sub(1);
         }
         let mut run = None;
         let mut close = esc;
@@ -163,17 +206,17 @@ impl App {
             frame.show(ui, |ui| {
                 ui.set_width(560.0);
                 let edit = ui.add(
-                    egui::TextEdit::singleline(&mut palette.query)
+                    egui::TextEdit::singleline(query)
                         .hint_text("Type a command or a branch…")
                         .desired_width(f32::INFINITY)
                         .margin(egui::Margin::symmetric(10, 8))
                         .font(theme::medium(14.0)),
                 );
-                if std::mem::take(&mut palette.focus) {
+                if std::mem::take(focus) {
                     edit.request_focus();
                 }
                 if edit.changed() {
-                    palette.selected = 0;
+                    *chosen = 0;
                 }
                 ui.add_space(6.0);
                 egui::ScrollArea::vertical()
@@ -181,8 +224,8 @@ impl App {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         for (k, &i) in shown.iter().enumerate() {
-                            let (label, hint, _) = &entries[i];
-                            let selected = k == palette.selected;
+                            let (label, _, hint, _) = &entries[i];
+                            let selected = k == *chosen;
                             if palette_row(ui, &t, label, hint, selected, up || down) {
                                 run = Some(i);
                             }
@@ -193,7 +236,7 @@ impl App {
                     });
             });
         });
-        if enter && let Some(&i) = shown.get(palette.selected) {
+        if enter && let Some(&i) = shown.get(*chosen) {
             run = Some(i);
         }
         if resp.response.clicked_elsewhere()
@@ -203,12 +246,12 @@ impl App {
             close = true;
         }
         if close || run.is_some() {
-            self.palette = None;
-        }
-        if let Some(i) = run
-            && let Some((_, _, entry)) = entries.into_iter().nth(i)
-        {
-            self.run_entry(entry, ctx);
+            let entries = self.palette.take().and_then(|p| p.entries);
+            if let Some(i) = run
+                && let Some((_, _, _, entry)) = entries.and_then(|(_, e)| e.into_iter().nth(i))
+            {
+                self.run_entry(entry, ctx);
+            }
         }
     }
 }

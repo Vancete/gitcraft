@@ -1,10 +1,12 @@
 //! Selecting text in a diff by dragging over it, on one side, and copying it.
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use egui::Ui;
 
 use super::{DiffLine, Kind};
+use crate::repo::highlight::MAX_LINE_CHARS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Side {
@@ -61,19 +63,31 @@ impl TextSel {
         (from < to).then_some(from..to)
     }
 
-    /// The selected text, one line of the side per line.
-    pub(super) fn text(&self, lines: &[DiffLine]) -> String {
+    /// The selected text, one line of the side per line; a line cut to be shown is copied
+    /// whole from `uncut` (by line).
+    pub(super) fn text(&self, lines: &[DiffLine], uncut: &HashMap<usize, String>) -> String {
         let (start, end) = self.ordered();
         let mut out: Vec<String> = Vec::new();
         for i in start.0..=end.0 {
             let Some(line) = lines.get(i).filter(|l| self.side.shows(l.kind)) else {
                 continue;
             };
-            let from = if i == start.0 { start.1 } else { 0 };
-            let to = if i == end.0 { end.1 } else { usize::MAX };
+            let mut from = if i == start.0 { start.1 } else { 0 };
+            let mut to = if i == end.0 { end.1 } else { usize::MAX };
+            let text = match uncut.get(&i) {
+                // A line cut to be shown: the places are in what is shown, the cut part and
+                // then the note of what was left out, which stands for the rest of the line.
+                Some(whole) => {
+                    from = from.min(MAX_LINE_CHARS);
+                    if to > MAX_LINE_CHARS {
+                        to = usize::MAX;
+                    }
+                    whole
+                }
+                None => &line.text,
+            };
             out.push(
-                line.text
-                    .chars()
+                text.chars()
                     .skip(from)
                     .take(to.saturating_sub(from))
                     .collect(),
@@ -118,18 +132,20 @@ pub(super) fn copy_selection(
     drag: &egui::Response,
     sel: Option<TextSel>,
     lines: &[DiffLine],
+    uncut: &HashMap<usize, String>,
 ) {
-    let selected_text = sel.map(|s| s.text(lines)).filter(|s| !s.is_empty());
-    if let Some(text) = &selected_text {
-        let copy = !ui.ctx().egui_wants_keyboard_input()
-            && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
-        if copy {
-            ui.ctx().copy_text(text.clone());
-        }
+    // Put together only when asked for: a selection can span thousands of lines.
+    let selected_text = || sel.map(|s| s.text(lines, uncut)).filter(|s| !s.is_empty());
+    let copy = sel.is_some()
+        && !ui.ctx().egui_wants_keyboard_input()
+        && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
+    if copy && let Some(text) = selected_text() {
+        ui.ctx().copy_text(text);
     }
     egui::Popup::context_menu(drag)
         .style(crate::theme::menu_style)
         .show(|ui| {
+            let selected_text = selected_text();
             if ui
                 .add_enabled(selected_text.is_some(), egui::Button::new("Copy"))
                 .clicked()

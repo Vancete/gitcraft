@@ -53,8 +53,8 @@ impl Edit {
 
 /// The checked-out branch from HEAD down its first parents, newest first, as far as `commits`
 /// are loaded.
-fn first_parents<'a>(
-    commits: &'a [Commit],
+fn first_parents<'a, C: std::borrow::Borrow<Commit>>(
+    commits: &'a [C],
     index: &HashMap<String, usize>,
     head: &str,
 ) -> Vec<&'a Commit> {
@@ -64,6 +64,7 @@ fn first_parents<'a>(
         .and_then(|h| index.get(h))
         .and_then(|&i| commits.get(i))
     {
+        let c: &'a Commit = c.borrow();
         line.push(c);
         next = c.parents.first().map(String::as_str);
     }

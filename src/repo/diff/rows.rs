@@ -3,8 +3,8 @@
 
 use egui::{FontId, Galley, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
 
-use super::jump::{change_at, changes, offset_of};
-use super::map::{change_map, runs_of};
+use super::jump::{change_at, offset_of};
+use super::map::change_map;
 use super::paint::{filler, hunk_button, paint_line};
 use super::select::{Hit, Side, TextSel, copy_selection, drag_selection};
 use super::{DiffData, Kind, LINE_H, MAP_W, NUM_W, Pick, hunk_changes};
@@ -108,8 +108,7 @@ impl<'a> Rows<'a> {
         // Every change of the file in a strip beside the scrollbar, to see where to scroll to
         // (above all when the whole file is shown). Clicking a change's mark jumps to the
         // change, clicking elsewhere or dragging scrolls there.
-        let runs = runs_of(data, split);
-        let changes = changes(&runs);
+        let (runs, changes) = data.runs(split);
         let area = ui.available_rect_before_wrap();
         let strip = Rect::from_min_max(pos2(area.right() - MAP_W, area.top()), area.max);
         let body = Rect::from_min_max(area.min, pos2(strip.left() - 1.0, area.bottom()));
@@ -140,7 +139,7 @@ impl<'a> Rows<'a> {
             let slack = 3.0 / strip.height() * count as f32;
             self.jumped = map
                 .clicked()
-                .then(|| change_at(&changes, frac * count as f32, slack))
+                .then(|| change_at(changes, frac * count as f32, slack))
                 .flatten();
             if self.jumped.is_none() {
                 let at = frac * total_h;
@@ -176,7 +175,7 @@ impl<'a> Rows<'a> {
         change_map(
             ui,
             strip,
-            &runs,
+            runs,
             split,
             (shown.state.offset.y, shown.inner_rect.height(), total_h),
             &self.t,
@@ -192,7 +191,7 @@ impl<'a> Rows<'a> {
         if self.text_hover || text_drag.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
         }
-        copy_selection(ui, &text_drag, sel, &data.lines);
+        copy_selection(ui, &text_drag, sel, &data.lines, &data.uncut);
         sel
     }
 

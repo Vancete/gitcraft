@@ -383,14 +383,17 @@ fn truncate(painter: &Painter, text: &str, font: &FontId, width: f32) -> String 
     if fits(text) {
         return text.to_owned();
     }
-    let chars: Vec<char> = text.chars().collect();
-    let mut n = chars.len();
-    while n > 1 {
-        n -= 1;
-        let s: String = chars.iter().take(n).collect::<String>() + "…";
-        if fits(&s) {
-            return s;
+    // The longest prefix that fits with the ellipsis, by bisection: a prefix is never wider
+    // than a longer one, and this runs for every cut pill every frame.
+    let cut = |n: usize| text.chars().take(n).collect::<String>() + "…";
+    let (mut lo, mut hi) = (0, text.chars().count().saturating_sub(1));
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if fits(&cut(mid)) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
         }
     }
-    "…".to_owned()
+    if lo == 0 { "…".to_owned() } else { cut(lo) }
 }

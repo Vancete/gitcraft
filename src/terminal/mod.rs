@@ -11,7 +11,7 @@ mod view;
 use std::io::{Read, Write};
 use std::num::NonZeroU16;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -20,6 +20,8 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 pub use shells::{ShellSpec, available_shells, default_shell};
 
 const SCROLLBACK: usize = 5000;
+/// How often output in a terminal out of sight redraws the app.
+const HIDDEN_REPAINT: std::time::Duration = std::time::Duration::from_millis(250);
 
 pub struct Terminal {
     parser: Arc<Mutex<vt100::Parser>>,
@@ -30,6 +32,9 @@ pub struct Terminal {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     exited: Arc<AtomicBool>,
+    /// The pass in which the terminal was last drawn ([`egui::Context::cumulative_pass_nr`]):
+    /// output a terminal out of sight brings repaints the app only now and then.
+    drawn: Arc<AtomicU64>,
     /// (rows, cols) the pty was last sized to.
     size: (u16, u16),
     /// Lines scrolled back into history (0 = following the output).
@@ -96,9 +101,11 @@ impl Terminal {
             SCROLLBACK,
         )));
         let exited = Arc::new(AtomicBool::new(false));
+        let drawn = Arc::new(AtomicU64::new(0));
         {
             let parser = Arc::clone(&parser);
             let exited = Arc::clone(&exited);
+            let drawn = Arc::clone(&drawn);
             let writer = writer.clone();
             let ctx = ctx.clone();
             std::thread::spawn(move || {
@@ -118,7 +125,13 @@ impl Terminal {
                                 let _ = writer.send(reply.into_bytes());
                             }
                             drop(parser);
-                            ctx.request_repaint();
+                            // A busy program (a build, a log) prints all the time: the whole
+                            // app redraws for it only while the terminal is in sight.
+                            if ctx.cumulative_pass_nr() <= drawn.load(Ordering::Relaxed) + 2 {
+                                ctx.request_repaint();
+                            } else {
+                                ctx.request_repaint_after(HIDDEN_REPAINT);
+                            }
                         }
                     }
                 }
@@ -134,6 +147,7 @@ impl Terminal {
             master: pair.master,
             child,
             exited,
+            drawn,
             size: (rows, cols),
             scroll: 0,
             scroll_rest: 0.0,

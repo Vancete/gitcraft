@@ -12,6 +12,9 @@ use crate::theme::{self, Tokens};
 
 use super::blocks;
 
+/// How far out of view a comment card is still drawn.
+const CARD_MARGIN: f32 = 200.0;
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn timeline(
     ui: &mut Ui,
@@ -38,21 +41,58 @@ pub(super) fn timeline(
         );
         return;
     }
+    // With a screen reader on, every card is drawn: one stepped over would be missing from
+    // what it reads. (Asking for the accessibility node of this `Ui`, which exists already,
+    // answers whether accessibility is on without adding anything.)
+    let reader = ui.ctx().accesskit_node_builder(ui.id(), |_| ()).is_some();
     for (i, (entry, body)) in d.timeline.iter().zip(bodies).enumerate() {
-        egui::Frame::new()
-            .fill(t.card)
-            .corner_radius(t.radius)
-            .inner_margin(egui::Margin::symmetric(12, 10))
-            .show(ui, |ui| {
-                let inner = width - 24.0;
-                ui.set_width(inner);
-                entry_header(ui, entry, d, files, acts);
-                if !body.is_empty() {
-                    ui.add_space(6.0);
-                    blocks(ui, cache, &format!("entry-{i}"), body, inner);
-                }
-                dismiss_box(ui, entry, draft, acts);
+        // A long discussion is hundreds of cards of formatted text: one out of sight is only
+        // stepped over, by its height when last drawn (at this width, with this text, with or
+        // without the changed files' button, with or without the box to dismiss it). Each card has ids of its own, so stepping over
+        // one changes nothing in the others. A margin around the view keeps a card that has
+        // grown a little since from being stepped over while it shows.
+        let height_id = ui.id().with(("pr-card-height", i));
+        let dismissing = entry.review_id.is_some() && entry.review_id == draft.dismissing;
+        let text = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            entry.body.hash(&mut hasher);
+            hasher.finish()
+        };
+        let fits = (width, text, files.is_some(), dismissing);
+        let known = ui
+            .data(|data| data.get_temp::<((f32, u64, bool, bool), f32)>(height_id))
+            .filter(|(measured, _)| *measured == fits)
+            .map(|(_, h)| h);
+        let unseen = known.filter(|&h| {
+            if reader {
+                return false;
+            }
+            let card = egui::Rect::from_min_size(ui.cursor().min, vec2(width, h));
+            !ui.clip_rect().expand(CARD_MARGIN).intersects(card)
+        });
+        if let Some(h) = unseen {
+            ui.push_id(("pr-card", i), |ui| ui.allocate_space(vec2(width, h)));
+        } else {
+            let card = ui.push_id(("pr-card", i), |ui| {
+                egui::Frame::new()
+                    .fill(t.card)
+                    .corner_radius(t.radius)
+                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .show(ui, |ui| {
+                        let inner = width - 24.0;
+                        ui.set_width(inner);
+                        entry_header(ui, entry, d, files, acts);
+                        if !body.is_empty() {
+                            ui.add_space(6.0);
+                            blocks(ui, cache, &format!("entry-{i}"), body, inner);
+                        }
+                        dismiss_box(ui, entry, draft, acts);
+                    });
             });
+            let h = card.response.rect.height();
+            ui.data_mut(|data| data.insert_temp(height_id, (fits, h)));
+        }
         ui.add_space(8.0);
     }
 }

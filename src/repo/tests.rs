@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use super::commands::{local_name_of, refuse_option_like};
 use super::operations::{run_steps, stash_push_args};
 use super::toolbar::headline;
-use super::watch::{fs_change, linked_git_dirs};
+use super::watch::{FsChange, Reread, fs_change, linked_git_dirs};
 use super::{DiffKey, DiffView, OpKind, Undo, ops};
 use crate::git;
 
@@ -100,19 +100,55 @@ fn a_linked_worktree_is_watched_where_git_keeps_its_data() {
     assert_eq!(Some(common.clone()), canonical);
     assert!(own.starts_with(&common) && own != common);
     let watched = [own.clone(), common.clone()];
-    // Its HEAD and index, the shared refs: reload; objects: nothing; its files: status.
-    assert_eq!(fs_change(&own.join("HEAD"), &watched), Some(true));
-    assert_eq!(fs_change(&own.join("index"), &watched), Some(true));
+    // Its HEAD, the shared refs: reload; objects: nothing; its index: status and submodules;
+    // its files: status.
+    assert_eq!(fs_change(&own.join("HEAD"), &watched), Some(FsChange::Git));
+    assert_eq!(
+        fs_change(&own.join("index"), &watched),
+        Some(FsChange::Index)
+    );
     assert_eq!(
         fs_change(&common.join("refs/heads/side"), &watched),
-        Some(true)
+        Some(FsChange::Git)
     );
     assert_eq!(fs_change(&common.join("objects/ab/cd"), &watched), None);
-    assert_eq!(fs_change(&linked.join("src/a.rs"), &watched), Some(false));
+    assert_eq!(
+        fs_change(&linked.join("src/a.rs"), &watched),
+        Some(FsChange::Files)
+    );
     // A main worktree as before.
-    assert_eq!(fs_change(Path::new("/r/.git/index"), &[]), Some(true));
+    assert_eq!(
+        fs_change(Path::new("/r/.git/index"), &[]),
+        Some(FsChange::Index)
+    );
+    assert_eq!(
+        fs_change(Path::new("/r/.git/MERGE_HEAD"), &[]),
+        Some(FsChange::Git)
+    );
+    assert_eq!(fs_change(Path::new("/r/.git/FETCH_HEAD"), &[]), None);
+    assert_eq!(fs_change(Path::new("/r/.git/ORIG_HEAD"), &[]), None);
     assert_eq!(fs_change(Path::new("/r/.git/objects/x"), &[]), None);
-    assert_eq!(fs_change(Path::new("/r/a.rs"), &[]), Some(false));
+    assert_eq!(fs_change(Path::new("/r/a.rs"), &[]), Some(FsChange::Files));
+    assert_eq!(
+        fs_change(Path::new("/r/.gitmodules"), &[]),
+        Some(FsChange::Index)
+    );
+    // A repository made with `--ref-format=reftable`.
+    assert_eq!(
+        fs_change(Path::new("/r/.git/reftable/tables.list"), &[]),
+        Some(FsChange::Git)
+    );
+}
+
+#[test]
+fn a_change_on_disk_reads_again_what_it_can_have_changed() {
+    // The index holds the commits submodules should be at: they are read again with the status.
+    assert_eq!(
+        FsChange::Index.rereads(),
+        [Reread::Status, Reread::Submodules]
+    );
+    assert_eq!(FsChange::Files.rereads(), [Reread::Status]);
+    assert_eq!(FsChange::Git.rereads(), [Reread::All]);
 }
 
 #[test]
@@ -156,6 +192,68 @@ fn an_older_diff_answer_does_not_replace_a_newer_one() {
     assert!(reopened.data.is_none());
     reopened.arrived(request, Err("open".to_owned()));
     assert!(matches!(&reopened.data, Some(Err(e)) if e == "open"));
+}
+
+#[test]
+fn an_older_read_of_the_working_tree_does_not_replace_a_newer_one() {
+    use super::{Msg, RepoTab};
+    let dir = repo("older-read");
+    let ctx = egui::Context::default();
+    let mut tab = RepoTab::new_deferred(dir.clone(), &ctx);
+    let file = |path: &str| git::StatusFile {
+        path: path.to_owned(),
+        old_path: None,
+        code: '?',
+        area: git::Area::Untracked,
+    };
+    let work = |path: &str| git::WorkStatus {
+        unstaged: vec![file(path)],
+        ..Default::default()
+    };
+    let submodule = |path: &str| git::Submodule {
+        path: path.to_owned(),
+        ..Default::default()
+    };
+    // Read 2's answers come in first, then read 1's.
+    for msg in [
+        Msg::Status(2, Ok(work("newer"))),
+        Msg::Submodules(2, vec![submodule("newer")]),
+        Msg::Status(1, Ok(work("older"))),
+        Msg::Submodules(1, vec![submodule("older")]),
+    ] {
+        let _ = tab.tx.send(msg);
+    }
+    tab.poll(&ctx);
+    assert_eq!(tab.work.unstaged, vec![file("newer")]);
+    assert_eq!(tab.submodules.len(), 1);
+    assert_eq!(tab.submodules[0].path, "newer");
+
+    // A full reload started before them (read 1) comes in last: the working tree, and this
+    // worktree's count of changes, stay those of the newer status read.
+    let here = |changes| git::Worktree {
+        path: dir.clone(),
+        current: true,
+        changes: Some(changes),
+        ..Default::default()
+    };
+    let _ = tab.tx.send(Msg::Loaded(Ok(Box::new(super::load::Loaded {
+        refs: Default::default(),
+        history: Vec::new(),
+        work: git::WorkStatus::default(),
+        worktrees: vec![here(0)],
+        stashes: Vec::new(),
+        remotes: Vec::new(),
+        submodules: Vec::new(),
+        lfs: false,
+        identity: Default::default(),
+        requested: git::LOG_PAGE,
+        log_from: None,
+        read: 1,
+    }))));
+    tab.poll(&ctx);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(tab.work.unstaged, vec![file("newer")]);
+    assert_eq!(tab.worktrees, vec![here(1)]);
 }
 
 #[test]

@@ -48,6 +48,16 @@ pub fn run_bytes(dir: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, String> {
     }
 }
 
+/// Starts git in `dir` with its output piped, for a caller that reads it bit by bit.
+pub(super) fn spawn_piped(dir: &Path, args: &[&str]) -> Result<std::process::Child, String> {
+    let mut cmd = git_cmd();
+    cmd.arg("-C").arg(dir).args(args);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    cmd.spawn().map_err(|e| format!("could not run git: {e}"))
+}
+
 /// Like [`run`], but exit codes in `ok` count as success (`diff --no-index` exits 1 on changes).
 pub fn run_ok_codes(dir: Option<&Path>, args: &[&str], ok: &[i32]) -> Result<String, String> {
     run_inner(dir, args, ok, None)

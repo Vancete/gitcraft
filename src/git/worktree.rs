@@ -33,7 +33,9 @@ impl Worktree {
     }
 }
 
-pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, String> {
+/// The worktrees of `repo`'s repository, each with how many files it has changed;
+/// `current_changes` is that count for `repo` itself when already known.
+pub fn worktrees(repo: &Path, current_changes: Option<usize>) -> Result<Vec<Worktree>, String> {
     let mut list = match run(Some(repo), &["worktree", "list", "--porcelain", "-z"]) {
         Ok(out) => parse_worktrees(&out, '\0'),
         // `-z` is git 2.36+; before, one line per field (a path with a line break in it is
@@ -46,11 +48,17 @@ pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, String> {
     let here = std::fs::canonicalize(repo).ok();
     for wt in &mut list {
         wt.current = here.is_some() && std::fs::canonicalize(&wt.path).ok() == here;
+        if wt.current {
+            wt.changes = current_changes;
+        }
     }
     // One `status` per worktree, side by side. `--no-optional-locks` so that looking doesn't take
     // the index lock from under whatever runs in that worktree.
     std::thread::scope(|scope| {
-        for wt in list.iter_mut().filter(|w| !w.bare && w.prunable.is_none()) {
+        for wt in list
+            .iter_mut()
+            .filter(|w| !w.bare && w.prunable.is_none() && w.changes.is_none())
+        {
             scope.spawn(|| {
                 let args = [
                     "--no-optional-locks",

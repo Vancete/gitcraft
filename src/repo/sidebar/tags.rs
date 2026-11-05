@@ -6,7 +6,7 @@ use super::{ROW_H, matches};
 use crate::git::Branch;
 use crate::icons;
 use crate::repo::pinned_sections::{Header, Sections};
-use crate::repo::{Action, Dialog, Refresh, RepoTab, Undo, ops};
+use crate::repo::{Action, Dialog, Refresh, RepoTab, Undo, branch_tree, ops};
 use crate::theme::Tokens;
 
 impl RepoTab {
@@ -41,6 +41,10 @@ impl RepoTab {
             return;
         }
         for tag in tags {
+            // Repositories can have thousands of tags: those out of sight are skipped over.
+            if branch_tree::skip_unseen(ui, ROW_H) {
+                continue;
+            }
             let r = plain_row(ui, "tag", &tag.name, "");
             if r.clicked() {
                 acts.push(Action::SelectHash(tag.target.clone()));

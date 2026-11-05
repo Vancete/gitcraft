@@ -19,7 +19,7 @@ mod view;
 use std::path::Path;
 
 use super::DiffKey;
-use super::highlight::{self, Spans};
+use super::highlight::{self, MAX_LINE_CHARS, Spans, cap_line};
 use crate::git::{self, Area, DiffOptions};
 
 pub use images::ImagePair;
@@ -77,6 +77,26 @@ pub struct DiffData {
     pub partial: bool,
     /// Characters in the longest line, for the width to scroll (counted once, not every frame).
     longest: usize,
+    /// The lines cut to be shown, as they were: what copying them copies.
+    pub(super) uncut: std::collections::HashMap<usize, String>,
+    /// The runs of changed rows and the changes they make, unified and side by side: worked
+    /// out the first time they are needed, not every frame.
+    map: [std::sync::OnceLock<(map::ChangeRuns, Vec<std::ops::Range<usize>>)>; 2],
+}
+
+impl DiffData {
+    /// The runs of changed rows shown unified or side by side (`split`), and the changes they
+    /// make (see [`jump::changes`]).
+    pub(in crate::repo::diff) fn runs(
+        &self,
+        split: bool,
+    ) -> &(map::ChangeRuns, Vec<std::ops::Range<usize>>) {
+        self.map[usize::from(split)].get_or_init(|| {
+            let runs = map::runs_of(self, split);
+            let changes = jump::changes(&runs);
+            (runs, changes)
+        })
+    }
 }
 
 /// What to do with some hunks or lines of an uncommitted file's diff.
@@ -134,8 +154,18 @@ pub fn load(repo: &Path, key: &DiffKey, opts: DiffOptions, dark: bool) -> Result
     } else {
         None
     };
-    let spans = highlight_sides(&path, &lines, dark);
-    let (changed, split) = pair_lines(&lines);
+    let mut spans = highlight_sides(&path, &lines, dark);
+    let (mut changed, split) = pair_lines(&lines);
+    let mut lines = lines;
+    let mut uncut = std::collections::HashMap::new();
+    for (i, (line, spans)) in lines.iter_mut().zip(spans.iter_mut()).enumerate() {
+        if let Some(whole) = cap_line(&mut line.text, spans.as_mut()) {
+            uncut.insert(i, whole);
+        }
+    }
+    for range in changed.iter_mut().flatten() {
+        *range = (range.0.min(MAX_LINE_CHARS), range.1.min(MAX_LINE_CHARS));
+    }
     let longest = lines
         .iter()
         .map(|l| l.text.chars().count())
@@ -151,6 +181,8 @@ pub fn load(repo: &Path, key: &DiffKey, opts: DiffOptions, dark: bool) -> Result
         header,
         partial,
         longest,
+        uncut,
+        map: Default::default(),
     })
 }
 

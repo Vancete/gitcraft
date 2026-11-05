@@ -147,7 +147,7 @@ impl RepoTab {
         };
         let dark = Tokens::get(ctx).dark();
         spawn(&self.tx, ctx, move || {
-            let result = diff::load(&path, &key, opts, dark);
+            let result = diff::load(&path, &key, opts, dark).map(Box::new);
             Msg::Diff(request, result)
         });
         self.load_diff_file(ctx);

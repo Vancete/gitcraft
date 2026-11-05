@@ -78,12 +78,26 @@ pub(super) fn change_map(
         strip.right()
     };
     let added_left = if split { mid } else { strip.left() };
-    for run in &runs.removed {
-        p.rect_filled(span(run, strip.left(), mid), 0.0, t.danger);
-    }
-    for run in &runs.added {
-        p.rect_filled(span(run, added_left, strip.right()), 0.0, t.success);
-    }
+    // Runs that meet on the strip make one mark: a long file can have tens of thousands.
+    let marks = |list: &[Range<usize>], left: f32, right: f32, color| {
+        let mut mark: Option<Rect> = None;
+        for run in list {
+            let next = span(run, left, right);
+            match &mut mark {
+                Some(m) if next.top() <= m.bottom() => m.max.y = m.max.y.max(next.bottom()),
+                _ => {
+                    if let Some(m) = mark.replace(next) {
+                        p.rect_filled(m, 0.0, color);
+                    }
+                }
+            }
+        }
+        if let Some(m) = mark {
+            p.rect_filled(m, 0.0, color);
+        }
+    };
+    marks(&runs.removed, strip.left(), mid, t.danger);
+    marks(&runs.added, added_left, strip.right(), t.success);
     // The part on screen, when there is more than fits.
     if visible < total && rows > 0.0 {
         let seen = Rect::from_min_max(

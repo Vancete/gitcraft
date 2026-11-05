@@ -68,8 +68,14 @@ fn parse_numstat(out: &str) -> Vec<(String, Option<u32>, Option<u32>)> {
 
 /// Fills in the line counts of `files` from `--numstat -z` output.
 fn add_line_counts(files: &mut [ChangedFile], numstat: &str) {
-    for (path, added, removed) in parse_numstat(numstat) {
-        if let Some(file) = files.iter_mut().find(|f| f.path == path) {
+    // By path: a commit can touch tens of thousands of files.
+    let mut counts: std::collections::HashMap<String, (Option<u32>, Option<u32>)> =
+        parse_numstat(numstat)
+            .into_iter()
+            .map(|(path, added, removed)| (path, (added, removed)))
+            .collect();
+    for file in files.iter_mut() {
+        if let Some((added, removed)) = counts.remove(&file.path) {
             file.added = added;
             file.removed = removed;
         }
@@ -156,15 +162,33 @@ pub fn file_diff(repo: &Path, hash: &str, path: &str, opts: DiffOptions) -> Resu
 /// The files that differ from `from` to `to` (a commit, or the working tree when `None`), with
 /// their line counts.
 pub fn diff_files(repo: &Path, from: &str, to: Option<&str>) -> Result<Vec<ChangedFile>, String> {
-    let args = |kind: &'static str| {
-        let mut args = vec!["diff", "-M", kind, "-z", END_OPTS, from];
-        args.extend(to);
-        args.push("--");
-        args
-    };
-    let mut files = parse_name_status(&run(Some(repo), &args("--name-status"))?);
-    add_line_counts(&mut files, &run(Some(repo), &args("--numstat"))?);
+    let mut files = range_name_status(repo, from, to)?;
+    add_line_counts(
+        &mut files,
+        &run(Some(repo), &range_args("--numstat", from, to))?,
+    );
     Ok(files)
+}
+
+/// `diff` arguments that list the files that differ from `from` to `to` (`kind` is
+/// `--name-status` or `--numstat`).
+fn range_args<'a>(kind: &'a str, from: &'a str, to: Option<&'a str>) -> Vec<&'a str> {
+    let mut args = vec!["diff", "-M", kind, "-z", END_OPTS, from];
+    args.extend(to);
+    args.push("--");
+    args
+}
+
+/// The files that differ from `from` to `to`, without their line counts.
+fn range_name_status(
+    repo: &Path,
+    from: &str,
+    to: Option<&str>,
+) -> Result<Vec<ChangedFile>, String> {
+    Ok(parse_name_status(&run(
+        Some(repo),
+        &range_args("--name-status", from, to),
+    )?))
 }
 
 /// The patch of one file from `from` to `to` (the working tree when `None`).
@@ -181,7 +205,7 @@ pub fn range_file_diff(
     args.extend(to);
     args.extend(["--", path]);
     // Limited to its new name, a renamed file looks new from top to bottom.
-    let old_path = diff_files(repo, from, to)
+    let old_path = range_name_status(repo, from, to)
         .ok()
         .and_then(|files| files.into_iter().find(|file| file.path == path))
         .and_then(|file| file.old_path);

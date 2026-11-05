@@ -11,8 +11,16 @@ use crate::theme::Tokens;
 impl RepoTab {
     pub fn ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        // Shown: its first read can't wait any more.
+        self.start_deferred(&ctx);
         self.poll(&ctx);
         let t = Tokens::get(&ctx);
+        if self.opening() {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(t.dock))
+                .show(ui, |ui| self.opening_screen(ui));
+            return;
+        }
         let mut acts: Vec<Action> = std::mem::take(&mut self.queued);
         self.shortcuts(&ctx, &mut acts);
 
@@ -57,6 +65,43 @@ impl RepoTab {
         for action in acts {
             self.apply(action, &ctx);
         }
+    }
+
+    /// Until the first read is in: rather than branches, history and changes that all look
+    /// empty, the repository being opened. Nothing at all for the first moments, so that a
+    /// repository read in an instant doesn't flash it.
+    fn opening_screen(&self, ui: &mut Ui) {
+        const QUIET: std::time::Duration = std::time::Duration::from_millis(150);
+        let waited = self.opened.elapsed();
+        if waited < QUIET {
+            ui.ctx().request_repaint_after(QUIET - waited);
+            return;
+        }
+        let t = Tokens::get(ui.ctx());
+        ui.vertical_centered(|ui| {
+            ui.add_space((ui.available_height() / 2.0 - 70.0).max(0.0));
+            icons::inline(ui, "folder-git-2", 40.0, t.text_faint);
+            ui.add_space(14.0);
+            ui.label(
+                egui::RichText::new(format!("Opening {}", self.name))
+                    .font(crate::theme::semibold(18.0))
+                    .color(t.text),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(self.path.display().to_string())
+                    .size(12.0)
+                    .color(t.text_faint),
+            );
+            ui.add_space(18.0);
+            ui.add(egui::Spinner::new().size(22.0));
+            ui.add_space(10.0);
+            ui.label(
+                egui::RichText::new("Reading branches and history…")
+                    .size(12.5)
+                    .color(t.text_dim),
+            );
+        });
     }
 
     /// Escape closes the innermost view; Ctrl+Z / Ctrl+Y undo and redo, Ctrl+F searches, F7 and

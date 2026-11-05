@@ -44,6 +44,7 @@ pub(crate) mod worktree_tab;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
@@ -83,13 +84,29 @@ pub struct RepoTab {
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
 
+    /// When the tab was made: its opening screen shows only if the first read takes a while.
+    opened: Instant,
+    /// The first read waits to be started (see [`RepoTab::new_deferred`]).
+    deferred: bool,
+    /// Numbers the reads of the repository, in the order they start: an answer that arrives
+    /// after a later read's doesn't put back what that one replaced.
+    reads: u64,
+    /// The read the working tree shown comes from.
+    work_read: u64,
+    /// The read the submodules shown come from.
+    submodules_read: u64,
+    /// The watcher came while the first read ran, which may have missed changes made before
+    /// the watcher was there: check again once it is in.
+    recheck_after_load: bool,
+    /// Polled as the view shown (not a parked worktree view).
+    shown: bool,
     loading: bool,
     /// A reload was asked for while one was running, which may have read too early.
     reload_again: bool,
     load_error: Option<String>,
     refs: Refs,
     /// Commits as git listed them.
-    history: Vec<Commit>,
+    history: Vec<Arc<Commit>>,
     has_more: bool,
     loading_more: bool,
     /// The branches hidden from the graph or soloed in it.
@@ -98,9 +115,11 @@ pub struct RepoTab {
     log_from: Option<Vec<String>>,
     /// Counts the reloads of `history`, so that a page asked for before one is dropped.
     history_gen: u64,
+    /// The `git log` older pages are read from, and the `history_gen` it reads for.
+    log_stream: Arc<std::sync::Mutex<Option<(u64, git::LogStream)>>>,
     work: WorkStatus,
     /// Rows of the graph: the WIP pseudo-commit (when the tree is dirty) followed by `history`.
-    commits: Vec<Commit>,
+    commits: Vec<Arc<Commit>>,
     graph: Graph,
     index: HashMap<String, usize>,
     worktrees: Vec<Worktree>,
@@ -185,9 +204,9 @@ pub struct RepoTab {
     terminal_error: Option<String>,
 
     watcher: Option<notify::RecommendedWatcher>,
-    fs_rx: Option<Receiver<bool>>,
+    fs_rx: Option<Receiver<watch::FsChange>>,
     /// A change on disk not yet reloaded: (inside .git, when).
-    fs_pending: Option<(bool, Instant)>,
+    fs_pending: Option<(watch::FsChange, Instant)>,
 
     /// Actions queued from outside (the command palette).
     queued: Vec<Action>,
@@ -208,6 +227,14 @@ pub struct RepoTab {
 
 impl RepoTab {
     pub fn new(path: PathBuf, ctx: &egui::Context) -> Self {
+        let mut tab = Self::new_deferred(path, ctx);
+        tab.start_deferred(ctx);
+        tab
+    }
+
+    /// A tab whose first read waits until [`Self::start_deferred`] (or until it is shown): the
+    /// tabs restored on start read one after the other, the one shown first.
+    pub fn new_deferred(path: PathBuf, ctx: &egui::Context) -> Self {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -218,6 +245,13 @@ impl RepoTab {
             name,
             tx,
             rx,
+            opened: Instant::now(),
+            deferred: true,
+            reads: 0,
+            work_read: 0,
+            submodules_read: 0,
+            recheck_after_load: false,
+            shown: true,
             loading: false,
             reload_again: false,
             load_error: None,
@@ -228,6 +262,7 @@ impl RepoTab {
             visibility: Default::default(),
             log_from: None,
             history_gen: 0,
+            log_stream: Default::default(),
             work: WorkStatus::default(),
             commits: Vec::new(),
             graph: Graph {
@@ -302,8 +337,19 @@ impl RepoTab {
             finished: Vec::new(),
         };
         tab.watch(ctx);
-        tab.reload(ctx);
         tab
+    }
+
+    /// Starts the first read of a tab made with [`Self::new_deferred`], if not started yet.
+    pub fn start_deferred(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.deferred) {
+            self.reload(ctx);
+        }
+    }
+
+    /// Nothing read yet: the tab shows its opening screen.
+    pub fn opening(&self) -> bool {
+        self.history_gen == 0 && self.load_error.is_none()
     }
 
     pub fn is_busy(&self) -> bool {

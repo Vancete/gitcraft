@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::{FS, run};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Branch {
     /// Short name, e.g. `main` or `origin/main`.
     pub name: String,
@@ -36,7 +36,7 @@ impl Branch {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Refs {
     pub local: Vec<Branch>,
     /// Remote name → branches of that remote.

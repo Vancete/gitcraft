@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use super::file_text::FileText;
 use super::load::Loaded;
+use super::watch::Reread;
 use super::{CompareData, OpKind, Refresh, RepoTab, diff, file_view, ops, pr_review, quick_edit};
 use crate::forge::PullRequest;
 use crate::git::{self, Commit, CommitDetail, WorkStatus};
@@ -15,15 +16,22 @@ use crate::settings::Settings;
 /// Results coming back from background git calls.
 pub(super) enum Msg {
     Loaded(Result<Box<Loaded>, String>),
+    /// The submodules, from the read numbered so (see `RepoTab::reads`).
+    Submodules(u64, Vec<git::Submodule>),
+    /// The refs as they are now, to compare with those read (see `RepoTab::recheck`).
+    RefsCheck(Result<git::Refs, String>),
+    /// The worktree's watcher, set up in the background (`None` when it couldn't be).
+    Watcher(Option<Box<notify::RecommendedWatcher>>),
     /// A further page of history, read while `history_gen` was so: a reload since may have
     /// moved the commits it skipped, so then it no longer fits.
     More(u64, Result<Vec<Commit>, String>),
-    Status(Result<WorkStatus, String>),
+    /// The working tree, from the read numbered so (see `RepoTab::reads`).
+    Status(u64, Result<WorkStatus, String>),
     Detail(String, Result<CommitDetail, String>),
     /// The answer to the diff request numbered so (see [`DiffView::next_request`]).
     ///
     /// [`DiffView::next_request`]: super::DiffView::next_request
-    Diff(u64, Result<diff::DiffData, String>),
+    Diff(u64, Result<Box<diff::DiffData>, String>),
     /// The whole file of the diff, read along with the diff request numbered so.
     DiffFile(u64, Result<FileText, String>),
     FileHistory(String, Option<String>, Result<Vec<git::FileCommit>, String>),
@@ -102,27 +110,45 @@ pub(super) fn spawn(
 impl RepoTab {
     /// Drains finished background work and file-system events.
     pub fn poll(&mut self, ctx: &egui::Context) {
+        self.poll_as(ctx, true);
+    }
+
+    /// [`Self::poll`] for a worktree view parked behind the one shown: its own work is seen
+    /// through, but it doesn't fetch, follow builds or reload for changes on disk. The view
+    /// shown does that for the repository they share, and this one reloads when shown again.
+    pub(crate) fn poll_parked_view(&mut self, ctx: &egui::Context) {
+        self.poll_as(ctx, false);
+    }
+
+    fn poll_as(&mut self, ctx: &egui::Context, shown: bool) {
+        self.shown = shown;
+        // Changes on disk, debounced. Taken in before the finished work, so that a reload
+        // that work starts covers what it wrote itself (see `reload`).
+        if let Some(rx) = &self.fs_rx {
+            while let Ok(change) = rx.try_recv() {
+                let was = self.fs_pending.map(|(c, _)| c);
+                self.fs_pending = Some((was.max(Some(change)).unwrap_or(change), Instant::now()));
+            }
+        }
+
         while let Ok(msg) = self.rx.try_recv() {
             self.handle(msg, ctx);
         }
-
-        // Changes on disk, debounced.
-        if let Some(rx) = &self.fs_rx {
-            while let Ok(git_dir) = rx.try_recv() {
-                let was = self.fs_pending.map(|(g, _)| g).unwrap_or(false);
-                self.fs_pending = Some((was || git_dir, Instant::now()));
-            }
+        if !shown {
+            return;
         }
-        if let Some((git_dir, at)) = self.fs_pending
+        if let Some((change, at)) = self.fs_pending
             && at.elapsed() > Duration::from_millis(400)
             && !self.loading
             && self.busy_op.is_none()
         {
             self.fs_pending = None;
-            if git_dir {
-                self.reload(ctx);
-            } else {
-                self.reload_status(ctx);
+            for reread in change.rereads() {
+                match reread {
+                    Reread::All => self.reload(ctx),
+                    Reread::Status => self.reload_status(ctx),
+                    Reread::Submodules => self.reload_submodules(ctx),
+                }
             }
         }
 
@@ -163,12 +189,42 @@ impl RepoTab {
     fn handle(&mut self, msg: Msg, ctx: &egui::Context) {
         match msg {
             Msg::Loaded(result) => self.loaded(result, ctx),
+            Msg::Submodules(read, list) => {
+                if Self::newer(read, &mut self.submodules_read) {
+                    self.submodules = list;
+                }
+            }
+            Msg::Watcher(watcher) => {
+                self.watcher = watcher.map(|w| *w);
+                self.watcher_arrived(ctx);
+            }
+            Msg::RefsCheck(refs) => {
+                // Moved before the watcher could see it.
+                if refs.is_ok_and(|refs| refs != self.refs) {
+                    self.reload(ctx);
+                }
+            }
             Msg::More(generation, _) if generation != self.history_gen => {}
             Msg::More(_, result) => self.more_loaded(result, ctx),
-            Msg::Status(result) => match result {
+            // Older than the working tree shown (a reload started since came in first).
+            Msg::Status(read, _) if read <= self.work_read => {}
+            Msg::Status(read, result) => match result {
                 Ok(work) => {
+                    self.work_read = read;
+                    // This worktree's count of changes, as the worktree list shows it.
+                    let changes = work.changed_files();
+                    if let Some(here) = self.worktrees.iter_mut().find(|wt| wt.current) {
+                        here.changes = Some(changes);
+                    }
+                    let wip_row_changed = work.is_clean() != self.work.is_clean();
                     self.work = work;
-                    self.rebuild(ctx);
+                    if wip_row_changed {
+                        self.rebuild(ctx);
+                    } else {
+                        // The rows are the same: only what shows the working tree needs
+                        // refreshing, not the whole graph.
+                        self.refresh_work(ctx);
+                    }
                     if self.compare.as_ref().is_some_and(|c| c.target.is_none()) {
                         self.reload_compare(ctx);
                     }
@@ -228,7 +284,7 @@ impl RepoTab {
             Msg::TreeFiles(hash, result) => self.all_files.arrived(&hash, result),
             Msg::Diff(request, result) => {
                 if let Some(view) = &mut self.diff {
-                    view.arrived(request, result);
+                    view.arrived(request, result.map(|data| *data));
                 }
             }
             Msg::DiffFile(request, result) => {

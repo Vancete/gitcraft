@@ -37,6 +37,8 @@ impl Grid {
 impl Terminal {
     /// Paints the screen into all of `ui`'s remaining space and handles input.
     pub fn ui(&mut self, ui: &mut Ui) {
+        self.drawn
+            .store(ui.ctx().cumulative_pass_nr(), Ordering::Relaxed);
         let t = Tokens::get(ui.ctx());
         let font = theme::mono(crate::settings::Settings::get(ui.ctx()).terminal_font);
         let glyph = ui
@@ -281,6 +283,10 @@ fn paint_row(
     font: &FontId,
 ) -> LayoutJob {
     let mut job = LayoutJob::default();
+    // Cells look alike in runs: one section per run, not per cell (a full screen is
+    // thousands of cells, laid out again whenever the output moves).
+    let mut run = String::new();
+    let mut run_format: Option<TextFormat> = None;
     let mut col = 0;
     while col < cols {
         let Some(c) = screen.cell(row, col) else {
@@ -292,24 +298,33 @@ fn paint_row(
             painter.rect_filled(grid.cells(row, col, w), 0.0, bg);
         }
         if !c.is_wide_continuation() {
-            let text = if c.has_contents() { c.contents() } else { " " };
-            job.append(
-                text,
-                0.0,
-                TextFormat {
+            let underline = if c.underline() {
+                Stroke::new(1.0, fg)
+            } else {
+                Stroke::NONE
+            };
+            let same = run_format.as_ref().is_some_and(|f| {
+                f.color == fg && f.underline == underline && f.italics == c.italic()
+            });
+            if !same {
+                if let Some(format) = run_format.take() {
+                    job.append(&run, 0.0, format);
+                    run.clear();
+                }
+                run_format = Some(TextFormat {
                     font_id: font.clone(),
                     color: fg,
-                    underline: if c.underline() {
-                        Stroke::new(1.0, fg)
-                    } else {
-                        Stroke::NONE
-                    },
+                    underline,
                     italics: c.italic(),
                     ..Default::default()
-                },
-            );
+                });
+            }
+            run.push_str(if c.has_contents() { c.contents() } else { " " });
         }
         col += 1;
+    }
+    if let Some(format) = run_format {
+        job.append(&run, 0.0, format);
     }
     job
 }

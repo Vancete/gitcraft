@@ -4,7 +4,7 @@
 use std::ops::Range;
 
 use super::LINE_H;
-use super::map::{ChangeRuns, runs_of};
+use super::map::ChangeRuns;
 use crate::repo::DiffView;
 
 /// Rows kept in view above a change jumped to.
@@ -66,8 +66,8 @@ impl DiffView {
     /// side-by-side view).
     pub(in crate::repo) fn step_change(&mut self, split: bool, delta: i32) {
         let Some(Ok(data)) = &self.data else { return };
-        let changes = changes(&runs_of(data, split));
-        if let Some(i) = step(&changes, self.scroll, self.at_change, delta) {
+        let (_, changes) = data.runs(split);
+        if let Some(i) = step(changes, self.scroll, self.at_change, delta) {
             self.jump = Some(i);
         }
     }

@@ -71,8 +71,8 @@ impl ConflictEditor {
         } else {
             ("--ours", "--theirs")
         };
-        let offer_mergiraf =
-            crate::settings::Settings::get(ui.ctx()).mergiraf && crate::mergiraf::found().is_some();
+        let offer_mergiraf = crate::settings::Settings::get(ui.ctx()).mergiraf
+            && crate::mergiraf::found(ui.ctx()).is_some();
         if offer_mergiraf {
             if self.solving {
                 ui.spinner();

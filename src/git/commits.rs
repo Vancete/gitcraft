@@ -1,6 +1,7 @@
 //! Commits: the graph's log, one commit's details, searches, the commits a rebase rewrites, and
 //! how revisions relate.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use super::ChangedFile;
@@ -35,63 +36,187 @@ pub fn log(
     if from.is_some_and(|revs| revs.is_empty()) {
         return Ok(Vec::new());
     }
-    let format = format!("--format=%H{FS}%P{FS}%an{FS}%ae{FS}%at{FS}%ad{FS}%s{FS}%D{FS}%b{RS}");
     let limit = format!("--max-count={limit}");
-    let skip = format!("--skip={skip}");
-    let mut args = vec![
-        "log",
-        NO_SIGNATURE,
-        "--date-order",
-        "--date=format-local:%Y-%m-%d %H:%M",
-        &skip,
-        &limit,
-        &format,
-    ];
-    push_revisions(&mut args, from);
-    let out = match run(Some(repo), &args) {
+    let out = match run(Some(repo), &log_args(from, skip, Some(&limit)).as_args()) {
         Ok(out) => out,
         // A freshly initialised repository has no commits yet.
         Err(e) if e.contains("does not have any commits") => String::new(),
         Err(e) => return Err(e),
     };
-    let mut commits = Vec::new();
-    for record in out.split(RS) {
-        let record = record.trim_start_matches('\n');
-        if record.is_empty() {
-            continue;
-        }
-        let f: Vec<&str> = record.split(FS).collect();
-        let [
-            hash,
-            parents,
-            author,
-            email,
-            time,
-            date,
-            summary,
-            decor,
-            body,
-        ] = f[..]
-        else {
-            continue;
-        };
-        commits.push(Commit {
-            hash: hash.to_owned(),
-            parents: parents.split_whitespace().map(str::to_owned).collect(),
-            author: author.to_owned(),
-            email: email.to_owned(),
-            time: time.parse().unwrap_or(0),
-            date: date.to_owned(),
-            summary: summary.to_owned(),
-            body: one_line(body),
-            refs: decor
-                .split(", ")
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned)
-                .collect(),
-        });
+    Ok(out.split(RS).filter_map(parse_record).collect())
+}
+
+/// The arguments of `log` / [`LogStream`]: the revisions `from` (else every branch), after the
+/// first `skip`, at most `limit` (`--max-count=n`) when given.
+fn log_args<'a>(from: Option<&'a [String]>, skip: usize, limit: Option<&'a str>) -> LogArgs<'a> {
+    LogArgs {
+        format: format!("--format=%H{FS}%P{FS}%an{FS}%ae{FS}%at{FS}%ad{FS}%s{FS}%D{FS}%b{RS}"),
+        skip: format!("--skip={skip}"),
+        limit,
+        from,
     }
-    Ok(commits)
+}
+
+struct LogArgs<'a> {
+    format: String,
+    skip: String,
+    limit: Option<&'a str>,
+    from: Option<&'a [String]>,
+}
+
+impl LogArgs<'_> {
+    fn as_args(&self) -> Vec<&str> {
+        let mut args = vec![
+            "log",
+            NO_SIGNATURE,
+            "--date-order",
+            "--date=format-local:%Y-%m-%d %H:%M",
+            &self.skip,
+        ];
+        args.extend(self.limit);
+        args.push(&self.format);
+        push_revisions(&mut args, self.from);
+        args
+    }
+}
+
+/// One commit of `log`'s output, between record separators.
+fn parse_record(record: &str) -> Option<Commit> {
+    let record = record.trim_start_matches('\n');
+    if record.is_empty() {
+        return None;
+    }
+    let f: Vec<&str> = record.split(FS).collect();
+    let [
+        hash,
+        parents,
+        author,
+        email,
+        time,
+        date,
+        summary,
+        decor,
+        body,
+    ] = f[..]
+    else {
+        return None;
+    };
+    Some(Commit {
+        hash: hash.to_owned(),
+        parents: parents.split_whitespace().map(str::to_owned).collect(),
+        author: author.to_owned(),
+        email: email.to_owned(),
+        time: time.parse().unwrap_or(0),
+        date: date.to_owned(),
+        summary: summary.to_owned(),
+        body: one_line(body),
+        refs: decor
+            .split(", ")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    })
+}
+
+/// Older history page after page from one `git log` left running, as [`log`] gives it. A
+/// fresh `log --skip=n` would walk the n commits skipped (with `--date-order`, all history)
+/// again for every page.
+pub struct LogStream {
+    /// `None` for no revisions at all, which have no history (as with [`log`]).
+    git: Option<RunningLog>,
+}
+
+struct RunningLog {
+    child: std::process::Child,
+    out: std::io::BufReader<std::process::ChildStdout>,
+    /// What git says on its error output, read as it comes (unread, a full pipe would stop
+    /// git, and with it the output read here).
+    err: Option<std::thread::JoinHandle<String>>,
+}
+
+impl LogStream {
+    /// The commits of `from` (else every branch) after the first `skip`.
+    pub fn start(repo: &Path, from: Option<&[String]>, skip: usize) -> Result<Self, String> {
+        // No revisions would make git log HEAD.
+        if from.is_some_and(|revs| revs.is_empty()) {
+            return Ok(Self { git: None });
+        }
+        let mut child = super::command::spawn_piped(repo, &log_args(from, skip, None).as_args())?;
+        let out = child
+            .stdout
+            .take()
+            .map(std::io::BufReader::new)
+            .ok_or("could not read git log")?;
+        let err = child.stderr.take().map(|mut stderr| {
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let mut text = String::new();
+                let _ = stderr.read_to_string(&mut text);
+                text
+            })
+        });
+        Ok(Self {
+            git: Some(RunningLog { child, out, err }),
+        })
+    }
+
+    /// The next `n` commits; fewer at the end of history.
+    pub fn next_page(&mut self, n: usize) -> Result<Vec<Commit>, String> {
+        use std::io::BufRead;
+        let Some(git) = &mut self.git else {
+            return Ok(Vec::new());
+        };
+        let mut page = Vec::with_capacity(n);
+        let mut record = Vec::new();
+        while page.len() < n {
+            record.clear();
+            let read = git
+                .out
+                .read_until(RS as u8, &mut record)
+                .map_err(|e| format!("could not read git log: {e}"))?;
+            if read == 0 {
+                git.check_exit()?;
+                break;
+            }
+            let text = String::from_utf8_lossy(&record);
+            page.extend(parse_record(text.trim_end_matches(RS)));
+        }
+        Ok(page)
+    }
+}
+
+impl RunningLog {
+    /// At the end of the output: whether git ended well, and what it said when it didn't.
+    fn check_exit(&mut self) -> Result<(), String> {
+        let status = self
+            .child
+            .wait()
+            .map_err(|e| format!("could not run git: {e}"))?;
+        let err = self
+            .err
+            .take()
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default();
+        // A freshly initialised repository has no commits yet.
+        if status.success() || err.contains("does not have any commits") {
+            return Ok(());
+        }
+        let err = err.trim();
+        Err(if err.is_empty() {
+            format!("git log failed ({status})")
+        } else {
+            err.to_owned()
+        })
+    }
+}
+
+impl Drop for RunningLog {
+    fn drop(&mut self) {
+        // Not needed any more (history reloaded, the tab closed): don't leave it waiting. Its
+        // error output then ends, and with it the thread reading that.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 /// A commit body as one line: whitespace runs (line breaks included) become single spaces. Long
@@ -222,6 +347,8 @@ pub fn search(repo: &Path, from: Option<&[String]>, query: &str) -> Result<Vec<S
         return Ok(Vec::new());
     }
     let mut hashes: Vec<String> = Vec::new();
+    // A short query matches most of history: a linear check per hash would be quadratic.
+    let mut seen: HashSet<String> = HashSet::new();
     let base = ["log", NO_SIGNATURE, "--date-order", "-i", "--format=%H"];
     for filter in [format!("--grep={query}"), format!("--author={query}")] {
         let mut args = base.to_vec();
@@ -230,7 +357,7 @@ pub fn search(repo: &Path, from: Option<&[String]>, query: &str) -> Result<Vec<S
         push_revisions(&mut args, from);
         if let Ok(out) = run(Some(repo), &args) {
             for h in out.lines() {
-                if !hashes.iter().any(|x| x == h) {
+                if seen.insert(h.to_owned()) {
                     hashes.push(h.to_owned());
                 }
             }

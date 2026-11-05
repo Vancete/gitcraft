@@ -67,15 +67,47 @@ fn selected_text_follows_the_side_it_was_made_on() {
     };
     // Dragged backwards, from "let x" in the removal to the end of "a".
     let unified = sel(Side::Unified, (2, 5), (1, 1));
-    assert_eq!(unified.text(&lines), "\nlet x");
+    assert_eq!(unified.text(&lines, &Default::default()), "\nlet x");
     // On the new side the removals are not there.
     let new = sel(Side::New, (1, 0), (5, 1));
-    assert_eq!(new.text(&lines), "a\nlet x = 2;\nb");
+    assert_eq!(new.text(&lines, &Default::default()), "a\nlet x = 2;\nb");
     assert_eq!(new.chars_of(4, Side::New), Some(0..usize::MAX));
     assert_eq!(new.chars_of(4, Side::Old), None);
     assert_eq!(new.chars_of(5, Side::New), Some(0..1));
     // Pressed and not moved: nothing.
     assert_eq!(sel(Side::Old, (2, 3), (2, 3)).chars_of(2, Side::Old), None);
+}
+
+#[test]
+fn a_line_cut_to_be_shown_is_copied_whole() {
+    use crate::repo::highlight::{MAX_LINE_CHARS, cap_line};
+    let whole = format!("let x = \"{}\";", "y".repeat(MAX_LINE_CHARS));
+    let mut lines = parse(&format!("@@ -1,2 +1,2 @@\n a\n+{whole}\n"));
+    let uncut: std::collections::HashMap<usize, String> = lines
+        .iter_mut()
+        .enumerate()
+        .filter_map(|(i, l)| Some((i, cap_line(&mut l.text, None)?)))
+        .collect();
+    assert_eq!(uncut.get(&2), Some(&whole));
+    let shown = lines[2].text.chars().count();
+    let sel = |anchor, cursor| TextSel {
+        side: Side::Unified,
+        anchor,
+        cursor,
+    };
+    // Through the end of what is shown (the note included): the whole line.
+    assert_eq!(
+        sel((1, 0), (2, shown)).text(&lines, &uncut),
+        format!("a\n{whole}")
+    );
+    // From inside the note: from the cut on, to the end.
+    let rest: String = whole.chars().skip(MAX_LINE_CHARS).collect();
+    assert_eq!(
+        sel((2, MAX_LINE_CHARS + 3), (2, shown)).text(&lines, &uncut),
+        rest
+    );
+    // Within what is shown: just that.
+    assert_eq!(sel((2, 0), (2, 3)).text(&lines, &uncut), "let");
 }
 
 #[test]
