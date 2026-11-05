@@ -150,6 +150,11 @@ so your config, credentials and hooks apply as usual.
 - Settings: zoom, branch column width, graph columns, avatars, notifications, update check,
   background fetch, keeping submodules up to date, editor command, default shell and terminal
   font size, saved identities.
+- Commit signing in Settings: the format (OpenPGP, SSH or X.509), signing key and program, and
+  whether commits and tags are signed by default. These are your global git config's
+  `gpg.format`, `user.signingkey`, `gpg.program` (`gpg.ssh.program`, `gpg.x509.program`),
+  `commit.gpgSign` and `tag.gpgSign`, shown as they are set and written back there; git does
+  the signing as usual.
 - Checks GitHub every 12 hours for a newer release and shows a pill to download it (can be turned
   off).
 - Toasts, and a desktop notification when a long operation ends while the window is in the

@@ -1,5 +1,7 @@
 //! User settings: stored with the app state, readable from anywhere through the egui context.
 
+mod signing;
+
 use egui::{RichText, Ui};
 use serde::{Deserialize, Serialize};
 
@@ -356,6 +358,9 @@ impl Settings {
                 ui.vertical(|ui| self.mergiraf_ui(ui));
                 ui.end_row();
             });
+
+        section(ui, "COMMIT SIGNING");
+        signing::signing_ui(ui);
 
         section(ui, "TERMINAL");
         egui::Grid::new("settings-term")

@@ -51,6 +51,7 @@ const FEATURES: &[(&str, &[&str])] = &[
             "A file kept in Git LFS shows as its LFS objects and their sizes; the palette has LFS: Fetch and LFS: Pull when git-lfs is installed.",
             "The arrows in a diff's header jump from change to change; the marks beside the scrollbar show where the changes are, and a click on one jumps there.",
             "Write the summary and description and commit; amend the last commit; pick the identity you commit as.",
+            "Settings → Commit signing sets the format, key and program git signs with, and whether it signs commits and tags by default (your global git config).",
             "Double-click a commit's message in the right pane to edit it (any commit of the checked-out branch with no merges after it).",
             "Undo and redo commits, merges, rebases, resets, checkouts, branches, tags and stashes.",
         ],
