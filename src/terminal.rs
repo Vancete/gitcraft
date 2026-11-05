@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 use std::num::NonZeroU16;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use egui::{
@@ -102,8 +103,10 @@ pub fn default_shell(ctx: &egui::Context) -> ShellSpec {
 
 pub struct Terminal {
     parser: Arc<Mutex<vt100::Parser>>,
-    /// Shared with the reader thread, which answers the shell's cursor-position queries.
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Bytes for the shell, written by a thread of their own: a write blocks once the pty's
+    /// input buffer is full (a big paste while a program isn't reading), which must not freeze
+    /// the app. Shared with the reader thread, which answers the shell's cursor-position queries.
+    writer: Sender<Vec<u8>>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     exited: Arc<AtomicBool>,
@@ -149,11 +152,23 @@ impl Terminal {
             .master
             .try_clone_reader()
             .map_err(|e| format!("terminal: {e}"))?;
-        let writer = Arc::new(Mutex::new(
-            pair.master
-                .take_writer()
-                .map_err(|e| format!("terminal: {e}"))?,
-        ));
+        let mut pty_writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("terminal: {e}"))?;
+        let (writer, input) = mpsc::channel::<Vec<u8>>();
+        // Ends once every sender is gone (the terminal and its reader thread) or the pty is.
+        std::thread::spawn(move || {
+            for bytes in input {
+                if pty_writer
+                    .write_all(&bytes)
+                    .and_then(|()| pty_writer.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
 
         let parser = Arc::new(Mutex::new(vt100::Parser::new(
             nz(rows),
@@ -164,7 +179,7 @@ impl Terminal {
         {
             let parser = Arc::clone(&parser);
             let exited = Arc::clone(&exited);
-            let writer = Arc::clone(&writer);
+            let writer = writer.clone();
             let ctx = ctx.clone();
             std::thread::spawn(move || {
                 let mut buf = [0u8; 16 * 1024];
@@ -180,9 +195,7 @@ impl Terminal {
                             if contains(bytes, b"[6n") {
                                 let (row, col) = parser.screen().cursor_position();
                                 let reply = format!("[{};{}R", row + 1, col + 1);
-                                let mut w = lock(&writer);
-                                let _ = w.write_all(reply.as_bytes());
-                                let _ = w.flush();
+                                let _ = writer.send(reply.into_bytes());
                             }
                             drop(parser);
                             ctx.request_repaint();
@@ -223,11 +236,7 @@ impl Terminal {
         if bytes.is_empty() {
             return;
         }
-        {
-            let mut w = lock(&self.writer);
-            let _ = w.write_all(bytes);
-            let _ = w.flush();
-        }
+        let _ = self.writer.send(bytes.to_vec());
         self.selection = None;
         // Typing follows the output again.
         if self.scroll != 0 {
@@ -310,11 +319,13 @@ impl Terminal {
 
         // Input.
         if focused {
-            let (events, app_cursor, bracketed) = {
+            let (events, mods, app_cursor, bracketed) = {
                 let parser = lock(&self.parser);
                 let screen = parser.screen();
+                let (events, mods) = ui.input(|i| (i.events.clone(), i.modifiers));
                 (
-                    ui.input(|i| i.events.clone()),
+                    events,
+                    mods,
                     screen.application_cursor(),
                     screen.bracketed_paste(),
                 )
@@ -322,22 +333,21 @@ impl Terminal {
             for event in events {
                 match event {
                     Event::Text(text) => self.send(text.as_bytes()),
-                    Event::Paste(text) => {
-                        let text = text.replace("\r\n", "\r").replace('\n', "\r");
-                        if bracketed {
-                            self.send(format!("\x1b[200~{text}\x1b[201~").as_bytes());
-                        } else {
-                            self.send(text.as_bytes());
-                        }
-                    }
-                    // egui turns Ctrl+C / Ctrl+X into clipboard events: copy a selection,
-                    // otherwise the shell gets them.
+                    Event::Paste(text) => self.send(&paste_bytes(&text, bracketed)),
+                    // egui turns Ctrl+C / Ctrl+X (Cmd on macOS, Ctrl+Shift+C…) into clipboard
+                    // events: copy a selection, otherwise the shell gets Ctrl+C / Ctrl+X.
                     Event::Copy => {
-                        if !self.copy_selection(ui.ctx()) {
-                            self.send(b"\x03");
+                        if !self.copy_selection(ui.ctx())
+                            && let Some(byte) = clipboard_control(mods, b'C')
+                        {
+                            self.send(&[byte]);
                         }
                     }
-                    Event::Cut => self.send(b"\x18"),
+                    Event::Cut => {
+                        if let Some(byte) = clipboard_control(mods, b'X') {
+                            self.send(&[byte]);
+                        }
+                    }
                     Event::Key {
                         key,
                         pressed: true,
@@ -498,8 +508,32 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        // Only a shell still running: once reaped, its pid may already be another process's.
+        if let Ok(None) = self.child.try_wait()
+            && self.child.kill().is_ok()
+        {
+            // Reap it, or it stays a zombie for as long as the app runs.
+            let _ = self.child.wait();
+        }
     }
+}
+
+/// What pasting `text` sends: line breaks as Enter, and in bracketed-paste mode the text between
+/// the brackets, without escape characters, so pasted text can't end the paste early
+/// (`\x1b[201~`) and run the rest as typed commands.
+fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    let text = text.replace("\r\n", "\r").replace('\n', "\r");
+    if bracketed {
+        format!("\x1b[200~{}\x1b[201~", text.replace('\x1b', "")).into_bytes()
+    } else {
+        text.into_bytes()
+    }
+}
+
+/// The control character a Copy / Cut event stands for (`letter` C or X): only when it came from
+/// Ctrl+letter itself, not Cmd+letter on macOS, Ctrl+Shift+C or a Copy key.
+fn clipboard_control(mods: Modifiers, letter: u8) -> Option<u8> {
+    (mods.ctrl && !mods.shift && !mods.alt).then(|| letter - b'A' + 1)
 }
 
 #[cfg(windows)]
@@ -682,6 +716,27 @@ mod tests {
         );
         assert_eq!(key_bytes(Key::D, Modifiers::CTRL, false), Some(vec![4]));
         assert_eq!(key_bytes(Key::A, Modifiers::NONE, false), None);
+    }
+
+    #[test]
+    fn pastes() {
+        assert_eq!(paste_bytes("a\r\nb\n", false), b"a\rb\r".to_vec());
+        assert_eq!(
+            paste_bytes("x\x1b[201~rm -rf ~\n", true),
+            b"\x1b[200~x[201~rm -rf ~\r\x1b[201~".to_vec()
+        );
+    }
+
+    #[test]
+    fn clipboard_controls() {
+        assert_eq!(clipboard_control(Modifiers::CTRL, b'C'), Some(3));
+        assert_eq!(clipboard_control(Modifiers::CTRL, b'X'), Some(0x18));
+        assert_eq!(
+            clipboard_control(Modifiers::CTRL | Modifiers::SHIFT, b'C'),
+            None
+        );
+        assert_eq!(clipboard_control(Modifiers::MAC_CMD, b'C'), None);
+        assert_eq!(clipboard_control(Modifiers::NONE, b'C'), None);
     }
 
     #[test]

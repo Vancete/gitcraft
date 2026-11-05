@@ -41,7 +41,17 @@ pub struct ConflictEditor {
     rebase: bool,
 }
 
+/// Whether `line` (without its line ending) is git's `kind` conflict marker: exactly seven
+/// `kind` characters, then nothing or a space and a label. Longer runs (`========` under a
+/// Markdown heading, the inner markers of a nested conflict) are content.
+fn is_marker(line: &str, kind: char) -> bool {
+    let mut chars = line.chars();
+    (&mut chars).take(7).filter(|&c| c == kind).count() == 7
+        && matches!(chars.next(), None | Some(' '))
+}
+
 /// Splits a file with conflict markers into common text and conflicts (diff3 bases kept).
+/// A conflict that never ends (no `>>>>>>>` before the end of the file) stays text.
 fn parse(text: &str) -> (Vec<Segment>, String, String) {
     enum State {
         Common,
@@ -53,11 +63,18 @@ fn parse(text: &str) -> (Vec<Segment>, String, String) {
     let (mut common, mut ours, mut base, mut theirs) =
         (String::new(), String::new(), None::<String>, String::new());
     let (mut ours_label, mut theirs_label) = (String::new(), String::new());
+    // The lines of the conflict being read, markers included, in case it never ends.
+    let mut raw = String::new();
     let mut state = State::Common;
     for line in text.split_inclusive('\n') {
         let bare = line.trim_end_matches(['\r', '\n']);
+        if !matches!(state, State::Common) {
+            raw.push_str(line);
+        }
         match state {
-            State::Common if bare.starts_with("<<<<<<<") => {
+            State::Common if is_marker(bare, '<') => {
+                raw.clear();
+                raw.push_str(line);
                 if !common.is_empty() {
                     segments.push(Segment::Common(std::mem::take(&mut common)));
                 }
@@ -67,21 +84,22 @@ fn parse(text: &str) -> (Vec<Segment>, String, String) {
                 state = State::Ours;
             }
             State::Common => common.push_str(line),
-            State::Ours if bare.starts_with("|||||||") => {
+            State::Ours if is_marker(bare, '|') => {
                 base = Some(String::new());
                 state = State::Base;
             }
-            State::Ours | State::Base if bare.starts_with("=======") => state = State::Theirs,
+            State::Ours | State::Base if is_marker(bare, '=') => state = State::Theirs,
             State::Ours => ours.push_str(line),
             State::Base => {
                 if let Some(b) = &mut base {
                     b.push_str(line);
                 }
             }
-            State::Theirs if bare.starts_with(">>>>>>>") => {
+            State::Theirs if is_marker(bare, '>') => {
                 if theirs_label.is_empty() {
                     theirs_label = bare.trim_start_matches('>').trim().to_owned();
                 }
+                raw.clear();
                 segments.push(Segment::Conflict {
                     ours: std::mem::take(&mut ours),
                     base: base.take(),
@@ -91,6 +109,10 @@ fn parse(text: &str) -> (Vec<Segment>, String, String) {
             }
             State::Theirs => theirs.push_str(line),
         }
+    }
+    if !matches!(state, State::Common) {
+        // Not a conflict after all: keep the text as it was rather than lose it.
+        common.push_str(&raw);
     }
     if !common.is_empty() {
         segments.push(Segment::Common(common));
@@ -179,7 +201,7 @@ impl ConflictEditor {
     fn unresolved(&self) -> usize {
         self.result
             .lines()
-            .filter(|l| l.starts_with("<<<<<<<"))
+            .filter(|l| is_marker(l.trim_end_matches('\r'), '<'))
             .count()
     }
 
@@ -412,7 +434,7 @@ impl RepoTab {
                                             };
                                             // No wrapping: wrapped code loses its indentation.
                                             egui::ScrollArea::horizontal()
-                                                .id_salt(("conflict-side", name, body.len()))
+                                                .id_salt(("conflict-side", k, side == Choice::Ours))
                                                 .show(ui, |ui| {
                                                     ui.add(
                                                         egui::Label::new(
@@ -475,6 +497,43 @@ mod tests {
         let partial = render(&segs, &[Some(Choice::Ours), None], (&o, &t));
         assert!(partial.starts_with("a\nours 1\nb\n<<<<<<< HEAD\nx\n"));
         assert!(partial.contains("||||||| base\nbase\n=======\ny\n>>>>>>> feature\n"));
+    }
+
+    #[test]
+    fn unterminated_conflict_stays_text() {
+        // One real conflict, then a stray start marker (a fixture, a doc about git…).
+        let text =
+            "a\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> b\nc\n<<<<<<< not a conflict\nd\n=======\ne\n";
+        let (segs, o, t) = parse(text);
+        let conflicts = segs
+            .iter()
+            .filter(|s| matches!(s, Segment::Conflict { .. }))
+            .count();
+        assert_eq!(conflicts, 1);
+        assert_eq!(
+            render(&segs, &[Some(Choice::Ours)], (&o, &t)),
+            "a\nx\nc\n<<<<<<< not a conflict\nd\n=======\ne\n"
+        );
+    }
+
+    #[test]
+    fn longer_runs_are_content() {
+        // A Markdown heading underline and nested (longer) markers don't split the conflict.
+        let text = "<<<<<<< HEAD\nTitle\n========\n<<<<<<<< inner\n=======\ny\n>>>>>>> b\n";
+        let (segs, o, t) = parse(text);
+        assert_eq!(
+            segs,
+            vec![Segment::Conflict {
+                ours: "Title\n========\n<<<<<<<< inner\n".into(),
+                base: None,
+                theirs: "y\n".into(),
+            }]
+        );
+        assert_eq!(render(&segs, &[Some(Choice::Theirs)], (&o, &t)), "y\n");
+        assert!(is_marker("<<<<<<<", '<'));
+        assert!(is_marker(">>>>>>> feature", '>'));
+        assert!(!is_marker("<<<<<<<x", '<'));
+        assert!(!is_marker("======", '='));
     }
 
     #[test]
