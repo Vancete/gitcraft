@@ -16,7 +16,7 @@ use crate::theme::Tokens;
 
 pub(super) use boxes::{comment_box, review_box};
 pub(super) use line_panel::{line_panel, paint_gutter_mark};
-pub(super) use lines::{target_of, unified_spot};
+pub(super) use lines::{DiffReview, target_of, unified_spot};
 
 /// A line a comment is being written on.
 #[derive(Clone, Debug, PartialEq, Eq)]
