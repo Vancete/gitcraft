@@ -65,6 +65,8 @@ pub struct Settings {
     pub check_updates: bool,
     /// Colour code in diffs and blame with VS Code's current theme, when it has one.
     pub vscode_colors: bool,
+    /// Offer Mergiraf in the conflict editor, when it is installed.
+    pub mergiraf: bool,
     pub profiles: Vec<Profile>,
 }
 
@@ -98,6 +100,7 @@ impl Default for Settings {
             notifications: true,
             check_updates: true,
             vscode_colors: true,
+            mergiraf: true,
             profiles: Vec::new(),
         }
     }
@@ -117,6 +120,79 @@ impl Settings {
         ctx.data_mut(|d| d.insert_temp(id(), self.clone()));
         ctx.set_zoom_factor(self.ui_scale.clamp(0.7, 2.0));
         crate::vscode_theme::set_enabled(self.vscode_colors);
+    }
+
+    /// Mergiraf: whether it is installed (and a button to install it), whether to offer it in
+    /// the conflict editor, and whether git merges with it.
+    fn mergiraf_ui(&mut self, ui: &mut Ui) {
+        use crate::mergiraf::{self, Job};
+        let t = Tokens::get(ui.ctx());
+        let state = mergiraf::state();
+        let job = mergiraf::job();
+        let busy = matches!(job, Job::Running(_));
+        ui.horizontal(|ui| {
+            match &state.found {
+                Some(found) => {
+                    let what = if found.own {
+                        format!("{} (downloaded by gitcraft)", found.version)
+                    } else {
+                        found.version.clone()
+                    };
+                    ui.label(RichText::new(what).color(t.text_dim));
+                }
+                None => {
+                    ui.label(RichText::new("Not installed").color(t.text_dim));
+                    if ui
+                        .add_enabled(!busy, egui::Button::new("Install"))
+                        .on_hover_text(
+                            "Download the latest Mergiraf for this system from its releases on \
+                             codeberg.org into gitcraft's folder. It stays Mergiraf's (GPL-3.0); \
+                             gitcraft only runs it.",
+                        )
+                        .clicked()
+                    {
+                        mergiraf::install(ui.ctx());
+                    }
+                    ui.hyperlink_to("Other ways", mergiraf::DOCS);
+                }
+            }
+            match &job {
+                Job::Idle => {}
+                Job::Running(doing) => {
+                    ui.spinner();
+                    ui.label(RichText::new(*doing).color(t.text_faint).small());
+                }
+                Job::Done(done) => {
+                    ui.label(RichText::new(done).color(t.success).small());
+                }
+                Job::Failed(e) => {
+                    ui.label(RichText::new(e).color(t.danger).small());
+                }
+            }
+        });
+        ui.add_enabled_ui(state.found.is_some(), |ui| {
+            ui.checkbox(&mut self.mergiraf, "Offer it in the conflict editor")
+                .on_hover_text(
+                    "Mergiraf solves conflicts from the syntax of the code, in many languages. \
+                     Its answer shows in the editor; nothing is saved before you check it.",
+                );
+            let mut in_merges = state.in_merges;
+            let toggle = ui
+                .add_enabled(
+                    !busy,
+                    egui::Checkbox::new(&mut in_merges, "Use it in every git merge"),
+                )
+                .on_hover_text(
+                    "Git merges, rebases and cherry-picks go through Mergiraf, in every \
+                     repository and in the terminal too, so fewer conflicts are left at all. \
+                     Sets merge.mergiraf in your global git config and adds a marked block to \
+                     your global attributes file (also merge.conflictStyle = diff3, if you set \
+                     none); unticking takes them out again.",
+                );
+            if toggle.changed() {
+                mergiraf::use_in_merges(ui.ctx(), in_merges);
+            }
+        });
     }
 
     /// The settings form. Returns true when something changed.
@@ -222,6 +298,9 @@ impl Settings {
                         .desired_width(200.0),
                 )
                 .on_hover_text("Run with a folder or file path, e.g. code, subl, idea");
+                ui.end_row();
+                ui.label("Mergiraf");
+                ui.vertical(|ui| self.mergiraf_ui(ui));
                 ui.end_row();
             });
 

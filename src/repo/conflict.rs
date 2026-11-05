@@ -39,6 +39,12 @@ pub struct ConflictEditor {
     theirs_label: String,
     /// During a rebase "ours" is the branch being rebased onto, "theirs" your own commit.
     rebase: bool,
+    /// Mergiraf is working on the file.
+    pub solving: bool,
+    /// How many conflicts the file has on disk, which Mergiraf starts from.
+    pub on_disk: usize,
+    /// The file as it was opened: while it stays so, a refresh keeps the choices made.
+    opened: String,
 }
 
 /// Whether `line` (without its line ending) is git's `kind` conflict marker: exactly seven
@@ -180,12 +186,39 @@ impl ConflictEditor {
             path: path.to_owned(),
             choices: vec![None; conflicts],
             segments,
+            opened: text.clone(),
             result: text,
             manual: false,
             ours_label,
             theirs_label,
             rebase: state == Some(InProgress::Rebase),
+            solving: false,
+            on_disk: conflicts,
         })
+    }
+
+    /// Whether the file in the repository at `repo` is no longer as it was opened.
+    pub fn changed_on_disk(&self, repo: &Path) -> bool {
+        std::fs::read_to_string(repo.join(&self.path)).ok().as_ref() != Some(&self.opened)
+    }
+
+    /// Takes `text`, the file with some of its conflicts solved elsewhere (by Mergiraf): the
+    /// conflicts left are offered again, the solved ones become text. Returns how many are left.
+    pub fn take_solved(&mut self, text: String) -> usize {
+        let (segments, ours_label, theirs_label) = parse(&text);
+        let left = segments
+            .iter()
+            .filter(|s| matches!(s, Segment::Conflict { .. }))
+            .count();
+        if left > 0 {
+            self.ours_label = ours_label;
+            self.theirs_label = theirs_label;
+        }
+        self.choices = vec![None; left];
+        self.segments = segments;
+        self.result = text;
+        self.manual = false;
+        left
     }
 
     fn choose(&mut self, k: usize, choice: Choice) {
@@ -302,6 +335,22 @@ impl RepoTab {
                         } else {
                             ("--ours", "--theirs")
                         };
+                        let offer_mergiraf = crate::settings::Settings::get(ui.ctx()).mergiraf
+                            && crate::mergiraf::found().is_some();
+                        if offer_mergiraf {
+                            if ed.solving {
+                                ui.spinner();
+                            } else if ui
+                                .add_enabled(idle, egui::Button::new("Solve with Mergiraf"))
+                                .on_hover_text(
+                                    "Let Mergiraf solve the conflicts it can from the syntax \
+                                     of the code. Nothing is saved before you check the result.",
+                                )
+                                .clicked()
+                            {
+                                acts.push(Action::SolveWithMergiraf);
+                            }
+                        }
                         for (label, side, tip) in [
                             ("Use theirs", theirs, "Take their version of the whole file"),
                             ("Use mine", mine, "Keep your version of the whole file"),
@@ -531,15 +580,45 @@ mod tests {
             path: "f".into(),
             choices: vec![None],
             segments: segs,
+            opened: text.into(),
             result: text.into(),
             manual: false,
             ours_label: o,
             theirs_label: t,
             rebase: false,
+            solving: false,
+            on_disk: 1,
         };
         assert_eq!(ed.unresolved(), 1);
         ed.choose(0, Choice::Ours);
         assert_eq!(ed.unresolved(), 0);
+    }
+
+    #[test]
+    fn solved_elsewhere_leaves_the_rest_to_choose() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("gitcraft-solved-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let two =
+            "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> x\nmid\n<<<<<<< HEAD\nc\n=======\nd\n>>>>>>> x\n";
+        std::fs::write(dir.join("f"), two).map_err(|e| e.to_string())?;
+        let mut ed = ConflictEditor::open(&dir, "f", None).ok_or("no conflicts")?;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(ed.on_disk, 2);
+        ed.choose(0, Choice::Ours);
+
+        // One solved: the other is offered again, the earlier choice no longer applies.
+        let one = "ab\nmid\n<<<<<<< HEAD\nc\n=======\nd\n>>>>>>> x\n";
+        assert_eq!(ed.take_solved(one.into()), 1);
+        assert_eq!(ed.choices, vec![None]);
+        assert_eq!(ed.result, one);
+        assert_eq!(ed.unresolved(), 1);
+        ed.choose(0, Choice::Theirs);
+        assert_eq!(ed.result, "ab\nmid\nd\n");
+
+        // All solved: nothing left to choose, ready to save.
+        assert_eq!(ed.take_solved("ab\nmid\ncd\n".into()), 0);
+        assert_eq!(ed.unresolved(), 0);
+        Ok(())
     }
 
     #[test]

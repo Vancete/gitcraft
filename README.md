@@ -83,6 +83,11 @@ so your config, credentials and hooks apply as usual.
   settings and extensions, when it is dark or light like gitcraft's; a setting turns it off.
 - Conflicts open in a three-pane editor: each conflict's two sides with _Ours_, _Theirs_ and
   _Both_ buttons, and the result below (editable). _Use mine_ / _Use theirs_ for a whole file.
+- With [Mergiraf](https://mergiraf.org) installed, _Solve with Mergiraf_ lets it solve the
+  conflicts it can from the syntax of the code; the rest stay to choose, and nothing is saved
+  before you check the result. Settings → Git installs it in one click and can have git merge
+  with it everywhere ([docs/mergiraf.md](docs/mergiraf.md)). gitcraft only runs the `mergiraf`
+  program: it neither bundles nor links Mergiraf (GPL-3.0), so gitcraft's licence is unchanged.
 - A merge, rebase, cherry-pick or revert stopped on conflicts shows a banner with _Abort_; the
   commit box finishes it (_Continue rebase_ during a rebase).
 - File history (every commit that changed the file, following renames; click one for its diff)
@@ -199,6 +204,7 @@ was made this way, on a demo repository.
 | `src/repo/highlight.rs`  | syntax colours (syntect)                                                           |
 | `src/vscode_theme.rs`    | VS Code's current colour theme as a syntect theme                                  |
 | `src/repo/conflict.rs`   | three-pane conflict editor                                                         |
+| `src/mergiraf.rs` | Mergiraf, run as the user's own command when it is installed |
 | `src/repo/rebase.rs`     | interactive rebase editor and its todo list                                        |
 | `src/repo/file_view.rs`  | a file's history and blame                                                         |
 | `src/repo/dialogs.rs`    | branch, tag, stash, remote, worktree, pull request and confirm dialogs             |

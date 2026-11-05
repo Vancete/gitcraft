@@ -91,6 +91,8 @@ enum Msg {
         kind: OpKind,
         quiet: bool,
     },
+    /// Mergiraf's take on a conflicted file.
+    Mergiraf(String, Result<String, String>),
 }
 
 struct Loaded {
@@ -359,6 +361,8 @@ pub(crate) enum Action {
         whole_file: bool,
     },
     SaveConflict,
+    /// Let Mergiraf solve what it can of the open conflict.
+    SolveWithMergiraf,
     /// A file's history or blame in the central pane (`rev`: the commit to blame at).
     FileView {
         path: String,
@@ -837,7 +841,13 @@ impl RepoTab {
                 .chain(&self.work.conflicted)
                 .any(|f| f == file);
             let key = DiffKey::Work(file.clone());
-            if still && file.area != git::Area::Conflicted {
+            // The conflict editor keeps what was chosen (or Mergiraf's answer) while the file
+            // is as it was opened.
+            let editing = self
+                .conflict
+                .as_ref()
+                .is_some_and(|ed| ed.path == file.path && !ed.changed_on_disk(&self.path));
+            if still && (file.area != git::Area::Conflicted || editing) {
                 // Shown as it was until the new diff is read (no flicker after staging lines).
                 self.refresh_diff(ctx);
             } else {
@@ -1766,6 +1776,32 @@ impl RepoTab {
                     c.data = Some(result);
                 }
             }
+            Msg::Mergiraf(path, result) => {
+                let Some(ed) = self.conflict.as_mut().filter(|ed| ed.path == path) else {
+                    return;
+                };
+                ed.solving = false;
+                self.status = Some(match result {
+                    Ok(text) => {
+                        let before = ed.on_disk;
+                        let left = ed.take_solved(text);
+                        let solved = before.saturating_sub(left);
+                        let message = match (solved, left) {
+                            (0, _) => format!("Mergiraf could not solve the conflicts in {path}"),
+                            (_, 0) => format!(
+                                "Mergiraf solved every conflict in {path}: check the result, \
+                                 then save"
+                            ),
+                            _ => format!(
+                                "Mergiraf solved {solved} of {before} conflicts in {path}; {left} \
+                                 left to choose"
+                            ),
+                        };
+                        (message, false)
+                    }
+                    Err(e) => (e, true),
+                });
+            }
             Msg::Search(query, code, result) => {
                 if query == self.search.query.trim() && code == self.search.code {
                     self.search.running = false;
@@ -2258,6 +2294,16 @@ impl RepoTab {
                     self.run_search(ctx);
                 }
                 self.search.focus = true;
+            }
+            Action::SolveWithMergiraf => {
+                if let Some(ed) = self.conflict.as_mut().filter(|ed| !ed.solving) {
+                    ed.solving = true;
+                    let (repo, file) = (self.path.clone(), ed.path.clone());
+                    spawn(&self.tx, ctx, move || {
+                        let result = crate::mergiraf::solve(&repo, &file);
+                        Msg::Mergiraf(file, result)
+                    });
+                }
             }
             Action::SaveConflict => {
                 if let Some(editor) = &self.conflict {
