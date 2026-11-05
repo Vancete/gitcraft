@@ -2725,18 +2725,20 @@ pub(crate) fn open_in_editor(editor: &str, path: &Path) -> Result<(), String> {
     let mut cmd = {
         use std::os::windows::process::CommandExt;
         let mut c = std::process::Command::new("cmd");
-        // The path in quotes: a file named `a&calc` must not run `calc`. `/S` takes off only the
-        // outer quotes, leaving `editor "path"`.
-        let mut line = std::ffi::OsString::from("/S /C \"");
-        line.push(editor);
-        line.push(" \"");
-        line.push(path.as_os_str());
+        // The path in quotes and through a variable: a file named `a&calc` must not run `calc`,
+        // and one named `%COMSPEC%` must not open another (cmd expands `%…%` even in quotes,
+        // but not again inside what a variable held). `/S` takes off only the outer quotes,
+        // leaving `editor "path"`.
+        let mut target = path.as_os_str().to_owned();
         // A backslash before the closing quote would escape it for the editor (the folder
         // itself ends with one): doubled, it is just a backslash.
-        if path.as_os_str().to_string_lossy().ends_with('\\') {
-            line.push("\\");
+        if target.to_string_lossy().ends_with('\\') {
+            target.push("\\");
         }
-        line.push("\"\"");
+        c.env("GITCRAFT_OPEN_PATH", target);
+        let mut line = std::ffi::OsString::from("/S /C \"");
+        line.push(editor);
+        line.push(" \"%GITCRAFT_OPEN_PATH%\"\"");
         c.raw_arg(line);
         c.creation_flags(0x0800_0000);
         c

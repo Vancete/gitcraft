@@ -39,8 +39,11 @@ pub fn detect(remotes: &[Remote]) -> Option<Forge> {
         .or_else(|| remotes.first())?;
     // GitHub by the host alone: a GitLab project may well be called `me.github.io`. GitLab can
     // also live under a path of another host (`https://example.org/gitlab/…`).
+    // A host naming GitLab wins (`github-mirror.gitlab.example.org`).
     let host = location(&remote.url).map(|(host, _)| host);
-    if host.is_some_and(|host| host.contains("github")) {
+    if host.as_deref().is_some_and(|host| host.contains("gitlab")) {
+        Some(Forge::GitLab)
+    } else if host.is_some_and(|host| host.contains("github")) {
         Some(Forge::GitHub)
     } else if remote.url.to_lowercase().contains("gitlab") {
         Some(Forge::GitLab)
@@ -371,6 +374,10 @@ mod tests {
         );
         assert_eq!(detect(&[r("https://git.example.org/github.com/x")]), None);
         assert_eq!(detect(&[r("https://git.example.org/a@github.com/x")]), None);
+        assert_eq!(
+            detect(&[r("https://github-mirror.gitlab.example.org/g/p.git")]),
+            Some(Forge::GitLab)
+        );
         assert_eq!(
             location("https://me:tok@github.com/a/b.git"),
             Some(("github.com".into(), "a/b".into()))

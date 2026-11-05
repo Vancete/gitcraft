@@ -202,8 +202,9 @@ impl App {
         let mut kept = Vec::new();
         if app.git_version.is_ok() {
             for path in saved.open {
-                kept.push(path.is_dir());
-                if path.is_dir() {
+                let is_dir = path.is_dir();
+                kept.push(is_dir);
+                if is_dir {
                     app.tabs.push(Tab::Repo(Box::new(RepoTab::new(path, ctx))));
                 }
             }

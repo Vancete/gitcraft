@@ -158,6 +158,12 @@ fn render(segments: &[Segment], choices: &[Option<Choice>], labels: (&str, &str)
     out
 }
 
+fn start_markers(text: &str) -> usize {
+    text.lines()
+        .filter(|l| is_marker(l.trim_end_matches('\r'), '<'))
+        .count()
+}
+
 impl ConflictEditor {
     /// Opens `path` if it still has conflict markers.
     pub fn open(repo: &Path, path: &str, state: Option<InProgress>) -> Option<Self> {
@@ -199,10 +205,16 @@ impl ConflictEditor {
     }
 
     fn unresolved(&self) -> usize {
-        self.result
-            .lines()
-            .filter(|l| is_marker(l.trim_end_matches('\r'), '<'))
-            .count()
+        // A start marker that never closed is kept as plain text: not a conflict to resolve.
+        let kept_as_text: usize = self
+            .segments
+            .iter()
+            .map(|s| match s {
+                Segment::Common(text) => start_markers(text),
+                Segment::Conflict { .. } => 0,
+            })
+            .sum();
+        start_markers(&self.result).saturating_sub(kept_as_text)
     }
 
     pub fn save(&self, repo: &Path) -> Result<(), String> {
@@ -514,6 +526,20 @@ mod tests {
             render(&segs, &[Some(Choice::Ours)], (&o, &t)),
             "a\nx\nc\n<<<<<<< not a conflict\nd\n=======\ne\n"
         );
+        // Once the real one is chosen, nothing is left to resolve.
+        let mut ed = ConflictEditor {
+            path: "f".into(),
+            choices: vec![None],
+            segments: segs,
+            result: text.into(),
+            manual: false,
+            ours_label: o,
+            theirs_label: t,
+            rebase: false,
+        };
+        assert_eq!(ed.unresolved(), 1);
+        ed.choose(0, Choice::Ours);
+        assert_eq!(ed.unresolved(), 0);
     }
 
     #[test]

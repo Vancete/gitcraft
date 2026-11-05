@@ -132,42 +132,51 @@ fn cache_key(email: &str, hint: Option<&Hint>) -> String {
     }
 }
 
-/// The picture's URL: a forge's, else [`url`]. None when the forge couldn't be reached, which
-/// says nothing about whether it has one.
-fn source(agent: &ureq::Agent, email: &str, hint: Option<&Hint>) -> Option<String> {
+/// The picture's URL: a forge's, else [`url`]. False with it when the forge couldn't be asked
+/// which picture it has: Gravatar's then stands in for this session, but isn't written down
+/// as that forge's answer.
+fn source(agent: &ureq::Agent, email: &str, hint: Option<&Hint>) -> (String, bool) {
     match hint {
-        Some(Hint::Url(u)) => Some(format!(
-            "{u}{}s=80",
-            if u.contains('?') { '&' } else { '?' }
-        )),
+        Some(Hint::Url(u)) => (
+            format!("{u}{}s=80", if u.contains('?') { '&' } else { '?' }),
+            true,
+        ),
         Some(Hint::GitLab(host)) => {
             let api = format!(
                 "https://{host}/api/v4/avatar?email={}&size=80",
                 query_escape(email)
             );
             let found = match agent.get(&api).call() {
-                Ok(resp) => resp
+                // An answer cut short or not JSON says nothing either.
+                Ok(resp) => match resp
                     .into_string()
                     .ok()
                     .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-                    .and_then(|v| v.get("avatar_url")?.as_str().map(str::to_owned)),
-                Err(e) if transient(&e) => return None,
+                {
+                    Some(v) => v
+                        .get("avatar_url")
+                        .and_then(|u| u.as_str())
+                        .map(str::to_owned),
+                    None => return (url(email), false),
+                },
+                Err(e) if transient(&e) => return (url(email), false),
                 Err(_) => None,
             };
-            Some(match found {
+            let picture = match found {
                 // GitLab falls back to a generated Gravatar; initials read better.
                 Some(u) if !u.contains("gravatar.com") => u,
                 _ => url(email),
-            })
+            };
+            (picture, true)
         }
-        None => Some(url(email)),
+        None => (url(email), true),
     }
 }
 
 /// Whether a failed request may well work later: no answer, or a server busy or failing.
 fn transient(e: &ureq::Error) -> bool {
     match e {
-        ureq::Error::Status(code, _) => *code == 429 || *code >= 500,
+        ureq::Error::Status(code, _) => *code == 408 || *code == 429 || *code >= 500,
         ureq::Error::Transport(_) => true,
     }
 }
@@ -252,11 +261,9 @@ fn fetch(agent: &ureq::Agent, email: &str, hint: Option<&Hint>) -> State {
             return State::Missing;
         }
     }
-    let answer = match source(agent, email, hint) {
-        Some(url) => download(agent, &url),
-        None => Answer::Unreachable,
-    };
-    match answer {
+    let (url, keep) = source(agent, email, hint);
+    let dir = dir.filter(|_| keep);
+    match download(agent, &url) {
         Answer::Picture(bytes) => {
             if let Some(dir) = &dir {
                 let _ = std::fs::create_dir_all(dir);
@@ -320,9 +327,8 @@ mod tests {
                 &agent,
                 "a@b.c",
                 Some(&Hint::Url("https://av/u/1?v=4".into()))
-            )
-            .as_deref(),
-            Some("https://av/u/1?v=4&s=80")
+            ),
+            ("https://av/u/1?v=4&s=80".to_owned(), true)
         );
         assert_eq!(query_escape("me+git@x.org"), "me%2Bgit@x.org");
         assert_ne!(
@@ -360,6 +366,7 @@ mod tests {
         assert_eq!(failed(404), Some(false));
         assert_eq!(failed(410), Some(false));
         assert_eq!(failed(429), Some(true));
+        assert_eq!(failed(408), Some(true));
         assert_eq!(failed(503), Some(true));
     }
 

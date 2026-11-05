@@ -83,7 +83,8 @@ fn path_of_shell(shell: &std::ffi::OsStr) -> Option<OsString> {
                 Ok(0) | Err(_) => break,
                 Ok(n) => out.extend_from_slice(&buf[..n]),
             }
-            if marked(&String::from_utf8_lossy(&out)).is_some() {
+            // A profile's program writing on and on mustn't fill memory.
+            if out.len() > 1 << 20 || marked(&String::from_utf8_lossy(&out)).is_some() {
                 break;
             }
         }
@@ -104,8 +105,8 @@ fn path_of_shell(shell: &std::ffi::OsStr) -> Option<OsString> {
 fn marked(out: &str) -> Option<String> {
     let (_, rest) = out.split_once(MARK)?;
     let (path, _) = rest.split_once(MARK)?;
-    let path = path.trim();
-    (!path.is_empty()).then(|| path.to_owned())
+    // As printed: a folder's name may start or end with a space.
+    (!path.trim().is_empty()).then(|| path.to_owned())
 }
 
 #[cfg(test)]
@@ -131,6 +132,10 @@ mod tests {
         assert_eq!(marked("/usr/bin:/bin"), None);
         assert_eq!(marked(&format!("{MARK}/usr/bin")), None);
         assert_eq!(marked(&format!("{MARK}{MARK}")), None);
+        assert_eq!(
+            marked(&format!("{MARK}/usr/bin:/opt/my tools {MARK}")).as_deref(),
+            Some("/usr/bin:/opt/my tools ")
+        );
     }
 
     /// A profile that prints and leaves a program holding the pipe still gives the PATH, soon.
