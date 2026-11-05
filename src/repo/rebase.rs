@@ -158,6 +158,7 @@ impl RebaseEditor {
 /// in a shared temporary folder, another user could have made it to swap the todo list (whose
 /// `exec` lines git runs) for their own.
 fn private_dir(parent: &Path) -> std::io::Result<PathBuf> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);

@@ -1507,7 +1507,9 @@ mod tests {
         ] {
             git(args)?;
         }
-        let name = "q\"x.txt";
+        // A name git quotes in its output. Windows allows no `"` in file names; a letter
+        // outside ASCII is quoted too.
+        let name = if cfg!(windows) { "qé.txt" } else { "q\"x.txt" };
         std::fs::write(dir.join(name), "a\n").map_err(|e| e.to_string())?;
         git(&["add", "-A"])?;
         git(&["commit", "-qm", "one"])?;
