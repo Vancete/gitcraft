@@ -61,7 +61,8 @@ pub(super) fn build<'a, T>(items: impl IntoIterator<Item = (&'a str, T)>) -> Vec
 /// Puts `item` into `nodes`, for the part of the name `full` that starts at `start`.
 fn insert<'a, T>(nodes: &mut Vec<Node<'a, T>>, full: &'a str, start: usize, item: T) {
     let rest = &full[start..];
-    let Some(slash) = rest.find('/') else {
+    // A slash at the end doesn't open a folder: git shows a nested repository as `sub/`.
+    let Some(slash) = rest.find('/').filter(|&i| i + 1 < rest.len()) else {
         nodes.push(Node::Leaf { name: rest, item });
         return;
     };
@@ -377,6 +378,42 @@ mod tests {
                 folder("a", "a", vec![folder("x", "a/x", vec![leaf("1", 1)])]),
                 folder("b", "b", vec![folder("x", "b/x", vec![leaf("2", 2)])]),
             ]
+        );
+    }
+
+    #[test]
+    fn a_trailing_slash_names_a_leaf_not_an_empty_folder() {
+        assert_eq!(
+            build([("sub/", 1), ("lib/nested/", 2)]),
+            vec![
+                leaf("sub/", 1),
+                folder("lib", "lib", vec![leaf("nested/", 2)]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_name_and_a_folder_of_the_same_name_stay_apart() {
+        // A file replaced by a folder of the same name, in one commit.
+        assert_eq!(
+            build([("a", 1), ("a/b", 2)]),
+            vec![leaf("a", 1), folder("a", "a", vec![leaf("b", 2)])]
+        );
+    }
+
+    #[test]
+    fn unicode_names_split_at_their_slashes() {
+        assert_eq!(
+            build([("ünï/çødé/日本.rs", 1)]),
+            vec![folder(
+                "ünï",
+                "ünï",
+                vec![folder("çødé", "ünï/çødé", vec![leaf("日本.rs", 1)])]
+            )]
+        );
+        assert_eq!(
+            compacted(&[("ünï/çødé/日本.rs", 1)]),
+            vec![folder("ünï/çødé", "ünï/çødé", vec![leaf("日本.rs", 1)])]
         );
     }
 

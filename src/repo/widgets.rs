@@ -249,10 +249,7 @@ pub fn file_row(
         }
     }
 
-    let (dir, name) = match path.rsplit_once('/') {
-        Some((dir, name)) => (dir, name),
-        None => ("", path),
-    };
+    let (dir, name) = split_dir(path);
     let text_clip = Rect::from_min_max(
         pos2(rect.left() + 32.0 + shift, rect.top()),
         pos2(right, rect.bottom()),
@@ -290,6 +287,16 @@ pub fn file_row(
         None => row,
     };
     FileRowResponse { row, button }
+}
+
+/// `(folder, name)` of a path: `src/repo` and `mod.rs`. A slash at the end (git shows a nested
+/// repository as `sub/`) stays with the name.
+fn split_dir(path: &str) -> (&str, &str) {
+    let trimmed = path.strip_suffix('/').unwrap_or(path);
+    match trimmed.rsplit_once('/') {
+        Some((dir, _)) => (dir, &path[dir.len() + 1..]),
+        None => ("", path),
+    }
 }
 
 /// A primary (accent-filled) button.
@@ -528,16 +535,109 @@ pub fn file_menu(
 /// The ways to ignore `path`: (menu label, `.gitignore` line, what to stop tracking).
 fn ignore_patterns(path: &str) -> Vec<(String, String, String)> {
     let p = std::path::Path::new(path);
-    let mut out = vec![("This file".to_owned(), format!("/{path}"), path.to_owned())];
-    if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+    let mut out = Vec::new();
+    if let Some(literal) = ignore_literal(path) {
         out.push((
-            format!("All .{ext} files"),
-            format!("*.{ext}"),
+            "This file".to_owned(),
+            format!("/{literal}"),
             path.to_owned(),
         ));
     }
-    if let Some(dir) = path.rsplit_once('/').map(|(d, _)| d) {
-        out.push((format!("Folder {dir}/"), format!("/{dir}/"), dir.to_owned()));
+    if let Some(ext) = p.extension().and_then(|e| e.to_str())
+        && let Some(literal) = ignore_literal(ext)
+    {
+        out.push((
+            format!("All .{ext} files"),
+            format!("*.{literal}"),
+            path.to_owned(),
+        ));
+    }
+    let (dir, _) = split_dir(path);
+    if !dir.is_empty()
+        && let Some(literal) = ignore_literal(dir)
+    {
+        out.push((
+            format!("Folder {dir}/"),
+            format!("/{literal}/"),
+            dir.to_owned(),
+        ));
     }
     out
+}
+
+/// `name` as a `.gitignore` pattern matching just it: `*`, `?`, `[` and `\` stand for
+/// themselves, and so do spaces at the end (which git would drop). `None` for a name with a
+/// line break, which a `.gitignore` line can't hold.
+fn ignore_literal(name: &str) -> Option<String> {
+    if name.contains(['\n', '\r']) {
+        return None;
+    }
+    let body = name.trim_end_matches(' ');
+    let mut out = String::with_capacity(name.len() + 4);
+    for c in body.chars() {
+        if matches!(c, '*' | '?' | '[' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    for _ in body.len()..name.len() {
+        out.push_str("\\ ");
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_path_splits_into_folder_and_name() {
+        assert_eq!(split_dir("src/repo/mod.rs"), ("src/repo", "mod.rs"));
+        assert_eq!(split_dir("Cargo.toml"), ("", "Cargo.toml"));
+        assert_eq!(split_dir("dös/ñame.rs"), ("dös", "ñame.rs"));
+    }
+
+    #[test]
+    fn a_nested_repository_keeps_its_name() {
+        // `git status` shows a repository inside the working tree as `sub/`.
+        assert_eq!(split_dir("sub/"), ("", "sub/"));
+        assert_eq!(split_dir("lib/sub/"), ("lib", "sub/"));
+    }
+
+    fn patterns(path: &str) -> Vec<String> {
+        ignore_patterns(path)
+            .into_iter()
+            .map(|(_, p, _)| p)
+            .collect()
+    }
+
+    #[test]
+    fn plain_paths_ignore_as_before() {
+        assert_eq!(patterns("src/a.log"), ["/src/a.log", "*.log", "/src/"]);
+        assert_eq!(patterns("README"), ["/README"]);
+    }
+
+    #[test]
+    fn glob_characters_in_a_name_match_only_themselves() {
+        // Unescaped, `/[ab].txt` would ignore `a.txt` and `b.txt` but not the file itself.
+        assert_eq!(patterns("[ab].txt"), ["/\\[ab].txt", "*.txt"]);
+        assert_eq!(patterns("x*?/y"), ["/x\\*\\?/y", "/x\\*\\?/"]);
+    }
+
+    #[test]
+    fn trailing_spaces_are_kept() {
+        assert_eq!(patterns("notes  "), ["/notes\\ \\ "]);
+    }
+
+    #[test]
+    fn a_name_with_a_line_break_is_never_written_to_gitignore() {
+        // `a\n*` would add a second line ignoring everything.
+        assert!(patterns("a\n*").is_empty());
+        assert_eq!(patterns("d\nx/f.rs"), ["*.rs"]);
+    }
+
+    #[test]
+    fn a_nested_repository_is_ignored_as_a_folder() {
+        assert_eq!(patterns("lib/sub/"), ["/lib/sub/", "/lib/"]);
+    }
 }

@@ -37,10 +37,15 @@ pub fn detect(remotes: &[Remote]) -> Option<Forge> {
         .iter()
         .find(|r| r.name == "origin")
         .or_else(|| remotes.first())?;
-    let url = remote.url.to_lowercase();
-    if url.contains("github.com") || url.contains("github.") {
+    // GitHub by the host alone: a GitLab project may well be called `me.github.io`. GitLab can
+    // also live under a path of another host (`https://example.org/gitlab/…`).
+    // A host naming GitLab wins (`github-mirror.gitlab.example.org`).
+    let host = location(&remote.url).map(|(host, _)| host);
+    if host.as_deref().is_some_and(|host| host.contains("gitlab")) {
+        Some(Forge::GitLab)
+    } else if host.is_some_and(|host| host.contains("github")) {
         Some(Forge::GitHub)
-    } else if url.contains("gitlab") {
+    } else if remote.url.to_lowercase().contains("gitlab") {
         Some(Forge::GitLab)
     } else {
         None
@@ -105,8 +110,22 @@ pub(crate) fn tool_with_input(
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
+        Err(failure(forge, &out))
     }
+}
+
+/// What a tool that failed said, or that it failed: an empty error would read as nothing wrong.
+fn failure(forge: Forge, out: &std::process::Output) -> String {
+    let said = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_owned();
+    let stderr = said(&out.stderr);
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = said(&out.stdout);
+    if !stdout.is_empty() {
+        return stdout;
+    }
+    format!("{} failed ({})", forge.tool(), out.status)
 }
 
 pub fn list(repo: &Path, forge: Forge) -> Result<Vec<PullRequest>, String> {
@@ -125,7 +144,12 @@ pub fn list(repo: &Path, forge: Forge) -> Result<Vec<PullRequest>, String> {
                 "number,title,headRefName,author,url,isDraft",
             ],
         )?,
-        Forge::GitLab => tool(forge, repo, &["mr", "list", "--output", "json"])?,
+        // As many as of GitHub's: glab's own page holds only 30.
+        Forge::GitLab => tool(
+            forge,
+            repo,
+            &["mr", "list", "--per-page", "100", "--output", "json"],
+        )?,
     };
     parse(forge, &out)
 }
@@ -216,8 +240,9 @@ pub fn location(url: &str) -> Option<(String, String)> {
     let url = url.trim();
     let (host, path) = match url.split_once("://") {
         Some((_, rest)) => {
-            let rest = rest.rsplit_once('@').map_or(rest, |(_, r)| r);
-            let (host, path) = rest.split_once('/')?;
+            // The user part is only ever before the first `/`: an `@` in the path names no host.
+            let (authority, path) = rest.split_once('/')?;
+            let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
             (host.split(':').next().unwrap_or(host), path)
         }
         None => {
@@ -331,6 +356,36 @@ mod tests {
             Some(Forge::GitLab)
         );
         assert_eq!(detect(&[r("origin", "C:/repos/bare.git")]), None);
+        assert_eq!(
+            detect(&[r("origin", "https://github.example.com/a/b")]),
+            Some(Forge::GitHub)
+        );
+    }
+
+    #[test]
+    fn only_the_host_tells_the_forge() {
+        let r = |url: &str| Remote {
+            name: "origin".into(),
+            url: url.into(),
+        };
+        assert_eq!(
+            detect(&[r("git@gitlab.com:me/me.github.io.git")]),
+            Some(Forge::GitLab)
+        );
+        assert_eq!(detect(&[r("https://git.example.org/github.com/x")]), None);
+        assert_eq!(detect(&[r("https://git.example.org/a@github.com/x")]), None);
+        assert_eq!(
+            detect(&[r("https://github-mirror.gitlab.example.org/g/p.git")]),
+            Some(Forge::GitLab)
+        );
+        assert_eq!(
+            location("https://me:tok@github.com/a/b.git"),
+            Some(("github.com".into(), "a/b".into()))
+        );
+        assert_eq!(
+            detect(&[r("https://example.org/gitlab/x/y")]),
+            Some(Forge::GitLab)
+        );
     }
 
     #[test]

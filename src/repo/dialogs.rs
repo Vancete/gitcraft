@@ -304,7 +304,7 @@ impl RepoTab {
                     ui.add_space(6.0);
                     ui.checkbox(checkout, "Check it out");
                     ui.add_space(12.0);
-                    let valid = !name.trim().is_empty();
+                    let valid = usable(name);
                     let mut outcome = Outcome::Open;
                     ui.horizontal(|ui| {
                         if widgets::primary_button(ui, "Create", valid, 90.0).clicked()
@@ -443,11 +443,11 @@ impl RepoTab {
                     });
                     ui.add_space(12.0);
                     let name_ok = if *new_branch {
-                        !new_name.trim().is_empty()
+                        usable(new_name)
                     } else {
-                        !branch.is_empty()
+                        usable(branch)
                     };
-                    let valid = name_ok && !path.trim().is_empty();
+                    let valid = name_ok && usable(path);
                     let mut outcome = Outcome::Open;
                     ui.horizontal(|ui| {
                         if widgets::primary_button(ui, "Add", valid, 90.0).clicked()
@@ -517,7 +517,7 @@ impl RepoTab {
                         ui.checkbox(push, format!("Push it to {remote}"));
                     }
                     ui.add_space(8.0);
-                    let valid = !name.trim().is_empty();
+                    let valid = usable(name);
                     buttons(ui, "Create", valid, enter && !message.contains('\n'), || {
                         let name = name.trim().to_owned();
                         let mut create = vec!["tag".to_owned()];
@@ -547,7 +547,7 @@ impl RepoTab {
                         *new = new.replace(' ', "-");
                     }
                     ui.add_space(8.0);
-                    let valid = !new.trim().is_empty() && new.trim() != old.as_str();
+                    let valid = usable(new) && new.trim() != old.as_str();
                     buttons(ui, "Rename", valid, enter, || {
                         let new = new.trim().to_owned();
                         Action::UndoableOps {
@@ -573,7 +573,7 @@ impl RepoTab {
                             .margin(egui::Margin::symmetric(8, 6)),
                     );
                     ui.add_space(8.0);
-                    let valid = !name.trim().is_empty() && !url.trim().is_empty();
+                    let valid = usable(name) && usable(url);
                     buttons(ui, if original.is_some() { "Save" } else { "Add" }, valid, enter, || {
                         let (name, url) = (name.trim().to_owned(), url.trim().to_owned());
                         let steps = match original {
@@ -732,17 +732,26 @@ impl RepoTab {
     }
 }
 
-/// A dialog's heading and one line under it.
+/// A name, path or URL that can go to git as typed: something, and nothing git would read as
+/// an option (`-D` as a new branch's name would make `git branch -D <start>` delete a branch).
+fn usable(text: &str) -> bool {
+    let text = text.trim();
+    !text.is_empty() && !text.starts_with('-')
+}
+
 /// `github.com` from `https://user@github.com/owner/repo.git`.
 fn host_of(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let rest = rest.rsplit_once('@').map_or(rest, |(_, r)| r);
+    // The user info ends at the last `@` before the path: one in the path isn't it.
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let rest = authority.rsplit_once('@').map_or(authority, |(_, r)| r);
     rest.split(['/', ':'])
         .next()
         .filter(|h| !h.is_empty())
         .unwrap_or("the remote")
 }
 
+/// A dialog's heading and one line under it.
 fn title(ui: &mut egui::Ui, heading: &str, sub: &str, t: &Tokens) {
     ui.label(RichText::new(heading).font(theme::semibold(15.0)));
     ui.label(RichText::new(sub).color(t.text_dim));
@@ -785,4 +794,36 @@ fn buttons(
         }
     });
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hosts() {
+        assert_eq!(
+            host_of("https://user@github.com/owner/repo.git"),
+            "github.com"
+        );
+        assert_eq!(
+            host_of("https://gitlab.example.com:8443/a/b"),
+            "gitlab.example.com"
+        );
+        assert_eq!(host_of("git@github.com:owner/repo.git"), "github.com");
+        // An `@` in the path is not user info.
+        assert_eq!(
+            host_of("https://good.example/u@evil.example/r"),
+            "good.example"
+        );
+        assert_eq!(host_of(""), "the remote");
+    }
+
+    #[test]
+    fn option_like_names_are_refused() {
+        assert!(usable(" feature/x "));
+        assert!(!usable("   "));
+        assert!(!usable("-D"));
+        assert!(!usable(" --upload-pack=x"));
+    }
 }

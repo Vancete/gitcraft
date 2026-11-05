@@ -122,12 +122,8 @@ impl RebaseEditor {
     /// Writes the todo list and the new messages to a fresh temporary folder and returns the
     /// git command that runs the rebase with them.
     pub fn command(&self) -> Result<Vec<String>, String> {
-        let dir = std::env::temp_dir().join(format!(
-            "gitcraft-rebase-{}-{}",
-            std::process::id(),
-            crate::git::now()
-        ));
-        std::fs::create_dir_all(&dir).map_err(|e| format!("could not prepare the rebase: {e}"))?;
+        let dir = private_dir(&std::env::temp_dir())
+            .map_err(|e| format!("could not prepare the rebase: {e}"))?;
         let write = |name: &str, text: &str| -> Result<PathBuf, String> {
             let path = dir.join(name);
             std::fs::write(&path, text)
@@ -152,8 +148,36 @@ impl RebaseEditor {
             "rebase".to_owned(),
             "-i".to_owned(),
             "--autostash".to_owned(),
+            "--end-of-options".to_owned(),
             self.onto.clone(),
         ])
+    }
+}
+
+/// A new folder under `parent` that only this user can enter. Never one that already exists:
+/// in a shared temporary folder, another user could have made it to swap the todo list (whose
+/// `exec` lines git runs) for their own.
+fn private_dir(parent: &Path) -> std::io::Result<PathBuf> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    let base = format!(
+        "gitcraft-rebase-{}-{}",
+        std::process::id(),
+        crate::git::now()
+    );
+    let mut n = 0u32;
+    loop {
+        let dir = parent.join(if n == 0 {
+            base.clone()
+        } else {
+            format!("{base}-{n}")
+        });
+        match builder.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 100 => n += 1,
+            Err(e) => return Err(e),
+        }
     }
 }
 
@@ -171,7 +195,7 @@ fn todo(entries: &[Entry], message_file: impl Fn(usize) -> Option<String>) -> St
         out.push_str(&format!("{verb} {} {}\n", e.commit.hash, e.commit.summary));
         if let Some(file) = message_file(i) {
             out.push_str(&format!(
-                "exec git commit --amend --allow-empty --cleanup=strip -F {file}\n"
+                "exec git commit --amend --allow-empty --cleanup=whitespace -F {file}\n"
             ));
         }
     }
@@ -385,7 +409,7 @@ mod tests {
         let todo = todo(&entries, |i| (i == 1).then(|| "'/tmp/m 1.txt'".to_owned()));
         assert_eq!(
             todo,
-            "pick a1 summary a1\npick b2 summary b2\nexec git commit --amend --allow-empty --cleanup=strip -F '/tmp/m 1.txt'\nsquash c3 summary c3\ndrop d4 summary d4\n"
+            "pick a1 summary a1\npick b2 summary b2\nexec git commit --amend --allow-empty --cleanup=whitespace -F '/tmp/m 1.txt'\nsquash c3 summary c3\ndrop d4 summary d4\n"
         );
     }
 
@@ -401,6 +425,25 @@ mod tests {
         ed.entries[1].step = Step::Reword;
         ed.entries[1].message = "  ".into();
         assert!(ed.problem().is_some());
+    }
+
+    #[test]
+    fn private_dirs_are_new() {
+        let parent = std::env::temp_dir().join(format!("gitcraft-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&parent);
+        let a = private_dir(&parent);
+        let b = private_dir(&parent);
+        assert!(a.is_ok() && b.is_ok());
+        if let (Ok(a), Ok(b)) = (&a, &b) {
+            assert_ne!(a, b);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(a).map(|m| m.permissions().mode() & 0o777);
+                assert_eq!(mode.ok(), Some(0o700));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     #[test]

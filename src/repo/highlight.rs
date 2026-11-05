@@ -13,6 +13,8 @@ pub type Spans = Vec<(Color32, String)>;
 
 /// Bigger diffs stay uncoloured: highlighting is the slow part of opening them.
 const MAX_LINES: usize = 8000;
+/// Nor much text in few lines (a minified bundle): colouring takes about 2 s per MB.
+const MAX_BYTES: usize = 512 * 1024;
 
 fn syntaxes() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
@@ -34,14 +36,19 @@ pub fn highlight<'a>(
     if lines.len() > MAX_LINES {
         return None;
     }
+    let lines: Vec<&str> = lines.collect();
+    if lines.iter().map(|l| l.len()).sum::<usize>() > MAX_BYTES {
+        return None;
+    }
     let ss = syntaxes();
     let file = std::path::Path::new(path);
     let name = file.file_name()?.to_string_lossy();
-    // By extension, or by the whole name for files like `Dockerfile` and `Makefile`.
-    let syntax = file
-        .extension()
-        .and_then(|e| ss.find_syntax_by_extension(&e.to_string_lossy().to_lowercase()))
-        .or_else(|| ss.find_syntax_by_extension(&name))?;
+    // By the whole name for files like `Dockerfile` and `CMakeLists.txt` (whose `.txt` alone is
+    // plain text), or else by extension.
+    let syntax = ss.find_syntax_by_extension(&name).or_else(|| {
+        file.extension()
+            .and_then(|e| ss.find_syntax_by_extension(&e.to_string_lossy()))
+    })?;
     if syntax.name == "Plain Text" {
         return None;
     }
@@ -96,6 +103,22 @@ mod tests {
         assert!(spans[0].len() > 1);
         assert!(highlight("notes.txt", lines.iter().copied(), true).is_none());
         assert!(highlight("Makefile-without-ext", lines.iter().copied(), true).is_none());
+    }
+
+    #[test]
+    fn whole_names_win_over_extensions() {
+        let lines = ["project(x)", "add_executable(x main.c)"];
+        let spans = highlight("src/CMakeLists.txt", lines.iter().copied(), true);
+        assert!(spans.is_some_and(|s| s.iter().any(|line| line.len() > 1)));
+        assert!(highlight("MAIN.RS", ["fn main() {}"].into_iter(), true).is_some());
+    }
+
+    /// A minified file is a few very long lines: too slow to colour.
+    #[test]
+    fn very_long_text_stays_plain() {
+        let line = "var a=1;".repeat(MAX_BYTES / 8 + 1);
+        assert!(highlight("app.min.js", [line.as_str()].into_iter(), true).is_none());
+        assert!(highlight("app.js", ["var a=1;"].into_iter(), true).is_some());
     }
 
     /// The languages of a typical web or .NET repository each get more than one colour.

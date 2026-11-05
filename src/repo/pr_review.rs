@@ -64,7 +64,10 @@ pub(crate) enum Posted {
     AddPending,
     RemovePending,
     Discard,
-    Reply,
+    /// Into the pending review, when there is one.
+    Reply {
+        pending: bool,
+    },
     Resolve(bool),
     Suggestion,
     Dismiss,
@@ -88,7 +91,7 @@ impl Posted {
             Posted::Review(_) | Posted::RemovePending | Posted::Discard => Place::Review,
             Posted::LineNow
             | Posted::AddPending
-            | Posted::Reply
+            | Posted::Reply { .. }
             | Posted::Resolve(_)
             | Posted::Suggestion => Place::Line,
             Posted::Dismiss => Place::Dismiss,
@@ -114,7 +117,9 @@ impl Posted {
             Posted::AddPending => "Added to your pending review",
             Posted::RemovePending => "Removed from your pending review",
             Posted::Discard => "Pending review discarded",
-            Posted::Reply => "Reply sent",
+            Posted::Reply { pending: false } => "Reply sent",
+            // Nobody else sees it until the review is sent.
+            Posted::Reply { pending: true } => "Reply added to your pending review",
             Posted::Resolve(true) => "Thread resolved",
             Posted::Resolve(false) => "Thread opened again",
             Posted::Suggestion => "Suggestion committed to the branch",
@@ -170,7 +175,7 @@ impl PrDraft {
                 self.line_text.clear();
                 self.target = None;
             }
-            Posted::Reply => self.line_text.clear(),
+            Posted::Reply { .. } => self.line_text.clear(),
             Posted::Dismiss => {
                 self.dismissing = None;
                 self.dismiss_text.clear();
@@ -436,7 +441,11 @@ impl RepoTab {
             PrAct::DiscardPending => (Posted::Discard, Box::new(|t| t.discard_pending())),
             PrAct::Reply(thread) => {
                 let body = draft.line_text.clone();
-                (Posted::Reply, Box::new(move |t| t.reply(&thread, &body)))
+                let pending = details.extras.pending_review.is_some();
+                (
+                    Posted::Reply { pending },
+                    Box::new(move |t| t.reply(&thread, &body)),
+                )
             }
             PrAct::SetResolved(thread, resolved) => (
                 Posted::Resolve(resolved),
@@ -1042,7 +1051,7 @@ mod tests {
         };
         assert_eq!(draft.error_at(Place::Comment), Some("No"));
         assert_eq!(draft.error_at(Place::Line), None);
-        assert_eq!(Posted::Reply.place(), Place::Line);
+        assert_eq!(Posted::Reply { pending: true }.place(), Place::Line);
         assert_eq!(Posted::Discard.place(), Place::Review);
         assert_eq!(Posted::Merge.place(), Place::Merge);
     }
@@ -1132,6 +1141,12 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_into_the_pending_review_is_not_said_to_be_sent() {
+        assert_eq!(Posted::Reply { pending: false }.done(), "Reply sent");
+        assert!(!Posted::Reply { pending: true }.done().contains("sent"));
+    }
+
+    #[test]
     fn discarding_the_pending_comments_keeps_the_text_of_the_review() {
         let mut draft = PrDraft {
             review: "Summary".to_owned(),
@@ -1149,6 +1164,6 @@ mod tests {
         assert!(Posted::Suggestion.catches_up_after_failure());
         assert!(!Posted::Comment.catches_up_after_failure());
         assert!(Posted::AddPending.catches_up_after_failure());
-        assert!(!Posted::Reply.catches_up_after_failure());
+        assert!(!Posted::Reply { pending: false }.catches_up_after_failure());
     }
 }

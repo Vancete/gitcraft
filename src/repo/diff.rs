@@ -65,6 +65,8 @@ pub struct DiffData {
     pub header: String,
     /// Hunks and lines can be staged, unstaged or discarded on their own.
     pub partial: bool,
+    /// Characters in the longest line, for the width to scroll (counted once, not every frame).
+    longest: usize,
 }
 
 /// What to do with some hunks or lines of an uncommitted file's diff.
@@ -139,7 +141,7 @@ pub fn load(repo: &Path, key: &DiffKey, opts: DiffOptions, dark: bool) -> Result
             .iter()
             .all(|l| l.kind != Kind::Meta || l.raw.starts_with('\\'));
     let image = if is_image(&path) {
-        Some(load_images(repo, key, &path))
+        Some(load_images(repo, key, &path, renamed_from(&text)))
     } else {
         None
     };
@@ -174,6 +176,11 @@ pub fn load(repo: &Path, key: &DiffKey, opts: DiffOptions, dark: bool) -> Result
     }
 
     let (changed, split) = pair_lines(&lines);
+    let longest = lines
+        .iter()
+        .map(|l| l.text.chars().count())
+        .max()
+        .unwrap_or(0);
     Ok(DiffData {
         lines,
         spans,
@@ -182,6 +189,7 @@ pub fn load(repo: &Path, key: &DiffKey, opts: DiffOptions, dark: bool) -> Result
         image,
         header,
         partial,
+        longest,
     })
 }
 
@@ -192,35 +200,49 @@ fn is_image(path: &str) -> bool {
         .is_some_and(|e| IMAGE_EXTS.contains(&e.as_str()))
 }
 
-fn load_images(repo: &Path, key: &DiffKey, path: &str) -> ImagePair {
-    let get = |rev: Option<&str>| {
+/// The old name of a renamed file, from its patch's header (unless git had to quote it).
+fn renamed_from(header: &str) -> Option<&str> {
+    header
+        .lines()
+        .find_map(|l| l.strip_prefix("rename from "))
+        .filter(|p| !p.starts_with('"'))
+}
+
+/// The pictures before and after; the one before under its old name when the file was renamed.
+fn load_images(repo: &Path, key: &DiffKey, path: &str, renamed_from: Option<&str>) -> ImagePair {
+    let get = |rev: Option<&str>, path: &str| {
         git::file_at(repo, rev, path)
             .ok()
             .map(|b| Arc::from(b.into_boxed_slice()))
     };
-    let (old, new, id) = match key {
-        DiffKey::Commit { hash, .. } => (
-            get(Some(&format!("{hash}^"))),
-            get(Some(hash)),
-            hash.clone(),
-        ),
-        DiffKey::Work(file) => match file.area {
-            Area::Staged => (get(Some("HEAD")), get(Some("")), "staged".to_owned()),
-            Area::Unstaged => (get(Some("")), get(None), "unstaged".to_owned()),
-            Area::Untracked => (None, get(None), "untracked".to_owned()),
-            Area::Conflicted => (None, get(None), "conflicted".to_owned()),
-        },
-        DiffKey::Range { from, to, .. } => (
-            get(Some(from)),
-            get(to.as_deref()),
-            format!("{from}-{}", to.as_deref().unwrap_or("work")),
-        ),
-    };
-    ImagePair {
-        old,
-        new,
-        id: format!("{id}-{}", git::now()),
+    let old_path = match key {
+        DiffKey::Work(file) => file.old_path.as_deref(),
+        _ => None,
     }
+    .or(renamed_from)
+    .unwrap_or(path);
+    let old = |rev: &str| get(Some(rev), old_path);
+    let (old, new) = match key {
+        DiffKey::Commit { hash, .. } => (old(&format!("{hash}^")), get(Some(hash), path)),
+        DiffKey::Work(file) => match file.area {
+            Area::Staged => (old("HEAD"), get(Some(""), path)),
+            Area::Unstaged => (get(Some(""), path), get(None, path)),
+            Area::Untracked | Area::Conflicted => (None, get(None, path)),
+        },
+        DiffKey::Range { from, to, .. } => (old(from), get(to.as_deref(), path)),
+    };
+    let id = image_id(old.as_deref(), new.as_deref());
+    ImagePair { old, new, id }
+}
+
+/// Names the pictures by what they hold: egui keeps an image by its URI for good, so the same
+/// name for new contents would show the old picture, and a new name for each read of the same
+/// one would keep another copy every time the diff is read again.
+fn image_id(old: Option<&[u8]>, new: Option<&[u8]>) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (old, new).hash(&mut h);
+    format!("{:016x}", h.finish())
 }
 
 type Split = Vec<(Option<usize>, Option<usize>)>;
@@ -234,16 +256,25 @@ fn pair_lines(lines: &[DiffLine]) -> (Vec<Option<(usize, usize)>>, Split) {
     while i < lines.len() {
         match lines[i].kind {
             Kind::Del | Kind::Add => {
-                let dels_start = i;
-                while i < lines.len() && lines[i].kind == Kind::Del {
-                    i += 1;
-                }
-                let adds_start = i;
-                while i < lines.len() && lines[i].kind == Kind::Add {
-                    i += 1;
-                }
-                let dels: Vec<usize> = (dels_start..adds_start).collect();
-                let adds: Vec<usize> = (adds_start..i).collect();
+                // A "\ No newline at end of file" note inside the run doesn't end it (the last
+                // line changed): it gets its own row after the pairs.
+                let mut notes = Vec::new();
+                let mut run = |kind: Kind| {
+                    let mut found = Vec::new();
+                    while i < lines.len()
+                        && matches!(lines[i].kind, k if k == kind || k == Kind::Meta)
+                    {
+                        if lines[i].kind == kind {
+                            found.push(i);
+                        } else {
+                            notes.push(i);
+                        }
+                        i += 1;
+                    }
+                    found
+                };
+                let dels = run(Kind::Del);
+                let adds = run(Kind::Add);
                 for k in 0..dels.len().max(adds.len()) {
                     let (d, a) = (dels.get(k).copied(), adds.get(k).copied());
                     if let (Some(d), Some(a)) = (d, a)
@@ -254,6 +285,7 @@ fn pair_lines(lines: &[DiffLine]) -> (Vec<Option<(usize, usize)>>, Split) {
                     }
                     split.push((d, a));
                 }
+                split.extend(notes.into_iter().map(|n| (Some(n), Some(n))));
             }
             _ => {
                 split.push((Some(i), Some(i)));
@@ -377,12 +409,17 @@ fn meta(text: &str) -> DiffLine {
     }
 }
 
-/// Everything before the first hunk of a one-file patch, each line ending in `\n`.
+/// Everything before the first hunk of a one-file patch, each line ending in `\n`. A mode
+/// change is left out: picking some lines shouldn't also stage, unstage or throw away a
+/// `chmod`.
 fn patch_header(text: &str) -> String {
     let mut header = String::new();
     for line in text.split_terminator('\n') {
         if line.starts_with("@@") {
             return header;
+        }
+        if line.starts_with("old mode ") || line.starts_with("new mode ") {
+            continue;
         }
         header.push_str(line);
         header.push('\n');
@@ -547,7 +584,11 @@ pub fn partial_patch(
 fn hunk_start(header: &str) -> (u32, u32) {
     let mut old = 0;
     let mut new = 0;
-    for part in header.split_whitespace() {
+    // Only the ranges between the `@@`s: the function name after them can hold `-x` or `+x`.
+    let ats = header.chars().take_while(|c| *c == '@').count();
+    let rest = header.get(ats..).unwrap_or_default();
+    let ranges = rest.split_once(" @@").map_or(rest, |(ranges, _)| ranges);
+    for part in ranges.split_whitespace() {
         let num = |s: &str| {
             s.split(',')
                 .next()
@@ -800,12 +841,7 @@ impl RepoTab {
             .layout_no_wrap("M".to_owned(), font.clone(), t.text)
             .size()
             .x;
-        let longest = data
-            .lines
-            .iter()
-            .map(|l| l.text.chars().count())
-            .max()
-            .unwrap_or(0) as f32;
+        let longest = data.longest as f32;
 
         ui.spacing_mut().item_spacing.y = 0.0;
         let rows = if split {
@@ -823,7 +859,9 @@ impl RepoTab {
         // A changed line clicked: (line, extend the selection).
         let mut clicked: Option<usize> = None;
         // Text selection by dragging: where the press and the pointer are in the lines drawn.
-        let text_sel = view.text_sel;
+        // Only a selection made in the layout shown: one made side by side isn't on screen
+        // unified, and would be what Ctrl+C copies.
+        let text_sel = view.text_sel.filter(|s| s.made_in(split));
         let (press, pointer) = ui.input(|i| (i.pointer.press_origin(), i.pointer.interact_pos()));
         let mut press_hit: Option<(usize, Side, usize)> = None;
         // Each with whether the pointer is over that line's half, not only at its height.
@@ -852,7 +890,10 @@ impl RepoTab {
                     .is_some_and(|t| t.side == s && t.line == n)
             });
             let picked = view.chosen.contains(&i) || active;
-            let sel_chars = text_sel.and_then(|s| s.chars_of(i, side));
+            // Hunk headers aren't copied, so they don't look selected either.
+            let sel_chars = text_sel
+                .and_then(|s| s.chars_of(i, side))
+                .filter(|_| kind.is_some_and(|k| side.shows(k)));
             let placed = paint_line(
                 ui, rect, data, i, side, scroll_x, &font, &t, picked, sel_chars,
             );
@@ -1191,6 +1232,11 @@ pub(super) struct TextSel {
 }
 
 impl TextSel {
+    /// Whether it was made in the side-by-side view (`split`) or the unified one.
+    fn made_in(&self, split: bool) -> bool {
+        (self.side == Side::Unified) != split
+    }
+
     fn ordered(&self) -> ((usize, usize), (usize, usize)) {
         (self.anchor.min(self.cursor), self.anchor.max(self.cursor))
     }
@@ -1582,6 +1628,61 @@ mod tests {
         assert_eq!(lines[3].text, "c");
     }
 
+    /// The function name git prints after a hunk's ranges can hold `-` and `+` words.
+    #[test]
+    fn numbers_ignore_the_hunk_headers_function_name() {
+        assert_eq!(hunk_start("@@ -13,7 +14,7 @@ Hello - world +x"), (12, 13));
+        assert_eq!(hunk_start("@@ -1 +1 @@"), (0, 0));
+        assert_eq!(hunk_start("@@@ -1,1 -2,1 +3,5 @@@ a -9"), (1, 2));
+        let lines = parse("@@ -13,2 +13,2 @@ int f(int a, -1)\n a\n-b\n+c\n");
+        assert_eq!(lines[1].old, Some(13));
+        assert_eq!(lines[2].old, Some(14));
+        assert_eq!(lines[3].new, Some(14));
+    }
+
+    /// The last line changed in a file without a final newline: its old and new versions are
+    /// still side by side, the note after them.
+    #[test]
+    fn no_newline_note_keeps_the_last_lines_paired() {
+        let lines = parse(
+            "@@ -1,2 +1,2 @@\n a\n-let x = 1;\n\\ No newline at end of file\n+let x = 2;\n\\ No newline at end of file\n",
+        );
+        let (changed, split) = pair_lines(&lines);
+        assert_eq!(
+            split,
+            vec![
+                (Some(0), Some(0)),
+                (Some(1), Some(1)),
+                (Some(2), Some(4)),
+                (Some(3), Some(3)),
+                (Some(5), Some(5)),
+            ]
+        );
+        assert_eq!(changed[2], Some((8, 9)));
+        assert_eq!(changed[4], Some((8, 9)));
+    }
+
+    #[test]
+    fn selection_belongs_to_the_layout_it_was_made_in() {
+        let sel = |side| TextSel {
+            side,
+            anchor: (1, 0),
+            cursor: (2, 1),
+        };
+        assert!(sel(Side::Unified).made_in(false));
+        assert!(!sel(Side::Unified).made_in(true));
+        assert!(sel(Side::Old).made_in(true));
+        assert!(!sel(Side::New).made_in(false));
+    }
+
+    #[test]
+    fn images_are_named_by_their_contents() {
+        let (a, b): (&[u8], &[u8]) = (b"one", b"two");
+        assert_eq!(image_id(Some(a), Some(b)), image_id(Some(a), Some(b)));
+        assert_ne!(image_id(Some(a), Some(b)), image_id(Some(a), Some(a)));
+        assert_ne!(image_id(None, Some(a)), image_id(Some(a), None));
+    }
+
     #[test]
     fn combined_conflict_diff() {
         let text = "@@@ -1,1 -1,1 +1,5 @@@\n++<<<<<<< HEAD\n +ours\n  same\n";
@@ -1766,6 +1867,100 @@ mod tests {
         let two = |l: &DiffLine| l.text == "line two";
         assert_eq!(pick(Area::Staged, &two, Pick::Unstage), Ok(()));
         assert_eq!(index(), base.replace("line 2\n", ""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file made executable and edited: picking lines leaves the mode change where it is.
+    #[cfg(unix)]
+    #[test]
+    fn partial_patches_leave_a_mode_change_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("gitcraft-partial-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let git = |args: &[&str]| git::run(Some(&dir), args);
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["config", "core.fileMode", "true"],
+        ] {
+            assert!(git(args).is_ok());
+        }
+        let file = dir.join("f.txt");
+        let base: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+        let _ = std::fs::write(&file, &base);
+        assert!(git(&["add", "."]).is_ok());
+        assert!(git(&["commit", "-q", "-m", "base"]).is_ok());
+        let _ = std::fs::write(&file, base.replace("line 2\n", "line two\n"));
+        let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755));
+        let mode = || {
+            std::fs::metadata(&file)
+                .map(|m| m.permissions().mode() & 0o111)
+                .unwrap_or(0)
+        };
+        let key = DiffKey::Work(git::StatusFile {
+            path: "f.txt".to_owned(),
+            old_path: None,
+            code: 'M',
+            area: Area::Unstaged,
+        });
+        let apply = |pick: Pick| -> Result<(), String> {
+            let data = load(&dir, &key, DiffOptions::default(), true)?;
+            assert!(data.partial);
+            let chosen = hunk_changes(&data.lines, 0);
+            let patch =
+                partial_patch(&data.header, &data.lines, &chosen, pick).ok_or("nothing picked")?;
+            let path = git::save_patch(&patch)?.to_string_lossy().into_owned();
+            let mut args = pick.args().to_vec();
+            args.push(&path);
+            git(&args).map(|_| ())
+        };
+        assert_eq!(apply(Pick::Stage), Ok(()));
+        assert_eq!(
+            git(&["ls-files", "-s", "f.txt"]).map(|s| s.starts_with("100644")),
+            Ok(true)
+        );
+        assert!(git(&["reset", "-q"]).is_ok());
+        assert_eq!(apply(Pick::Discard), Ok(()));
+        assert_eq!(std::fs::read_to_string(&file).ok(), Some(base));
+        assert_ne!(mode(), 0, "the file is still executable");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A picture renamed between two commits shows what it was before, not "(new file)".
+    #[test]
+    fn renamed_image_shows_its_old_picture() {
+        let dir = std::env::temp_dir().join(format!("gitcraft-image-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let git = |args: &[&str]| git::run(Some(&dir), args);
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+        ] {
+            assert!(git(args).is_ok());
+        }
+        let _ = std::fs::write(dir.join("a.png"), b"\x89PNG not really\0\x01");
+        assert!(git(&["add", "."]).is_ok());
+        assert!(git(&["commit", "-q", "-m", "a"]).is_ok());
+        assert!(git(&["mv", "a.png", "b.png"]).is_ok());
+        assert!(git(&["commit", "-q", "-m", "b"]).is_ok());
+        let key = DiffKey::Range {
+            from: "HEAD~1".to_owned(),
+            to: Some("HEAD".to_owned()),
+            path: "b.png".to_owned(),
+        };
+        let data = load(&dir, &key, DiffOptions::default(), true);
+        let image = data.ok().and_then(|d| d.image);
+        assert!(
+            image
+                .as_ref()
+                .is_some_and(|i| i.old.is_some() && i.new.is_some())
+        );
+        assert!(image.is_some_and(|i| i.old == i.new));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
