@@ -48,6 +48,7 @@ const FEATURES: &[(&str, &[&str])] = &[
             "Stage, unstage or discard whole files from the right pane.",
             "Path / Tree at the top of the right pane lists the files flat or in their folders; click a folder to fold it.",
             "In a file's diff, stage, unstage or discard one hunk, or click the lines you want and act on only those.",
+            "A file kept in Git LFS shows as its LFS objects and their sizes; the palette has LFS: Fetch and LFS: Pull when git-lfs is installed.",
             "The arrows in a diff's header jump from change to change; the marks beside the scrollbar show where the changes are, and a click on one jumps there.",
             "Write the summary and description and commit; amend the last commit; pick the identity you commit as.",
             "Double-click a commit's message in the right pane to edit it (any commit of the checked-out branch with no merges after it).",

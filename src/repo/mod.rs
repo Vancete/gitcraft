@@ -107,6 +107,8 @@ pub struct RepoTab {
     stashes: Vec<Stash>,
     remotes: Vec<Remote>,
     submodules: Vec<Submodule>,
+    /// It keeps files in Git LFS, and git-lfs is installed.
+    lfs: bool,
     identity: Identity,
     forge: Option<Forge>,
     prs: Vec<PullRequest>,
@@ -237,6 +239,7 @@ impl RepoTab {
             stashes: Vec::new(),
             remotes: Vec::new(),
             submodules: Vec::new(),
+            lfs: false,
             identity: Identity::default(),
             forge: None,
             prs: Vec::new(),

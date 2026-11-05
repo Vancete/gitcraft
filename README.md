@@ -102,6 +102,9 @@ so your config, credentials and hooks apply as usual.
 
 - Unified or side by side, syntax colours, the changed part of each line marked, whitespace
   changes optional, images shown before / after. Esc closes.
+- A file kept in Git LFS shows as its LFS objects before and after, with their sizes, rather
+  than the text of the pointer git stores. With git-lfs installed, the palette (Ctrl+P) of a
+  repository that uses LFS has _LFS: Fetch_ and _LFS: Pull_.
 - The arrows in a diff's header (F7 / Shift+F7, or Alt+↓ / Alt+↑) jump to the next and previous
   change. The strip beside the scrollbar marks where the changes are, removals red and additions
   green; click a mark to jump to its change, or anywhere else on the strip to scroll there.

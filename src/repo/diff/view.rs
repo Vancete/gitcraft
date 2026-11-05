@@ -4,6 +4,7 @@
 use egui::{Sense, Stroke, Ui};
 
 use super::images::image_view;
+use super::lfs::lfs_view;
 use super::rows::Rows;
 use super::{DiffData, Kind, Pick, unstage_args};
 use crate::git::{Area, StatusFile};
@@ -324,8 +325,8 @@ fn change_steps(ui: &mut Ui, acts: &mut Vec<Action>) {
     }
 }
 
-/// The diff when it has lines to show; otherwise shows a spinner, the error, the images or a
-/// "no changes" note in its place.
+/// The diff when it has lines to show; otherwise shows a spinner, the error, the LFS objects,
+/// the images or a "no changes" note in its place.
 fn ready_data<'a>(
     ui: &mut Ui,
     view: &'a DiffView,
@@ -347,6 +348,10 @@ fn ready_data<'a>(
         }
         Some(Ok(data)) => data,
     };
+    if let Some(lfs) = &data.lfs {
+        lfs_view(ui, lfs);
+        return None;
+    }
     if let Some(images) = &data.image {
         image_view(ui, images);
         return None;

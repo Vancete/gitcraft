@@ -281,6 +281,22 @@ impl RepoTab {
                 super::keep_submodules::update_all(),
             ));
         }
+        if self.lfs {
+            for (label, args) in [
+                ("LFS: Fetch", ["lfs", "fetch"]),
+                ("LFS: Pull", ["lfs", "pull"]),
+            ] {
+                items.push((
+                    label.into(),
+                    "remote".into(),
+                    Action::Ops {
+                        label: label.into(),
+                        ops: ops(&[&args]),
+                        refresh: Refresh::All,
+                    },
+                ));
+            }
+        }
         if !self.refs.head.is_empty() && self.ci_project().is_some() {
             items.push((
                 "Show CI for HEAD".into(),

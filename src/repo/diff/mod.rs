@@ -1,9 +1,11 @@
 //! Central pane while a file is open: its diff, unified or side by side, with syntax colours,
-//! the changed part of each line marked, and images shown before / after. Uncommitted changes
-//! can be staged, unstaged or discarded a hunk or a few lines at a time.
+//! the changed part of each line marked, images shown before / after and files in Git LFS as
+//! their objects. Uncommitted changes can be staged, unstaged or discarded a hunk or a few
+//! lines at a time.
 
 mod images;
 mod jump;
+mod lfs;
 mod map;
 mod paint;
 mod parse;
@@ -22,6 +24,8 @@ use crate::git::{self, Area, DiffOptions};
 
 pub use images::ImagePair;
 use images::{is_image, load_images, renamed_from};
+pub use lfs::LfsPair;
+use lfs::lfs_pair;
 pub use parse::parse;
 use parse::{pair_lines, patch_header};
 pub use patch::{hunk_changes, partial_patch};
@@ -65,6 +69,8 @@ pub struct DiffData {
     /// Side-by-side rows: (left line, right line).
     pub split: Vec<(Option<usize>, Option<usize>)>,
     pub image: Option<ImagePair>,
+    /// The file is kept in Git LFS: the objects before and after, shown instead of the lines.
+    pub lfs: Option<LfsPair>,
     /// The patch's file header (`diff --git`, `index`, `---`, `+++`), for partial patches.
     pub header: String,
     /// Hunks and lines can be staged, unstaged or discarded on their own.
@@ -121,7 +127,9 @@ pub fn load(repo: &Path, key: &DiffKey, opts: DiffOptions, dark: bool) -> Result
     let lines = parse(&text);
     let header = patch_header(&text);
     let partial = can_pick(key, opts, &header, &lines);
-    let image = if is_image(&path) {
+    let lfs = lfs_pair(&lines);
+    // An image in LFS: git has only its pointer.
+    let image = if is_image(&path) && lfs.is_none() {
         Some(load_images(repo, key, &path, renamed_from(&text)))
     } else {
         None
@@ -139,6 +147,7 @@ pub fn load(repo: &Path, key: &DiffKey, opts: DiffOptions, dark: bool) -> Result
         changed,
         split,
         image,
+        lfs,
         header,
         partial,
         longest,

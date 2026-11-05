@@ -18,6 +18,8 @@ pub(super) struct Loaded {
     pub(super) stashes: Vec<Stash>,
     pub(super) remotes: Vec<Remote>,
     pub(super) submodules: Vec<Submodule>,
+    /// It keeps files in Git LFS, and git-lfs is installed.
+    pub(super) lfs: bool,
     pub(super) identity: Identity,
     /// How many commits were asked for (more exist when that many came back).
     pub(super) requested: usize,
@@ -51,6 +53,7 @@ impl RepoTab {
                 let stashes = git::stashes(&path).unwrap_or_default();
                 let remotes = git::remotes(&path).unwrap_or_default();
                 let submodules = git::submodules(&path).unwrap_or_default();
+                let lfs = git::uses_lfs(&path) && git::lfs_installed();
                 let identity = git::identity(&path);
                 Ok(Box::new(Loaded {
                     refs,
@@ -60,6 +63,7 @@ impl RepoTab {
                     stashes,
                     remotes,
                     submodules,
+                    lfs,
                     identity,
                     requested: count,
                     log_from,
@@ -128,6 +132,7 @@ impl RepoTab {
         self.stash_view = viewed.and_then(|h| self.stashes.iter().position(|s| s.hash == h));
         self.identity = loaded.identity;
         self.submodules = loaded.submodules;
+        self.lfs = loaded.lfs;
         let forge = forge::detect(&loaded.remotes);
         self.remotes = loaded.remotes;
         if forge != self.forge {
