@@ -586,6 +586,25 @@ pub fn file_diff(repo: &Path, hash: &str, path: &str, opts: DiffOptions) -> Resu
     ];
     opts.push_args(&mut args);
     args.extend([END_OPTS, hash, "--", path]);
+    // Limited to its new name, a file renamed in the commit looks new from top to bottom.
+    let old_path = run(
+        Some(repo),
+        &[
+            "show",
+            NO_SIGNATURE,
+            "--format=",
+            "--diff-merges=first-parent",
+            "-M",
+            "--name-status",
+            "-z",
+            END_OPTS,
+            hash,
+        ],
+    )
+    .ok()
+    .and_then(|out| parse_name_status(&out).into_iter().find(|f| f.path == path))
+    .and_then(|file| file.old_path);
+    args.extend(old_path.as_deref());
     run(Some(repo), &args)
 }
 
@@ -966,6 +985,10 @@ pub fn work_diff(repo: &Path, file: &StatusFile, opts: DiffOptions) -> Result<St
     };
     opts.push_args(&mut args);
     args.extend(["--", path]);
+    // A staged rename limited to its new name would look like a new file.
+    if file.area == Area::Staged {
+        args.extend(file.old_path.as_deref());
+    }
     match file.area {
         Area::Staged | Area::Unstaged | Area::Conflicted => run(Some(repo), &args),
         // An untracked file has no history: show it as all added.
@@ -1489,6 +1512,22 @@ mod tests {
         assert!(work.contains("+c") && !work.contains('\x1b'), "{work}");
         let history = file_history(&dir, None, name)?;
         assert_eq!(history.len(), 2);
+        // A rename is shown as one, in a commit and staged.
+        git(&["mv", name, "moved.txt"])?;
+        let staged = StatusFile {
+            path: "moved.txt".to_owned(),
+            old_path: Some(name.to_owned()),
+            code: 'R',
+            area: Area::Staged,
+        };
+        let work = work_diff(&dir, &staged, DiffOptions::default())?;
+        assert!(work.contains("rename from"), "{work}");
+        git(&["commit", "-qm", "three"])?;
+        let moved = run(Some(&dir), &["rev-parse", "HEAD"])?;
+        let patch = file_diff(&dir, moved.trim(), "moved.txt", DiffOptions::default())?;
+        assert!(patch.contains("rename from"), "{patch}");
+        assert_eq!(head_message(&dir)?, "three");
+        git(&["reset", "-q", "--hard", "HEAD~1"])?;
         assert!(history.iter().all(|c| c.path == name), "{history:?}");
         assert_eq!(head_message(&dir)?, "two");
         let _ = std::fs::remove_dir_all(&dir);

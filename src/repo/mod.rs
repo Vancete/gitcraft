@@ -57,7 +57,7 @@ enum Msg {
     Detail(String, Result<CommitDetail, String>),
     /// The answer to the diff request numbered so (see [`DiffView::next_request`]).
     Diff(u64, Result<diff::DiffData, String>),
-    FileHistory(String, Result<Vec<git::FileCommit>, String>),
+    FileHistory(String, Option<String>, Result<Vec<git::FileCommit>, String>),
     Blame(String, Option<String>, Result<file_view::BlameData, String>),
     RebaseCommits {
         onto: String,
@@ -1048,7 +1048,7 @@ impl RepoTab {
         match tab {
             file_view::FileTab::History => spawn(&self.tx, ctx, move || {
                 let result = git::file_history(&repo, rev.as_deref(), &path);
-                Msg::FileHistory(path, result)
+                Msg::FileHistory(path, rev, result)
             }),
             file_view::FileTab::Blame => {
                 let dark = Tokens::get(ctx).dark();
@@ -1718,9 +1718,11 @@ impl RepoTab {
                     Err(e) => self.status = Some((format!("Edit message: {e}"), true)),
                 }
             }
-            Msg::FileHistory(path, result) => {
+            Msg::FileHistory(path, rev, result) => {
+                // Only the history of the revision shown: an older read may answer last.
                 if let Some(view) = &mut self.file_view
                     && view.path == path
+                    && view.rev == rev
                 {
                     view.history = Some(result);
                 }
