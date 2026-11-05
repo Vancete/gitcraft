@@ -10,8 +10,8 @@ use crate::repo::branch_tree::{self, LeafRow, TreeView};
 use crate::repo::graph_view;
 use crate::repo::pinned_sections::{Button, Header, Sections};
 use crate::repo::{
-    Action, Dialog, RepoTab, Undo, ci_status, compare_action, fast_forward_action, merge_action,
-    ops, rebase_action,
+    Action, Dialog, RepoTab, ci_status, compare_action, fast_forward_action, merge_action, ops,
+    rebase_action,
 };
 use crate::settings::Settings;
 use crate::theme::{self, Tokens};
@@ -169,28 +169,7 @@ impl RepoTab {
             ui.ctx().copy_text(b.name.clone());
         }
         ui.separator();
-        if ui
-            .add_enabled(!b.is_head && idle, egui::Button::new("Delete…"))
-            .on_disabled_hover_text("Can't delete the checked-out branch")
-            .clicked()
-        {
-            acts.push(Action::Dialog(
-                Dialog::confirm(
-                    "Delete branch",
-                    format!("Delete the local branch “{}”?", b.name),
-                    "Delete",
-                    ops(&[&["branch", "-d", "--", &b.name]]),
-                    Some((
-                        "Force, even if it isn't merged (-D)".to_owned(),
-                        ops(&[&["branch", "-D", "--", &b.name]]),
-                    )),
-                )
-                .undo(Undo::Custom {
-                    undo: ops(&[&["branch", "--", &b.name, &b.target]]),
-                    redo: ops(&[&["branch", "-D", "--", &b.name]]),
-                }),
-            ));
-        }
+        self.delete_items(ui, acts, b, idle);
     }
 
     /// Check out `b`, here or in a new worktree; or open the worktree it is checked out in.

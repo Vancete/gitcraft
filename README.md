@@ -57,7 +57,7 @@ so your config, credentials and hooks apply as usual.
 
 - Local branches with ahead/behind; right-click: check out (or in a new worktree), fast-forward,
   merge into / (interactively) rebase onto the current branch, push, create a pull request,
-  rename, delete…
+  rename, delete (here, or here and on the remote in one go)…
 - Remotes: add, edit (name and URL), fetch one, remove; their branches below each.
 - Worktrees: a yellow dot in place of the folder icon marks the others with uncommitted changes,
   here and in the switcher. Add (existing or new branch), open in the same tab (the tab then shows the branch, a searchable switcher and a button to close the worktree, and what you left keeps running; can be turned off in Settings) or a new one, open a terminal there, lock, remove,
