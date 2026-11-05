@@ -207,6 +207,10 @@ pub fn files(
     remotes: &[Remote],
     credentials: Option<&Credentials>,
 ) -> Result<PrFiles, String> {
+    // They go to git as arguments, so they have to be what they say they are.
+    if !is_oid(&details.head_oid) || !is_oid(&details.base_oid) {
+        return Err("GitHub didn't say which commits the pull request is between".to_owned());
+    }
     let has = |oid: &str| {
         git::run(
             Some(repo),
@@ -230,12 +234,7 @@ pub fn files(
             &head,
             &base,
         ];
-        args.extend(
-            [&details.head_oid, &details.base_oid]
-                .into_iter()
-                .filter(|oid| !oid.is_empty())
-                .map(String::as_str),
-        );
+        args.extend([details.head_oid.as_str(), details.base_oid.as_str()]);
         git::run_with(Some(repo), &args, credentials)?;
     }
     let from = git::merge_base(repo, &details.base_oid, &details.head_oid)?;
@@ -245,6 +244,11 @@ pub fn files(
         to: details.head_oid.clone(),
         files,
     })
+}
+
+/// Whether `oid` is a full commit id (SHA-1 or SHA-256), not anything git could take for an option.
+fn is_oid(oid: &str) -> bool {
+    matches!(oid.len(), 40 | 64) && oid.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 pub(crate) fn parse_details(json: &str) -> Result<PrDetails, String> {
@@ -425,12 +429,16 @@ pub(crate) fn repo_of_url(url: &str) -> Option<(String, String)> {
     forge::location(url.split_once("/pull/")?.0)
 }
 
-/// The remote of the repository a pull request's URL belongs to.
+/// The remote of the repository a pull request's URL belongs to. GitHub doesn't mind the case of
+/// owner and name, so a clone of `Owner/Repo` may well be from `owner/repo`.
 pub(crate) fn remote_for<'a>(remotes: &'a [Remote], url: &str) -> Option<&'a str> {
-    let repo = repo_of_url(url)?;
+    let (host, path) = repo_of_url(url)?;
     remotes
         .iter()
-        .find(|remote| forge::location(&remote.url).as_ref() == Some(&repo))
+        .find(|remote| {
+            forge::location(&remote.url)
+                .is_some_and(|(h, p)| h == host && p.eq_ignore_ascii_case(&path))
+        })
         .map(|remote| remote.name.as_str())
 }
 
@@ -990,6 +998,20 @@ mod tests {
             Some("up")
         );
         assert_eq!(remote_for(&remotes, "https://github.com/x/y/pull/1"), None);
+        assert_eq!(
+            remote_for(&remotes, "https://github.com/O/R/pull/1"),
+            Some("up")
+        );
+    }
+
+    #[test]
+    fn only_full_commit_ids_go_to_git() {
+        assert!(is_oid(&"a1".repeat(20)));
+        assert!(is_oid(&"F".repeat(64)));
+        assert!(!is_oid(""));
+        assert!(!is_oid("h0"));
+        assert!(!is_oid(&format!("--upload-pack={}", "a".repeat(26))));
+        assert!(!is_oid(&"g".repeat(40)));
     }
 
     fn entry(kind: EntryKind) -> Entry {

@@ -23,6 +23,8 @@ pub(crate) struct PrView {
     request: u64,
     loading: bool,
     pub(super) details: Option<Result<PrDetails, String>>,
+    /// The latest commit of the pull request as last read, kept through a reading that failed.
+    seen_head: Option<String>,
     /// The description and what the timeline says, made safe to show.
     body: Vec<Block>,
     pub(super) entries: Vec<Vec<Block>>,
@@ -52,6 +54,7 @@ impl RepoTab {
             request: 0,
             loading: true,
             details: None,
+            seen_head: None,
             body: Vec::new(),
             entries: Vec::new(),
             thread_bodies: HashMap::new(),
@@ -87,10 +90,15 @@ impl RepoTab {
             return;
         };
         view.loading = false;
-        let moved = match (&view.details, &result) {
-            (Some(Ok(before)), Ok(now)) => before.head_oid != now.head_oid,
-            _ => false,
+        // Against the last head read, not the last answer: a reading that failed in between
+        // (say because the pull request moved while it was read) mustn't hide the move.
+        let moved = match &result {
+            Ok(now) => head_moved(view.seen_head.as_deref(), &now.head_oid),
+            Err(_) => false,
         };
+        if let Ok(now) = &result {
+            view.seen_head = Some(now.head_oid.clone());
+        }
         if let Some(draft) = self.pr_drafts.get_mut(&view.number) {
             if moved {
                 draft.head_moved();
@@ -253,7 +261,13 @@ impl RepoTab {
                                     ui.colored_label(t.warning, error);
                                 }
                                 section(ui, &format!("COMMENTS ({})", details.timeline.len()));
-                                let files = view.files.as_ref().and_then(|f| f.as_ref().ok());
+                                // Lines are shown in the changes of the commit the page names, not
+                                // in those of an earlier one still listed until the new ones come.
+                                let files = view
+                                    .files
+                                    .as_ref()
+                                    .and_then(|f| f.as_ref().ok())
+                                    .filter(|f| f.to == details.head_oid);
                                 timeline(
                                     ui,
                                     details,
@@ -348,6 +362,12 @@ fn editor_in_the_way(conflict: bool, rebase: bool) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// Whether the pull request read with `now` as its latest commit moved on from `seen`, the one
+/// last read (none yet: nothing to have moved from).
+fn head_moved(seen: Option<&str>, now: &str) -> bool {
+    seen.is_some_and(|seen| seen != now)
 }
 
 /// What becomes of the diff open as `open` when the changes of the pull request go from
@@ -856,6 +876,14 @@ mod tests {
             followed(&range("base", "h0", "a.rs"), &before, &before),
             None
         );
+    }
+
+    #[test]
+    fn a_move_is_seen_across_a_reading_that_failed() {
+        // Read at h0, then a failed reading, then h1: the yes given for h0 doesn't carry over.
+        assert!(head_moved(Some("h0"), "h1"));
+        assert!(!head_moved(Some("h0"), "h0"));
+        assert!(!head_moved(None, "h0"));
     }
 
     #[test]

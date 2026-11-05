@@ -100,13 +100,27 @@ fn key(email: &str) -> String {
 /// Where to ask: GitHub knows its noreply addresses, Gravatar the rest.
 fn url(email: &str) -> String {
     let email = email.trim().to_lowercase();
+    // The address comes from a commit, so whatever it says goes into the URL only when it is
+    // what GitHub would have put there: an account's number, or its name.
     if let Some(local) = email.strip_suffix("@users.noreply.github.com") {
-        return match local.split_once('+') {
-            Some((id, _)) => format!("https://avatars.githubusercontent.com/u/{id}?s=80"),
-            None => format!("https://github.com/{local}.png?size=80"),
-        };
+        match local.split_once('+') {
+            Some((id, _)) if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) => {
+                return format!("https://avatars.githubusercontent.com/u/{id}?s=80");
+            }
+            None if is_login(local) => return format!("https://github.com/{local}.png?size=80"),
+            _ => {}
+        }
     }
     format!("https://www.gravatar.com/avatar/{}?s=80&d=404", key(&email))
+}
+
+/// Whether `name` can be a GitHub account's name: letters, digits and single dashes inside.
+fn is_login(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 39
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && !name.starts_with('-')
+        && !name.ends_with('-')
 }
 
 /// Cache file name: Gravatar's hash, plus where the picture came from when a forge said.
@@ -118,29 +132,93 @@ fn cache_key(email: &str, hint: Option<&Hint>) -> String {
     }
 }
 
-/// The picture's URL: a forge's, else [`url`].
-fn source(agent: &ureq::Agent, email: &str, hint: Option<&Hint>) -> String {
+/// The picture's URL: a forge's, else [`url`]. None when the forge couldn't be reached, which
+/// says nothing about whether it has one.
+fn source(agent: &ureq::Agent, email: &str, hint: Option<&Hint>) -> Option<String> {
     match hint {
-        Some(Hint::Url(u)) => format!("{u}{}s=80", if u.contains('?') { '&' } else { '?' }),
+        Some(Hint::Url(u)) => Some(format!(
+            "{u}{}s=80",
+            if u.contains('?') { '&' } else { '?' }
+        )),
         Some(Hint::GitLab(host)) => {
             let api = format!(
                 "https://{host}/api/v4/avatar?email={}&size=80",
                 query_escape(email)
             );
-            let found = agent
-                .get(&api)
-                .call()
-                .ok()
-                .and_then(|r| r.into_string().ok())
-                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-                .and_then(|v| v.get("avatar_url")?.as_str().map(str::to_owned));
-            match found {
+            let found = match agent.get(&api).call() {
+                Ok(resp) => resp
+                    .into_string()
+                    .ok()
+                    .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+                    .and_then(|v| v.get("avatar_url")?.as_str().map(str::to_owned)),
+                Err(e) if transient(&e) => return None,
+                Err(_) => None,
+            };
+            Some(match found {
                 // GitLab falls back to a generated Gravatar; initials read better.
                 Some(u) if !u.contains("gravatar.com") => u,
                 _ => url(email),
-            }
+            })
         }
-        None => url(email),
+        None => Some(url(email)),
+    }
+}
+
+/// Whether a failed request may well work later: no answer, or a server busy or failing.
+fn transient(e: &ureq::Error) -> bool {
+    match e {
+        ureq::Error::Status(code, _) => *code == 429 || *code >= 500,
+        ureq::Error::Transport(_) => true,
+    }
+}
+
+/// The largest picture taken; a bigger one isn't an avatar.
+const MAX_BYTES: u64 = 512 * 1024;
+
+/// What asking for a picture came to.
+#[derive(Debug, PartialEq, Eq)]
+enum Answer {
+    Picture(Vec<u8>),
+    /// There is none (or none worth showing): asked again after [`RETRY_MISSING`].
+    None,
+    /// No answer to go by (offline, a server failing, a login page instead of a picture):
+    /// asked again next time the app runs.
+    Unreachable,
+}
+
+/// Whether `bytes` are a picture the app can show.
+fn is_picture(bytes: &[u8]) -> bool {
+    use image::ImageFormat as F;
+    matches!(
+        image::guess_format(bytes),
+        Ok(F::Png | F::Jpeg | F::Gif | F::Bmp | F::WebP)
+    )
+}
+
+/// The answer a server's `body` makes, at most [`MAX_BYTES`] of which were read.
+fn answer(body: std::io::Result<Vec<u8>>) -> Answer {
+    match body {
+        Ok(bytes) if bytes.is_empty() || bytes.len() as u64 > MAX_BYTES => Answer::None,
+        Ok(bytes) if is_picture(&bytes) => Answer::Picture(bytes),
+        Ok(_) | Err(_) => Answer::Unreachable,
+    }
+}
+
+fn download(agent: &ureq::Agent, url: &str) -> Answer {
+    match agent.get(url).call() {
+        Ok(resp) => {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            // One byte more than taken tells a picture too big from one that just fits.
+            let body = resp
+                .into_reader()
+                .take(MAX_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map(|_| bytes);
+            answer(body)
+        }
+        Err(e) if transient(&e) => Answer::Unreachable,
+        Err(_) => Answer::None,
     }
 }
 
@@ -159,7 +237,9 @@ fn fetch(agent: &ureq::Agent, email: &str, hint: Option<&Hint>) -> State {
     let dir = cache_dir();
     let k = cache_key(email, hint);
     if let Some(dir) = &dir {
-        if let Ok(bytes) = std::fs::read(dir.join(format!("{k}.img"))) {
+        if let Ok(bytes) = std::fs::read(dir.join(format!("{k}.img")))
+            && is_picture(&bytes)
+        {
             return State::Ready(Arc::from(bytes.into_boxed_slice()), k);
         }
         let missing = dir.join(format!("{k}.none"));
@@ -172,34 +252,27 @@ fn fetch(agent: &ureq::Agent, email: &str, hint: Option<&Hint>) -> State {
             return State::Missing;
         }
     }
-    let result = agent
-        .get(&source(agent, email, hint))
-        .call()
-        .ok()
-        .and_then(|resp| {
-            let mut bytes = Vec::new();
-            use std::io::Read;
-            resp.into_reader()
-                .take(512 * 1024)
-                .read_to_end(&mut bytes)
-                .ok()
-                .map(|_| bytes)
-        });
-    match result {
-        Some(bytes) if !bytes.is_empty() => {
+    let answer = match source(agent, email, hint) {
+        Some(url) => download(agent, &url),
+        None => Answer::Unreachable,
+    };
+    match answer {
+        Answer::Picture(bytes) => {
             if let Some(dir) = &dir {
                 let _ = std::fs::create_dir_all(dir);
                 let _ = std::fs::write(dir.join(format!("{k}.img")), &bytes);
             }
             State::Ready(Arc::from(bytes.into_boxed_slice()), k)
         }
-        _ => {
+        Answer::None => {
             if let Some(dir) = &dir {
                 let _ = std::fs::create_dir_all(dir);
                 let _ = std::fs::write(dir.join(format!("{k}.none")), b"");
             }
             State::Missing
         }
+        // Not written down: being offline once mustn't hide everyone's picture for a week.
+        Answer::Unreachable => State::Missing,
     }
 }
 
@@ -247,13 +320,65 @@ mod tests {
                 &agent,
                 "a@b.c",
                 Some(&Hint::Url("https://av/u/1?v=4".into()))
-            ),
-            "https://av/u/1?v=4&s=80"
+            )
+            .as_deref(),
+            Some("https://av/u/1?v=4&s=80")
         );
         assert_eq!(query_escape("me+git@x.org"), "me%2Bgit@x.org");
         assert_ne!(
             cache_key("a@b.c", None),
             cache_key("a@b.c", Some(&Hint::Url(String::new())))
+        );
+    }
+
+    #[test]
+    fn only_a_whole_picture_is_kept() {
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        assert_eq!(answer(Ok(png.clone())), Answer::Picture(png));
+        // A login page or a proxy's notice in place of the picture is no answer to remember.
+        assert_eq!(
+            answer(Ok(b"<html>sign in</html>".to_vec())),
+            Answer::Unreachable
+        );
+        assert_eq!(
+            answer(Err(std::io::ErrorKind::ConnectionReset.into())),
+            Answer::Unreachable
+        );
+        // Too big to be an avatar: not cut short and kept as if it were whole.
+        let mut big = b"\x89PNG\r\n\x1a\n".to_vec();
+        big.resize(MAX_BYTES as usize + 1, 0);
+        assert_eq!(answer(Ok(big)), Answer::None);
+        assert_eq!(answer(Ok(Vec::new())), Answer::None);
+    }
+
+    #[test]
+    fn only_a_missing_picture_is_remembered_as_missing() {
+        let failed = |code: u16| {
+            let resp = ureq::Response::new(code, "", "").ok()?;
+            Some(transient(&ureq::Error::Status(code, resp)))
+        };
+        assert_eq!(failed(404), Some(false));
+        assert_eq!(failed(410), Some(false));
+        assert_eq!(failed(429), Some(true));
+        assert_eq!(failed(503), Some(true));
+    }
+
+    #[test]
+    fn a_commit_address_only_names_a_github_account_it_can_be() {
+        // Anything else goes to Gravatar, rather than into a path on GitHub.
+        for email in [
+            "../../x@users.noreply.github.com",
+            "a/b@users.noreply.github.com",
+            "12a/../3+x@users.noreply.github.com",
+            "+x@users.noreply.github.com",
+            "-x@users.noreply.github.com",
+            "x?y=1@users.noreply.github.com",
+        ] {
+            assert!(url(email).starts_with("https://www.gravatar.com/"), "{email}");
+        }
+        assert_eq!(
+            url("my-name@users.noreply.github.com"),
+            "https://github.com/my-name.png?size=80"
         );
     }
 
