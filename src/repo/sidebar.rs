@@ -5,11 +5,11 @@ use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
 
 use super::branch_tree::{self, LeafRow, TreeView};
 use super::pinned_sections::{Button, Header, Sections};
-use super::widgets;
 use super::{
     Action, Dialog, Refresh, RepoTab, Undo, compare_action, fast_forward_action, merge_action, ops,
     rebase_action,
 };
+use super::{widgets, worktree_tab};
 use crate::git::{self, Branch};
 use crate::icons;
 use crate::settings::Settings;
@@ -950,14 +950,19 @@ impl RepoTab {
                 painter.rect_filled(rect, 0.0, t.hover);
             }
             let y = rect.center().y;
-            let icon = if wt.current { "check" } else { "folder-git-2" };
-            icons::paint(
-                ui,
-                Rect::from_center_size(pos2(rect.left() + 34.0, y), vec2(16.0, 16.0)),
-                icon,
-                14.0,
-                if wt.current { t.accent } else { t.text_faint },
-            );
+            let icon_at = pos2(rect.left() + 34.0, y);
+            if worktree_tab::changes_elsewhere(wt).is_some() {
+                worktree_tab::paint_dirty(&painter, &t, icon_at);
+            } else {
+                let icon = if wt.current { "check" } else { "folder-git-2" };
+                icons::paint(
+                    ui,
+                    Rect::from_center_size(icon_at, vec2(16.0, 16.0)),
+                    icon,
+                    14.0,
+                    if wt.current { t.accent } else { t.text_faint },
+                );
+            }
             let font = if wt.current {
                 theme::semibold(12.5)
             } else {
@@ -1003,6 +1008,9 @@ impl RepoTab {
             );
 
             let mut tip = wt.path.display().to_string();
+            if let Some(line) = worktree_tab::changes_line(wt) {
+                tip.push_str(&format!("\n{line}"));
+            }
             if let Some(reason) = wt.locked.as_deref().filter(|r| !r.is_empty()) {
                 tip.push_str(&format!("\nLocked: {reason}"));
             }

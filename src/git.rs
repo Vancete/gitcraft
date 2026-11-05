@@ -677,6 +677,18 @@ impl WorkStatus {
     pub fn is_clean(&self) -> bool {
         self.staged.is_empty() && self.unstaged.is_empty() && self.conflicted.is_empty()
     }
+
+    /// How many files have uncommitted changes; one both staged and changed again counts once.
+    pub fn changed_files(&self) -> usize {
+        let mut paths: Vec<&str> = (self.staged.iter())
+            .chain(&self.unstaged)
+            .chain(&self.conflicted)
+            .map(|f| f.path.as_str())
+            .collect();
+        paths.sort_unstable();
+        paths.dedup();
+        paths.len()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -694,6 +706,8 @@ pub struct Worktree {
     pub main: bool,
     /// The worktree this tab shows.
     pub current: bool,
+    /// How many files have uncommitted changes; `None` when not known (bare, missing…).
+    pub changes: Option<usize>,
 }
 
 impl Worktree {
@@ -712,6 +726,24 @@ pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, String> {
     for wt in &mut list {
         wt.current = here.is_some() && std::fs::canonicalize(&wt.path).ok() == here;
     }
+    // One `status` per worktree, side by side. `--no-optional-locks` so that looking doesn't take
+    // the index lock from under whatever runs in that worktree.
+    std::thread::scope(|scope| {
+        for wt in list.iter_mut().filter(|w| !w.bare && w.prunable.is_none()) {
+            scope.spawn(|| {
+                let args = [
+                    "--no-optional-locks",
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                ];
+                wt.changes = run(Some(&wt.path), &args)
+                    .ok()
+                    .map(|out| parse_status(&out).changed_files());
+            });
+        }
+    });
     Ok(list)
 }
 
@@ -1392,6 +1424,13 @@ mod tests {
         assert_eq!(list[1].locked.as_deref(), Some("moving disks"));
         assert!(list[2].prunable.is_some());
         assert_eq!(list[1].name(), "app-fix");
+    }
+
+    #[test]
+    fn a_file_staged_and_changed_again_counts_once() {
+        let out = " M a.txt\0MM b.txt\0?? new.txt\0R  c.txt\0old-c.txt\0UU d.txt\0";
+        assert_eq!(parse_status(out).changed_files(), 5);
+        assert_eq!(WorkStatus::default().changed_files(), 0);
     }
 
     #[test]

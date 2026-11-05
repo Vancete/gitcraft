@@ -413,6 +413,25 @@ pub(crate) fn switcher(
     picked
 }
 
+/// How many files with uncommitted changes `wt` has, when it has any and isn't the worktree shown,
+/// whose changes are in the list on the right already.
+pub(super) fn changes_elsewhere(wt: &Worktree) -> Option<usize> {
+    wt.changes.filter(|&n| n > 0 && !wt.current)
+}
+
+/// The dot that stands for a worktree's uncommitted changes, in place of its icon.
+pub(super) fn paint_dirty(painter: &egui::Painter, t: &Tokens, center: egui::Pos2) {
+    painter.circle_filled(center, 4.0, t.warning);
+}
+
+/// What the hover text of a worktree says about its uncommitted changes, if it has any.
+pub(super) fn changes_line(wt: &Worktree) -> Option<String> {
+    match changes_elsewhere(wt)? {
+        1 => Some("1 file with uncommitted changes".to_owned()),
+        n => Some(format!("{n} files with uncommitted changes")),
+    }
+}
+
 fn switcher_row(ui: &mut Ui, wt: &Worktree, work: Option<&str>) -> Response {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) =
@@ -429,6 +448,8 @@ fn switcher_row(ui: &mut Ui, wt: &Worktree, work: Option<&str>) -> Response {
             13.0,
             t.accent,
         );
+    } else if changes_elsewhere(wt).is_some() {
+        paint_dirty(ui.painter(), &t, pos2(rect.left() + 18.0, y));
     }
     let mut right = rect.right() - 10.0;
     let tag = work.or(wt.main.then_some("main"));
@@ -468,7 +489,11 @@ fn switcher_row(ui: &mut Ui, wt: &Worktree, work: Option<&str>) -> Response {
         font,
         t.text,
     );
-    resp.on_hover_text(wt.path.display().to_string())
+    let mut tip = wt.path.display().to_string();
+    if let Some(line) = changes_line(wt) {
+        tip.push_str(&format!("\n{line}"));
+    }
+    resp.on_hover_text(tip)
 }
 
 #[cfg(test)]
@@ -494,6 +519,23 @@ mod tests {
             current: true,
             ..Worktree::default()
         }
+    }
+
+    #[test]
+    fn only_other_worktrees_with_changes_are_marked() {
+        let dirty = |current, changes| Worktree {
+            current,
+            changes,
+            ..main_tree("/code/acme")
+        };
+        assert_eq!(changes_elsewhere(&dirty(false, Some(3))), Some(3));
+        assert_eq!(changes_elsewhere(&dirty(true, Some(3))), None);
+        assert_eq!(changes_elsewhere(&dirty(false, Some(0))), None);
+        assert_eq!(changes_elsewhere(&dirty(false, None)), None);
+        assert_eq!(
+            changes_line(&dirty(false, Some(1))).as_deref(),
+            Some("1 file with uncommitted changes")
+        );
     }
 
     #[test]
