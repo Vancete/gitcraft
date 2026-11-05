@@ -4,11 +4,20 @@
 use egui::{Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Response, Sense, Stroke};
 use egui::{Ui, pos2, vec2};
 
-use super::{AVATAR_D, LANE_W, ROW_GAP, ROW_H, ROW_PITCH};
+use super::{AVATAR_D, ROW_GAP, ROW_H, ROW_PITCH};
 use crate::git::{self, Commit};
 use crate::repo::columns::Cols;
 use crate::repo::{Action, RepoTab, WIP_HASH, ci_status, widgets};
 use crate::theme::{self, Tokens};
+
+/// The lanes the graph column draws.
+#[derive(Clone, Copy)]
+pub(super) struct Lanes {
+    /// How many: those further right are left out.
+    pub(super) shown: usize,
+    /// From the centre of one to the next.
+    pub(super) width: f32,
+}
 
 /// The row being painted.
 pub(super) struct Row<'a> {
@@ -18,6 +27,8 @@ pub(super) struct Row<'a> {
     pub(super) cols: Cols,
     /// Left edge of the graph column.
     pub(super) gx: f32,
+    /// From one lane to the next.
+    pub(super) lane_w: f32,
     /// Where the commit's dot is, if the graph has the row.
     pub(super) node_x: Option<f32>,
     /// The colour of the commit's lane.
@@ -31,12 +42,12 @@ impl Row<'_> {
 
     /// The centre of `lane` in the graph column.
     pub(super) fn lane_x(&self, lane: usize) -> f32 {
-        lane_x(self.gx, lane)
+        lane_x(self.gx, lane, self.lane_w)
     }
 }
 
-fn lane_x(gx: f32, lane: usize) -> f32 {
-    gx + 6.0 + lane as f32 * LANE_W + LANE_W / 2.0
+fn lane_x(gx: f32, lane: usize, lane_w: f32) -> f32 {
+    gx + 6.0 + lane as f32 * lane_w + lane_w / 2.0
 }
 
 impl RepoTab {
@@ -45,7 +56,7 @@ impl RepoTab {
         ui: &mut Ui,
         i: usize,
         cols: Cols,
-        lanes: usize,
+        lanes: Lanes,
         now: i64,
         acts: &mut Vec<Action>,
     ) -> Response {
@@ -76,12 +87,13 @@ impl RepoTab {
             rect,
             cols,
             gx,
-            node_x: graph_row.map(|r| lane_x(gx, r.col)),
+            lane_w: lanes.width,
+            node_x: graph_row.map(|r| lane_x(gx, r.col, lanes.width)),
             color: graph_row.map(|r| t.lane(r.col)).unwrap_or(t.text_faint),
         };
 
         let resp = self.refs_cell(ui, &painter, &row, resp, acts);
-        self.graph_cell(ui, &painter, &row, lanes);
+        self.graph_cell(ui, &painter, &row, lanes.shown);
         if is_wip {
             self.wip_description(&painter, &t, &row);
         } else {

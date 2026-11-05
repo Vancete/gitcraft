@@ -3,27 +3,32 @@
 
 mod badge;
 mod handles;
+mod header;
 mod lanes;
 mod menu;
 mod pills;
 mod row;
 mod search;
 
-use egui::{Align2, FontId, Key, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Align2, FontId, Key, Response, Sense, Ui, vec2};
 
 use super::columns::{Cols, MIN_COL_W, MIN_GRAPH_W, MIN_REFS_W};
 use super::{Action, Dialog, Refresh, RepoTab, WIP_HASH, compare_action, ops};
 use crate::git;
 use crate::settings::Settings;
-use crate::theme::{self, Tokens};
+use crate::theme::Tokens;
 use badge::{BadgeKind, badges};
+use row::Lanes;
 
 const ROW_H: f32 = 28.0;
 /// Space between rows, which the graph's lines cross.
 const ROW_GAP: f32 = 2.0;
 /// From one row to the next.
 const ROW_PITCH: f32 = ROW_H + ROW_GAP;
+/// From one lane to the next.
 const LANE_W: f32 = 16.0;
+/// From one lane to the next in a compact graph column.
+const COMPACT_LANE_W: f32 = 10.0;
 /// Radius of the corner where a line from a dot turns into another lane.
 const CORNER_R: f32 = 7.0;
 const MAX_LANES_SHOWN: usize = 24;
@@ -70,14 +75,16 @@ impl RepoTab {
         }
 
         let settings = Settings::get(ui.ctx());
-        let lanes = self.graph.width.clamp(1, MAX_LANES_SHOWN);
+        let lanes = lane_layout(&settings, self.graph.width);
         let prefs = preferred_cols(&settings, lanes);
         let cols = prefs.squeezed(ui.available_width(), settings.last_resized);
 
         // Column headers.
-        let (header, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
-        column_headers(ui, &t, header, &cols);
+        let (header, header_resp) =
+            ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+        header::column_headers(ui, &t, header, &cols);
         self.column_handles(ui, header, &prefs, &cols, &settings);
+        header::header_menu(&header_resp, &settings);
 
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt("graph_scroll")
@@ -192,67 +199,34 @@ impl RepoTab {
     }
 }
 
+/// The lanes to draw, from the settings and the graph's `width` in lanes.
+fn lane_layout(settings: &Settings, width: usize) -> Lanes {
+    Lanes {
+        shown: width.clamp(1, MAX_LANES_SHOWN),
+        width: if settings.compact_graph {
+            COMPACT_LANE_W
+        } else {
+            LANE_W
+        },
+    }
+}
+
 /// The columns' preferred widths, from the settings; the graph fits its `lanes` unless its
 /// width was dragged.
-fn preferred_cols(settings: &Settings, lanes: usize) -> Cols {
+fn preferred_cols(settings: &Settings, lanes: Lanes) -> Cols {
     let shown_if = |shown: bool, width: f32| if shown { width.max(MIN_COL_W) } else { 0.0 };
     Cols {
         refs: settings.refs_width.max(MIN_REFS_W),
         graph: if settings.graph_width > 0.0 {
             settings.graph_width.max(MIN_GRAPH_W)
         } else {
-            (lanes as f32 * LANE_W + 12.0).max(MIN_GRAPH_W)
+            (lanes.shown as f32 * lanes.width + 12.0).max(MIN_GRAPH_W)
         },
         hash: shown_if(settings.show_hash, settings.hash_width),
         author: shown_if(settings.show_author, settings.author_width),
         when: shown_if(settings.show_when, settings.when_width),
         date: shown_if(settings.show_date, settings.date_width),
         push: settings.column_push,
-    }
-}
-
-/// The names of the columns, in the strip `header` above the graph.
-fn column_headers(ui: &Ui, t: &Tokens, header: Rect, cols: &Cols) {
-    let p = ui.painter();
-    p.rect_filled(header, 0.0, t.chrome);
-    p.line_segment(
-        [header.left_bottom(), header.right_bottom()],
-        Stroke::new(1.0, t.separator),
-    );
-    let y = header.center().y;
-    let font = theme::semibold(10.5);
-    let right = header.right();
-    let mut labels = vec![
-        (header.left() + 10.0, "BRANCH / TAG"),
-        (header.left() + cols.refs + 10.0, "GRAPH"),
-        (header.left() + cols.refs + cols.graph + 6.0, "DESCRIPTION"),
-    ];
-    if cols.hash > 0.0 {
-        labels.push((right - cols.trailing(), "COMMIT"));
-    }
-    if cols.author > 0.0 {
-        labels.push((right - cols.author - cols.when - cols.date, "AUTHOR"));
-    }
-    if cols.when > 0.0 {
-        labels.push((right - cols.when - cols.date, "WHEN"));
-    }
-    if cols.date > 0.0 {
-        labels.push((right - cols.date, "DATE"));
-    }
-    // Each label is clipped where the next column starts, so a narrow window
-    // cuts DESCRIPTION short instead of running into AUTHOR.
-    for (i, (x, label)) in labels.iter().enumerate() {
-        let limit = labels
-            .get(i + 1)
-            .map_or(header.right(), |(next, _)| next - 8.0);
-        let clip = Rect::from_min_max(pos2(*x, header.top()), pos2(limit.max(*x), header.bottom()));
-        p.with_clip_rect(clip).text(
-            pos2(*x, y),
-            Align2::LEFT_CENTER,
-            label,
-            font.clone(),
-            t.text_faint,
-        );
     }
 }
 
@@ -320,5 +294,28 @@ pub(super) fn compare_items(ui: &mut Ui, acts: &mut Vec<Action>, branch: &str, c
         .clicked()
     {
         acts.push(compare_action(current, branch, false));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_compact_graph_column_fits_its_lanes_closer_together() {
+        let wide = Settings::default();
+        let compact = Settings {
+            compact_graph: true,
+            ..Settings::default()
+        };
+        let graph = |s: &Settings| preferred_cols(s, lane_layout(s, 10)).graph;
+        assert_eq!(graph(&wide), 172.0);
+        assert_eq!(graph(&compact), 112.0);
+        // A width dragged by hand stays.
+        let dragged = Settings {
+            graph_width: 150.0,
+            ..compact
+        };
+        assert_eq!(graph(&dragged), 150.0);
     }
 }

@@ -26,6 +26,8 @@ pub struct Settings {
     pub refs_width: f32,
     /// Width of the graph column; 0 = fit the lanes of the repository.
     pub graph_width: f32,
+    /// The graph's lanes closer together, for a narrower graph column.
+    pub compact_graph: bool,
     /// Widths of the author, when, date and hash columns (dragged in the graph header).
     pub author_width: f32,
     pub when_width: f32,
@@ -80,6 +82,7 @@ impl Default for Settings {
             shell: String::new(),
             refs_width: 280.0,
             graph_width: 0.0,
+            compact_graph: false,
             author_width: 150.0,
             when_width: 100.0,
             date_width: 118.0,
@@ -113,10 +116,33 @@ fn id() -> egui::Id {
     egui::Id::new("gitcraft-settings")
 }
 
+/// What "Compact graph" does.
+pub const COMPACT_TIP: &str = "Lanes closer together, for a narrower graph column";
+
 impl Settings {
     pub fn get(ctx: &egui::Context) -> Settings {
         ctx.data(|d| d.get_temp::<Settings>(id()))
             .unwrap_or_default()
+    }
+
+    /// Gives the graph's columns their first widths back; which of them show stays.
+    pub fn reset_columns(&mut self) {
+        let fresh = Settings::default();
+        self.refs_width = fresh.refs_width;
+        self.graph_width = fresh.graph_width;
+        self.author_width = fresh.author_width;
+        self.when_width = fresh.when_width;
+        self.date_width = fresh.date_width;
+        self.hash_width = fresh.hash_width;
+        self.last_resized = fresh.last_resized;
+        self.column_push = fresh.column_push;
+    }
+
+    /// Puts the graph's lanes closer together or back apart. The graph column then fits them
+    /// again, or it would stay as wide.
+    pub fn set_compact_graph(&mut self, compact: bool) {
+        self.compact_graph = compact;
+        self.graph_width = 0.0;
     }
 
     pub fn set(&self, ctx: &egui::Context) {
@@ -226,6 +252,10 @@ impl Settings {
                 ui.checkbox(&mut self.show_when, "When");
                 ui.checkbox(&mut self.show_date, "Date");
                 ui.checkbox(&mut self.show_hash, "Hash");
+                let mut compact = self.compact_graph;
+                if ui.checkbox(&mut compact, "Compact graph").on_hover_text(COMPACT_TIP).changed() {
+                    self.set_compact_graph(compact);
+                }
             });
             ui.end_row();
             ui.label("Worktrees");
@@ -434,10 +464,48 @@ mod tests {
     }
 
     #[test]
+    fn resetting_the_columns_keeps_which_show() {
+        let mut settings = Settings {
+            refs_width: 500.0,
+            graph_width: 90.0,
+            author_width: 300.0,
+            date_width: 60.0,
+            last_resized: Some(crate::repo::columns::Bar::Author),
+            column_push: 30.0,
+            show_hash: true,
+            show_author: false,
+            compact_graph: true,
+            ..Settings::default()
+        };
+        settings.reset_columns();
+        assert_eq!(
+            settings,
+            Settings {
+                show_hash: true,
+                show_author: false,
+                compact_graph: true,
+                ..Settings::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_compact_graph_fits_its_lanes_again() {
+        let mut settings = Settings {
+            graph_width: 200.0,
+            ..Settings::default()
+        };
+        settings.set_compact_graph(true);
+        assert!(settings.compact_graph);
+        assert_eq!(settings.graph_width, 0.0);
+    }
+
+    #[test]
     fn settings_survive_a_restart() {
         let settings = Settings {
             last_resized: Some(crate::repo::columns::Bar::Graph),
             column_push: 12.5,
+            compact_graph: true,
             diff_whole_file: true,
             pull_mode: crate::repo::pull::PullMode::Rebase,
             ..Settings::default()
