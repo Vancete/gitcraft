@@ -92,10 +92,16 @@ impl RepoTab {
         // Taken out while the pane borrows `self`; put back after it.
         let mut reword = self.reword.take();
         let head = self.refs.head.clone();
+        // How tall everything below the message was last frame: the message gets what's left.
+        let view_h = ui.available_height();
+        let rest_id = ui.id().with("message_rest");
+        let rest: f32 = ui.data(|d| d.get_temp(rest_id)).unwrap_or(0.0);
         egui::ScrollArea::vertical()
             .id_salt("detail_scroll")
             .auto_shrink(false)
             .show(ui, |ui| {
+                let top = ui.cursor().top();
+                let mut message_end = top;
                 egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(14, 12))
                     .show(ui, |ui| {
@@ -130,32 +136,61 @@ impl RepoTab {
                                 } else {
                                     Sense::hover()
                                 };
-                                let summary = ui.add(
-                                    egui::Label::new(
-                                        RichText::new(subject).font(theme::semibold(15.0)),
-                                    )
-                                    .wrap()
-                                    .sense(sense),
-                                );
-                                let mut clicked = if editable {
-                                    summary.on_hover_text("Double-click to edit the message")
+                                // Cut to the room the rest of the pane leaves: the description
+                                // first, then the title down to its first row.
+                                let gap = ui.spacing().item_spacing.y;
+                                let budget = view_h - (ui.cursor().top() - top) - rest - gap;
+                                let title = RichText::new(subject).font(theme::semibold(15.0));
+                                let desc = RichText::new(body).color(t.text_dim);
+                                let (title_rows, title_h) = text_rows(ui, title.clone());
+                                let (body_rows, body_h) = if body.is_empty() {
+                                    (0, 0.0)
+                                } else {
+                                    text_rows(ui, desc.clone())
+                                };
+                                let fit = |room: f32, h: f32| (room / h).floor().max(0.0) as usize;
+                                let show_title = fit(budget, title_h).clamp(1, title_rows);
+                                let show_body = if show_title < title_rows {
+                                    0
+                                } else {
+                                    let room = budget - title_rows as f32 * title_h - gap - 2.0;
+                                    fit(room, body_h).min(body_rows)
+                                };
+                                let hint = if editable {
+                                    Some("Double-click to edit the message")
                                 } else if detail.in_head && detail.merges_after {
-                                    summary.on_hover_text(
+                                    Some(
                                         "Merges came after this commit: editing its message would flatten them",
                                     )
                                 } else {
-                                    summary
-                                }
-                                .double_clicked();
-                                if !body.is_empty() {
+                                    None
+                                };
+                                // What was cut shows on hover.
+                                let full = (show_title < title_rows || show_body < body_rows)
+                                    .then(|| detail.message.trim());
+                                let tip = match (full, hint) {
+                                    (Some(m), Some(h)) => Some(format!("{h}\n\n{m}")),
+                                    (Some(m), None) => Some(m.to_owned()),
+                                    (None, h) => h.map(str::to_owned),
+                                };
+                                let message = |ui: &mut Ui, text: RichText, rows: usize| {
+                                    let job = clamped(ui, text, rows);
+                                    let r = ui.add(
+                                        egui::Label::new(job)
+                                            .wrap()
+                                            .sense(sense)
+                                            .show_tooltip_when_elided(false),
+                                    );
+                                    match &tip {
+                                        Some(tip) => r.on_hover_text(tip.as_str()),
+                                        None => r,
+                                    }
+                                    .double_clicked()
+                                };
+                                let mut clicked = message(ui, title, show_title);
+                                if show_body > 0 {
                                     ui.add_space(2.0);
-                                    clicked |= ui
-                                        .add(
-                                            egui::Label::new(RichText::new(body).color(t.text_dim))
-                                                .wrap()
-                                                .sense(sense),
-                                        )
-                                        .double_clicked();
+                                    clicked |= message(ui, desc, show_body);
                                 }
                                 if clicked && editable {
                                     reword = Some(Reword {
@@ -170,6 +205,7 @@ impl RepoTab {
                         if close {
                             reword = None;
                         }
+                        message_end = ui.cursor().top();
                         ui.add_space(12.0);
 
                         // Author line with an initials avatar.
@@ -254,6 +290,11 @@ impl RepoTab {
                         path: path.to_owned(),
                     }
                 });
+                let below = ui.cursor().top() - message_end;
+                if (below - rest).abs() > 0.5 {
+                    ui.data_mut(|d| d.insert_temp(rest_id, below));
+                    ui.ctx().request_discard("commit message room");
+                }
             });
         self.reword = reword;
     }
@@ -947,4 +988,28 @@ fn reword_editor(ui: &mut Ui, reword: &mut Reword) -> Option<bool> {
         out = Some(false);
     }
     out
+}
+
+/// How many rows `text` wraps to across the space left in `ui`, and how tall each is.
+fn text_rows(ui: &Ui, text: RichText) -> (usize, f32) {
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Wrap),
+        ui.available_width(),
+        egui::FontSelection::Default,
+    );
+    let rows = galley.rows.len().max(1);
+    (rows, galley.size().y / rows as f32)
+}
+
+/// `text` wrapped to at most `rows` rows, the last one ending in "…" when cut.
+fn clamped(ui: &Ui, text: RichText, rows: usize) -> egui::text::LayoutJob {
+    let job = egui::WidgetText::from(text).into_layout_job(
+        ui.style(),
+        egui::FontSelection::Default,
+        ui.text_valign(),
+    );
+    let mut job = std::sync::Arc::unwrap_or_clone(job);
+    job.wrap.max_rows = rows;
+    job
 }
