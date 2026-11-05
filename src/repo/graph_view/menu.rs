@@ -201,6 +201,13 @@ impl RepoTab {
             )));
         }
         if ui
+            .button("Create worktree from this commit…")
+            .on_hover_text("A second working folder on a new branch starting here")
+            .clicked()
+        {
+            acts.push(Action::Dialog(Dialog::worktree_at(&self.path, hash)));
+        }
+        if ui
             .add_enabled(
                 idle && !is_head,
                 egui::Button::new("Check out this commit (detached)"),

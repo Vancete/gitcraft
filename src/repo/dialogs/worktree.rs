@@ -54,7 +54,8 @@ pub(super) fn free_branches<'a>(local: &'a [Branch], worktrees: &[Worktree]) -> 
         .collect()
 }
 
-/// A worktree on an existing branch out of `free`, or on a new one from `base`.
+/// A worktree on an existing branch out of `free`, or on a new one from `base` (the commit, and
+/// how to show it).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn add_worktree(
     ui: &mut Ui,
@@ -65,7 +66,7 @@ pub(super) fn add_worktree(
     new_branch: &mut bool,
     branch: &mut String,
     new_name: &mut String,
-    base: &str,
+    (base, base_label): (&str, &str),
     focus: &mut bool,
 ) -> Outcome {
     let t = Tokens::get(ui.ctx());
@@ -84,7 +85,7 @@ pub(super) fn add_worktree(
     });
     ui.add_space(4.0);
     if *new_branch {
-        changed |= new_branch_field(ui, new_name, base, focus);
+        changed |= new_branch_field(ui, new_name, base_label, focus);
     } else {
         changed |= branch_choice(ui, branch, free);
     }
@@ -134,12 +135,9 @@ fn new_branch_field(ui: &mut Ui, new_name: &mut String, base: &str, focus: &mut 
     let edit = field(ui, new_name, "feature/my-branch", focus);
     dash_spaces(new_name);
     ui.label(
-        RichText::new(format!(
-            "Starting at HEAD ({})",
-            base.get(..8).unwrap_or(base)
-        ))
-        .color(t.text_faint)
-        .small(),
+        RichText::new(format!("Starting at {base}"))
+            .color(t.text_faint)
+            .small(),
     );
     edit.changed()
 }

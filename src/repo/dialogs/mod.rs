@@ -34,8 +34,10 @@ pub enum Dialog {
         new_branch: bool,
         branch: String,
         new_name: String,
-        /// Where a new branch starts (HEAD's commit).
+        /// Where a new branch starts (HEAD's commit, or the one it was asked for from).
         base: String,
+        /// How to show `base`.
+        base_label: String,
         focus: bool,
     },
     Confirm {
@@ -220,9 +222,19 @@ impl Dialog {
             branch: branch.unwrap_or_default().to_owned(),
             new_name: String::new(),
             base: base.to_owned(),
+            base_label: format!("HEAD ({})", base.get(..8).unwrap_or(base)),
             focus: true,
         };
         dialog.suggest_path();
+        dialog
+    }
+
+    /// A worktree on a new branch starting at the commit `hash`.
+    pub fn worktree_at(repo: &Path, hash: &str) -> Self {
+        let mut dialog = Self::add_worktree(repo, None, hash);
+        if let Dialog::AddWorktree { base_label, .. } = &mut dialog {
+            *base_label = hash.get(..8).unwrap_or(hash).to_owned();
+        }
         dialog
     }
 
@@ -288,6 +300,7 @@ impl RepoTab {
                     branch,
                     new_name,
                     base,
+                    base_label,
                     focus,
                     ..
                 } => {
@@ -301,7 +314,7 @@ impl RepoTab {
                         new_branch,
                         branch,
                         new_name,
-                        base,
+                        (base, base_label),
                         focus,
                     )
                 }

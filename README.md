@@ -32,7 +32,8 @@ so your config, credentials and hooks apply as usual.
 - Search (Ctrl+F) through messages, authors and hashes of all history, or switch to _Code_ to
   find the commits that added or removed a piece of text in a file (`git log -S`); Enter /
   Shift+Enter jump between results, loading older history when needed.
-- Right-click a commit: create a branch or a tag, check it out, interactive rebase onto it,
+- Right-click a commit: create a branch, a tag or a worktree on a new branch there, check it
+  out, interactive rebase onto it,
   cherry-pick, revert, reset the current branch to it (soft / mixed / hard, confirmed), the menu
   of each branch on it, copy the hash, message or branch name. Right-click a branch's pill to get
   check out, fast-forward, merge, rebase and interactive rebase for that branch on top.
