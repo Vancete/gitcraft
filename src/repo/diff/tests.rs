@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use egui::Color32;
 
 use super::images::image_id;
+use super::jump::{change_at, changes, offset_of, step};
 use super::map::change_runs;
 use super::paint::line_job;
 use super::parse::{changed_ranges, hunk_start, meta};
@@ -18,6 +19,41 @@ fn changes_group_into_runs_per_kind() {
     let runs = change_runs([n, d, d, a, n, both, a].into_iter());
     assert_eq!(runs.removed, vec![1..3, 5..6]);
     assert_eq!(runs.added, vec![3..4, 5..7]);
+}
+
+#[test]
+fn removals_and_additions_next_to_each_other_are_one_change() {
+    let (n, d, a, both) = ((false, false), (true, false), (false, true), (true, true));
+    let runs = change_runs([n, d, d, a, n, both, a, n, n, a].into_iter());
+    assert_eq!(changes(&runs), vec![1..4, 5..7, 9..10]);
+    assert!(changes(&change_runs([n, n].into_iter())).is_empty());
+}
+
+#[test]
+fn stepping_goes_from_the_change_jumped_to_or_from_what_is_in_view() {
+    let list = vec![1..4, 20..22, 40..41];
+    // At the top: the first change is in view already, so the next one is the second.
+    assert_eq!(step(&list, 0.0, None, 1), Some(1));
+    assert_eq!(step(&list, 0.0, None, -1), Some(0));
+    // Scrolled to the second change: on to the third, back to the first.
+    let at = offset_of(20);
+    assert_eq!(step(&list, at, None, 1), Some(2));
+    assert_eq!(step(&list, at, None, -1), Some(0));
+    // The view couldn't scroll as far as the last change jumped to: still steps from it.
+    assert_eq!(step(&list, 300.0, Some((1, 300.0)), 1), Some(2));
+    assert_eq!(step(&list, 300.0, Some((2, 300.0)), 1), None);
+    assert_eq!(step(&list, 300.0, Some((0, 300.0)), -1), None);
+    // Scrolled by hand since: from what is in view again.
+    assert_eq!(step(&list, 0.0, Some((2, 300.0)), -1), Some(0));
+    assert_eq!(step(&[], 0.0, None, 1), None);
+}
+
+#[test]
+fn a_click_on_a_change_mark_finds_its_change() {
+    let list = vec![1..4, 20..22];
+    assert_eq!(change_at(&list, 2.0, 0.5), Some(0));
+    assert_eq!(change_at(&list, 22.3, 0.5), Some(1));
+    assert_eq!(change_at(&list, 10.0, 0.5), None);
 }
 
 #[test]

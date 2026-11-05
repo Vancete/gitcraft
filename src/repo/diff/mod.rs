@@ -3,6 +3,7 @@
 //! can be staged, unstaged or discarded a hunk or a few lines at a time.
 
 mod images;
+mod jump;
 mod map;
 mod paint;
 mod parse;

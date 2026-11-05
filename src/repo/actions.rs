@@ -100,6 +100,8 @@ pub(crate) enum Action {
     },
     /// Diffs show the whole file as it is after the change, or the changes.
     DiffAsFile(bool),
+    /// Scroll the diff to the next change (`1`) or the previous one (`-1`).
+    DiffStep(i32),
     /// The commit pane lists every file of the commit, or only those it changed.
     ViewAllFiles(bool),
     SaveConflict,

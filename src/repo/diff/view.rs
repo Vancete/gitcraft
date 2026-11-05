@@ -59,10 +59,15 @@ impl RepoTab {
         let shift = ui.input(|i| i.modifiers.shift);
         let mut rows = Rows::new(ui, view, data, review.as_ref(), partial, split);
         let sel = rows.show(ui, &path, acts);
-        let clicked = rows.clicked;
+        let (clicked, offset, jumped) = (rows.clicked, rows.offset, rows.jumped);
 
         if let Some(view) = &mut self.diff {
             view.text_sel = sel;
+            view.scroll = offset;
+            view.jump = None;
+            if let Some(i) = jumped {
+                view.at_change = Some((i, offset));
+            }
             if clear {
                 view.chosen.clear();
                 view.anchor = None;
@@ -139,6 +144,8 @@ impl RepoTab {
                         ui.add_space(8.0);
                         if !as_file {
                             view_options(ui, &t, (split, ignore_ws, whole_file), acts);
+                            ui.add_space(8.0);
+                            change_steps(ui, acts);
                             ui.add_space(8.0);
                         }
                         let on = usize::from(as_file);
@@ -304,6 +311,16 @@ fn view_options(
             ignore_ws,
             whole_file,
         });
+    }
+}
+
+/// The previous and next change buttons, laid out right to left.
+fn change_steps(ui: &mut Ui, acts: &mut Vec<Action>) {
+    if icons::small_button(ui, "arrow-down", "Next change (F7, Alt+↓)").clicked() {
+        acts.push(Action::DiffStep(1));
+    }
+    if icons::small_button(ui, "arrow-up", "Previous change (Shift+F7, Alt+↑)").clicked() {
+        acts.push(Action::DiffStep(-1));
     }
 }
 

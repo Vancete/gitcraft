@@ -59,7 +59,8 @@ impl RepoTab {
         }
     }
 
-    /// Escape closes the innermost view; Ctrl+Z / Ctrl+Y undo and redo, Ctrl+F searches.
+    /// Escape closes the innermost view; Ctrl+Z / Ctrl+Y undo and redo, Ctrl+F searches, F7 and
+    /// Shift+F7 (or Alt+↓ / Alt+↑) go to the next and previous change of a diff.
     fn shortcuts(&mut self, ctx: &egui::Context, acts: &mut Vec<Action>) {
         let free_keys =
             self.dialog.is_none() && !self.keys_blocked && !ctx.egui_wants_keyboard_input();
@@ -89,6 +90,11 @@ impl RepoTab {
                 acts.push(Action::CloseCompare);
             } else if esc && self.search.open {
                 acts.push(Action::ToggleSearch);
+            }
+            let diff_shown =
+                self.diff.is_some() && self.conflict.is_none() && self.rebase.is_none();
+            if let Some(delta) = ctx.input(change_step).filter(|_| diff_shown) {
+                acts.push(Action::DiffStep(delta));
             }
             if undo {
                 acts.push(Action::Undo);
@@ -168,6 +174,19 @@ impl RepoTab {
             settings.show_detail = show_detail;
             settings.set(&ctx);
         }
+    }
+}
+
+/// F7 or Alt+↓ for the next change of a diff (`1`), Shift+F7 or Alt+↑ for the previous one.
+fn change_step(i: &egui::InputState) -> Option<i32> {
+    let alt = i.modifiers.alt && !i.modifiers.command;
+    if (i.key_pressed(Key::F7) && !i.modifiers.shift) || (alt && i.key_pressed(Key::ArrowDown)) {
+        Some(1)
+    } else if (i.key_pressed(Key::F7) && i.modifiers.shift) || (alt && i.key_pressed(Key::ArrowUp))
+    {
+        Some(-1)
+    } else {
+        None
     }
 }
 

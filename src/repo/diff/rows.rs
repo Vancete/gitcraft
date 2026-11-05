@@ -3,6 +3,7 @@
 
 use egui::{FontId, Galley, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
 
+use super::jump::{change_at, changes, offset_of};
 use super::map::{change_map, runs_of};
 use super::paint::{filler, hunk_button, paint_line};
 use super::select::{Hit, Side, TextSel, copy_selection, drag_selection};
@@ -35,6 +36,10 @@ pub(super) struct Rows<'a> {
     t: Tokens,
     /// A changed line clicked.
     pub(super) clicked: Option<usize>,
+    /// How far the lines are scrolled down.
+    pub(super) offset: f32,
+    /// The change scrolled to this frame (by its place among the changes).
+    pub(super) jumped: Option<usize>,
     /// Text selection by dragging: where the press and the pointer are in the lines drawn.
     press_hit: Option<Hit>,
     /// Each with whether the pointer is over that line's half, not only at its height.
@@ -70,6 +75,8 @@ impl<'a> Rows<'a> {
             font: theme::mono(12.0),
             t: Tokens::get(ui.ctx()),
             clicked: None,
+            offset: 0.0,
+            jumped: None,
             press_hit: None,
             pointer_hits: Vec::new(),
             text_hover: false,
@@ -99,8 +106,10 @@ impl<'a> Rows<'a> {
             data.lines.len()
         };
         // Every change of the file in a strip beside the scrollbar, to see where to scroll to
-        // (above all when the whole file is shown). Clicking or dragging it scrolls there.
+        // (above all when the whole file is shown). Clicking a change's mark jumps to the
+        // change, clicking elsewhere or dragging scrolls there.
         let runs = runs_of(data, split);
+        let changes = changes(&runs);
         let area = ui.available_rect_before_wrap();
         let strip = Rect::from_min_max(pos2(area.right() - MAP_W, area.top()), area.max);
         let body = Rect::from_min_max(area.min, pos2(strip.left() - 1.0, area.bottom()));
@@ -121,11 +130,25 @@ impl<'a> Rows<'a> {
         let mut scroll = egui::ScrollArea::both()
             .id_salt(("diff_scroll", path, split))
             .auto_shrink(false);
-        if (map.clicked() || map.dragged())
+        if let Some(i) = self.view.jump.filter(|&i| i < changes.len()) {
+            self.jumped = Some(i);
+        } else if (map.clicked() || map.dragged())
             && let Some(p) = map.interact_pointer_pos()
         {
-            let at = ((p.y - strip.top()) / strip.height()).clamp(0.0, 1.0) * total_h;
-            scroll = scroll.vertical_scroll_offset((at - body.height() / 2.0).max(0.0));
+            let frac = ((p.y - strip.top()) / strip.height()).clamp(0.0, 1.0);
+            // A mark is at least 2 points tall; a little either side of it still hits it.
+            let slack = 3.0 / strip.height() * count as f32;
+            self.jumped = map
+                .clicked()
+                .then(|| change_at(&changes, frac * count as f32, slack))
+                .flatten();
+            if self.jumped.is_none() {
+                let at = frac * total_h;
+                scroll = scroll.vertical_scroll_offset((at - body.height() / 2.0).max(0.0));
+            }
+        }
+        if let Some(change) = self.jumped.and_then(|i| changes.get(i)) {
+            scroll = scroll.vertical_scroll_offset(offset_of(change.start));
         }
         let out = ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
             scroll.show_rows(ui, LINE_H, count, |ui, range| {
@@ -149,6 +172,7 @@ impl<'a> Rows<'a> {
             })
         });
         let shown = out.inner;
+        self.offset = shown.state.offset.y;
         change_map(
             ui,
             strip,

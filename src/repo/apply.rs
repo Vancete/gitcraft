@@ -146,6 +146,11 @@ impl RepoTab {
                 whole_file,
             } => self.set_diff_options(split, ignore_ws, whole_file, ctx),
             Action::DiffAsFile(on) => self.show_diff_as_file(on, ctx),
+            Action::DiffStep(delta) => {
+                if let Some(view) = self.diff.as_mut().filter(|_| !self.diff_as_file) {
+                    view.step_change(Settings::get(ctx).diff_split, delta);
+                }
+            }
             Action::ViewAllFiles(on) => self.all_files.on = on,
             Action::FileView { path, rev, tab } => self.open_file_view(path, rev, tab, ctx),
             Action::CloseFileView => self.file_view = None,

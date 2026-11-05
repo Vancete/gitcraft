@@ -88,6 +88,12 @@ pub(crate) struct DiffView {
     pub(super) text_sel: Option<diff::TextSel>,
     /// The whole file, read when the diff is switched to it.
     pub(super) file: Option<Result<FileText, String>>,
+    /// How far the lines were scrolled down last frame.
+    pub(super) scroll: f32,
+    /// A change (by its place among the changes) to scroll to on the next frame.
+    pub(super) jump: Option<usize>,
+    /// The change jumped to last, and the scroll offset that left.
+    pub(super) at_change: Option<(usize, f32)>,
     /// The latest read of this diff: only its answer is shown, so a slower answer to an older
     /// read (before the whitespace or whole-file setting changed…) can't replace it.
     pub(super) request: u64,
@@ -105,6 +111,9 @@ impl DiffView {
             anchor: None,
             text_sel: None,
             file: None,
+            scroll: 0.0,
+            jump: None,
+            at_change: None,
             request: 0,
         }
     }
@@ -125,6 +134,7 @@ impl DiffView {
         self.chosen.clear();
         self.anchor = None;
         self.text_sel = None;
+        self.at_change = None;
     }
 
     /// Shows the whole file read along with the read numbered `request`, unless a newer read

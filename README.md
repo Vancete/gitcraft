@@ -97,6 +97,9 @@ so your config, credentials and hooks apply as usual.
 
 - Unified or side by side, syntax colours, the changed part of each line marked, whitespace
   changes optional, images shown before / after. Esc closes.
+- The arrows in a diff's header (F7 / Shift+F7, or Alt+↓ / Alt+↑) jump to the next and previous
+  change. The strip beside the scrollbar marks where the changes are, removals red and additions
+  green; click a mark to jump to its change, or anywhere else on the strip to scroll there.
 - The _Diff_ / _File_ switch shows the whole file as it is after the change instead (before it,
   for a deleted file), coloured and with line numbers.
 - Code takes the colours of the theme VS Code (or Insiders, VSCodium) is using, read from its
