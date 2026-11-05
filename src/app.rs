@@ -199,8 +199,10 @@ impl App {
             });
             app.update_rx = Some(rx);
         }
+        let mut kept = Vec::new();
         if app.git_version.is_ok() {
             for path in saved.open {
+                kept.push(path.is_dir());
                 if path.is_dir() {
                     app.tabs.push(Tab::Repo(Box::new(RepoTab::new(path, ctx))));
                 }
@@ -209,7 +211,7 @@ impl App {
         if app.tabs.is_empty() {
             app.tabs.push(Tab::Home);
         }
-        app.active = saved.active.min(app.tabs.len() - 1);
+        app.active = active_among_kept(&kept, saved.active).min(app.tabs.len() - 1);
         if let Some(path) = open_arg
             && app.git_version.is_ok()
         {
@@ -424,6 +426,8 @@ impl App {
             return;
         }
         self.tabs.remove(i);
+        // A drag going on holds a tab by its index, which now names another one.
+        self.tab_drag = None;
         if self.tabs.is_empty() {
             self.tabs.push(Tab::Home);
         }
@@ -856,7 +860,11 @@ impl App {
         if let Some(i) = select {
             self.active = i;
         }
-        if let Some((from, to)) = moved {
+        // A tab closed as another is dropped: the indices are from before either, so the drop
+        // is left out rather than moving the wrong tab or closing one that moved.
+        if let Some((from, to)) = moved
+            && close.is_none()
+        {
             self.move_tab(from, to);
         }
         if let Some((path, look)) = restyle {
@@ -1094,6 +1102,15 @@ impl App {
         }
 
         if submit {
+            // One clone at a time: a second would take the first one's place, whose result
+            // (and its tab) would never come.
+            if let Some((running, _)) = &self.cloning {
+                form.error = Some(format!(
+                    "Wait for the clone into {} to finish",
+                    running.display()
+                ));
+                return;
+            }
             let dest = PathBuf::from(form.parent.trim()).join(form.name.trim());
             let occupied = dest.exists()
                 && std::fs::read_dir(&dest)
@@ -1150,9 +1167,12 @@ impl App {
             Ok(()) => {
                 // Show it in a start page tab if one is active, otherwise in a new tab.
                 self.open_repo(&dest, ctx);
-                // The credentials that cloned it also fetch and push in its tab.
+                // The credentials that cloned it also fetch and push in its tab, and in no
+                // other: when it couldn't be opened, the active tab is another repository's.
+                let root = repo_root(&dest).ok();
                 if let Some(form) = self.cloning_form.take().filter(|f| f.auth)
                     && let Some(Tab::Repo(repo)) = self.tabs.get_mut(self.active)
+                    && root.as_ref() == Some(&repo.path)
                 {
                     repo.set_credentials(git::Credentials {
                         username: form.username.trim().to_owned(),
@@ -1377,6 +1397,16 @@ impl eframe::App for App {
         };
         eframe::set_value(storage, eframe::APP_KEY, &saved);
     }
+}
+
+/// Where the tab that was active at `active` is once the tabs not `kept` (their folder is gone)
+/// are left out: a gone one passes to the tab before it.
+fn active_among_kept(kept: &[bool], active: usize) -> usize {
+    kept.iter()
+        .take(active.saturating_add(1))
+        .filter(|&&k| k)
+        .count()
+        .saturating_sub(1)
 }
 
 /// The top of the repository `path` is in, in the form tabs are told apart by.
@@ -1849,7 +1879,7 @@ fn notify(text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Saved, fuzzy, window_icon};
+    use super::{Saved, active_among_kept, fuzzy, window_icon};
     use crate::tab_look::{TabColor, TabLook};
 
     /// A storage that keeps strings in memory, as eframe's own does on disk.
@@ -1885,6 +1915,19 @@ mod tests {
                 |b| b.tab_looks.get(std::path::Path::new("C:/code/app")) == Some(&look)
             )
         );
+    }
+
+    /// A tab whose folder is gone doesn't make the one after the active tab active.
+    #[test]
+    fn active_tab_survives_a_gone_folder() {
+        assert_eq!(active_among_kept(&[true, true, true], 2), 2);
+        assert_eq!(active_among_kept(&[false, true, true], 2), 1);
+        assert_eq!(active_among_kept(&[true, false, true], 2), 1);
+        assert_eq!(active_among_kept(&[true, true, false], 1), 1);
+        assert_eq!(active_among_kept(&[true, false, true], 1), 0);
+        assert_eq!(active_among_kept(&[false, true], 0), 0);
+        assert_eq!(active_among_kept(&[], 3), 0);
+        assert_eq!(active_among_kept(&[true, true], usize::MAX), 1);
     }
 
     #[test]
