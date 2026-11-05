@@ -81,6 +81,9 @@ so your config, credentials and hooks apply as usual.
   _Stage all_ / _Unstage all_; right-click a file to open it, open it in your editor, show it in
   its folder, see its history or blame, or ignore it (the file, its extension or its folder go
   into `.gitignore`; a tracked file stops being tracked).
+- _Path_ / _Tree_ at the top of the pane lists the files of the changes, a commit, a comparison
+  or a pull request flat with their paths, or as a tree of their folders; a folder folds with a
+  click and says how many files it holds. The choice is remembered.
 - Part of a file: _Stage hunk_, _Discard hunk_ and _Unstage hunk_ on each hunk of its diff, or
   click the changed lines you want (Shift+click for a range) and stage, unstage or discard only
   those. Discarding can be undone with Ctrl+Z.
@@ -218,7 +221,7 @@ was made this way, on a demo repository.
 | `src/repo/pr_review.rs` | comments and reviews being written, and the threads on lines of a diff |
 | `src/repo/pr_merge.rs` | the box that merges a pull request |
 | `src/repo/pinned_sections.rs` | sidebar section headers that stay in view and jump to their section |
-| `src/repo/branch_tree.rs` | branch names as a tree of folders, and its rows |
+| `src/repo/branch_tree.rs` | branch names and file paths as a tree of folders, and its rows |
 | `src/repo/columns.rs` | widths of the graph's columns: what a drag changes and what gets squeezed |
 | `src/repo/worktree_tab.rs` | worktrees in the same tab: parked views, the tab's chip and switcher |
 | `src/repo/graph_view.rs` | commit graph, pills, search bar, commit menu                                       |

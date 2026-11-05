@@ -50,7 +50,7 @@ impl RepoTab {
         let selected = |f: &&ChangedFile| self.open_key() == Some(&key(&f.path));
         branch_tree::files(
             ui,
-            id,
+            (id, true),
             files,
             |f| &f.path,
             &selected,

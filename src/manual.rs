@@ -46,6 +46,7 @@ const FEATURES: &[(&str, &[&str])] = &[
         "Changes and commits",
         &[
             "Stage, unstage or discard whole files from the right pane.",
+            "Path / Tree at the top of the right pane lists the files flat or in their folders; click a folder to fold it.",
             "In a file's diff, stage, unstage or discard one hunk, or click the lines you want and act on only those.",
             "Write the summary and description and commit; amend the last commit; pick the identity you commit as.",
             "Double-click a commit's message in the right pane to edit it (any commit of the checked-out branch with no merges after it).",

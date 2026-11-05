@@ -176,7 +176,7 @@ impl RepoTab {
         let selected = |f: &&StatusFile| self.open_key() == Some(&DiffKey::Work((*f).clone()));
         branch_tree::files(
             ui,
-            id,
+            (id, true),
             files,
             |f| &f.path,
             &selected,

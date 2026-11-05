@@ -1,11 +1,13 @@
 //! Names as a tree: `docs/accuracy/gearbox` is a branch in a folder in a folder, and
 //! `src/repo/mod.rs` a changed file in one.
 //!
-//! Branch folders start collapsed, file folders open. The ones changed are saved with the app.
+//! Branch folders start collapsed, file folders open (those of all the files of a commit
+//! collapsed). The ones changed are saved with the app.
 
 use egui::{Align2, Id, Rect, Response, Sense, Ui, pos2, vec2};
 
 use super::sidebar::ROW_H;
+use super::widgets;
 use crate::icons;
 use crate::settings::Settings;
 use crate::theme::{self, Tokens};
@@ -139,12 +141,13 @@ impl TreeView {
     }
 }
 
-/// Changed files, flat or as a tree of their folders as the settings say. `row` draws a file,
-/// given how far in it is in the tree (`None`: in a flat list, showing its folder); a folder
-/// holding the file for which `selected` holds stands out while it is closed.
+/// Files, flat or as a tree of their folders as the settings say. `row` draws a file, given how
+/// far in it is in the tree (`None`: in a flat list, showing its folder); a folder holding the
+/// file for which `selected` holds stands out while it is closed. `start_open`: whether a
+/// folder nobody has opened or closed yet is open.
 pub(super) fn files<'a, T>(
     ui: &mut Ui,
-    id: Id,
+    (id, start_open): (Id, bool),
     files: &'a [T],
     path: impl Fn(&'a T) -> &'a str,
     selected: &impl Fn(&&'a T) -> bool,
@@ -162,7 +165,7 @@ pub(super) fn files<'a, T>(
         id,
         filtering: false,
         indent: 0.0,
-        start_open: true,
+        start_open,
         left: 18.0,
     };
     show(ui, &tree, &view, selected, &mut |ui, leaf, f| {
@@ -170,16 +173,13 @@ pub(super) fn files<'a, T>(
     });
 }
 
-/// The panel-header button that switches changed files between a flat list and a tree.
+/// The panel-header switch that shows files as a flat list of their paths or as a tree of their
+/// folders.
 pub(super) fn files_toggle(ui: &mut Ui) {
     let mut settings = Settings::get(ui.ctx());
-    let (icon, tooltip) = if settings.files_as_tree {
-        ("list", "Show files as a list")
-    } else {
-        ("folder-tree", "Show files as a tree")
-    };
-    if icons::small_button(ui, icon, tooltip).clicked() {
-        settings.files_as_tree = !settings.files_as_tree;
+    let on = usize::from(settings.files_as_tree);
+    if let Some(picked) = widgets::switch(ui, &["Path", "Tree"], on) {
+        settings.files_as_tree = picked == 1;
         settings.set(ui.ctx());
     }
 }

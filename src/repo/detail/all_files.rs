@@ -102,7 +102,7 @@ impl RepoTab {
         let id = egui::Id::new(("file-folder", self.repo_key(), "all"));
         branch_tree::files(
             ui,
-            id,
+            (id, false),
             files,
             |p| p.as_str(),
             &|p: &&String| shown(p),
