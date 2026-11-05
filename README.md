@@ -44,6 +44,9 @@ so your config, credentials and hooks apply as usual.
 - Interactive rebase: the commits to rewrite, newest on top; pick, reword (edit the message in
   place), squash, fix up or drop each one, move them up and down, then _Start rebase_. Ctrl+Z
   undoes it.
+- Quick edits from a commit's menu, for commits of the checked-out branch: _Edit commit
+  message_, _Drop commit_, _Move commit up_ / _down_, each a rebase without the editor and undone
+  with Ctrl+Z. What can't be done (a merge, merges after the commit) is greyed out with why.
 
 **Branches, remotes, worktrees, stashes, tags** (left)
 

@@ -131,6 +131,8 @@ pub(crate) struct Reword {
     pub body: String,
     /// Put the cursor in the summary on the next frame.
     pub focus: bool,
+    /// Opened from the commit's menu: the message goes in once the commit's detail is read.
+    pub fill: bool,
 }
 
 /// Two points of history side by side in the right pane: a branch against another, a commit

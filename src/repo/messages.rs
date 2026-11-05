@@ -6,7 +6,7 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use super::load::Loaded;
-use super::{CompareData, OpKind, Refresh, RepoTab, diff, file_view, ops, pr_review};
+use super::{CompareData, OpKind, Refresh, RepoTab, diff, file_view, ops, pr_review, quick_edit};
 use crate::forge::PullRequest;
 use crate::git::{self, Commit, CommitDetail, WorkStatus};
 use crate::settings::Settings;
@@ -57,6 +57,12 @@ pub(super) enum Msg {
     RewordCommits {
         hash: String,
         message: String,
+        result: Result<Vec<git::RebaseCommit>, String>,
+    },
+    /// The commits to replay for a drop or move from a commit's menu.
+    QuickEditCommits {
+        edit: quick_edit::Edit,
+        hash: String,
         result: Result<Vec<git::RebaseCommit>, String>,
     },
     OpDone {
@@ -163,7 +169,10 @@ impl RepoTab {
             Msg::Detail(hash, result) => {
                 if self.detail_hash.as_deref() == Some(hash.as_str()) {
                     match result {
-                        Ok(d) => self.detail = Some(d),
+                        Ok(d) => {
+                            self.detail = Some(d);
+                            self.fill_reword();
+                        }
                         Err(e) => self.detail_error = Some(e),
                     }
                 }
@@ -178,6 +187,9 @@ impl RepoTab {
                 message,
                 result,
             } => self.reword_older(hash, message, result, ctx),
+            Msg::QuickEditCommits { edit, hash, result } => {
+                self.run_quick_edit(edit, hash, result, ctx)
+            }
             Msg::FileHistory(path, rev, result) => {
                 // Only the history of the revision shown: an older read may answer last.
                 if let Some(view) = &mut self.file_view

@@ -174,6 +174,7 @@ fn message_section(
                     subject: subject.to_owned(),
                     body: body.to_owned(),
                     focus: true,
+                    fill: false,
                 });
             }
         }

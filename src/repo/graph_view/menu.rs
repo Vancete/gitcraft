@@ -76,6 +76,8 @@ impl RepoTab {
         ui.separator();
         self.compare_with_items(ui, i, &hash, &short, acts);
         ui.separator();
+        self.quick_edit_items(ui, &hash, idle, acts);
+        ui.separator();
         rewrite_items(ui, &hash, &short, &summary, &target, idle, is_head, acts);
         ui.separator();
         copy_items(ui, &hash, &summary, branch_name.as_deref());

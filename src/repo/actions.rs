@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use super::pull::PullMode;
 use super::toolbar::reveal_label;
-use super::{Dialog, DiffKey, Refresh, RepoTab, Undo, ci_view, diff, file_view, ops, pr_review};
+use super::{
+    Dialog, DiffKey, Refresh, RepoTab, Undo, ci_view, diff, file_view, ops, pr_review, quick_edit,
+};
 use crate::git::{self, InProgress};
 use crate::terminal::ShellSpec;
 
@@ -109,6 +111,13 @@ pub(crate) enum Action {
     Reword {
         hash: String,
         message: String,
+    },
+    /// Open the editor of a commit's message in the detail pane.
+    EditMessage(String),
+    /// Drop or move a commit of the checked-out branch.
+    QuickEdit {
+        edit: quick_edit::Edit,
+        hash: String,
     },
     InteractiveRebase {
         onto: String,

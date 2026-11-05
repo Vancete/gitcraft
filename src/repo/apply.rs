@@ -148,6 +148,8 @@ impl RepoTab {
             Action::CloseFileView => self.file_view = None,
             Action::InteractiveRebase { onto, label } => self.interactive_rebase(onto, label, ctx),
             Action::Reword { hash, message } => self.reword_commit(hash, message, ctx),
+            Action::EditMessage(hash) => self.edit_message(hash, ctx),
+            Action::QuickEdit { edit, hash } => self.quick_edit(edit, hash, ctx),
             Action::RunRebase => self.run_rebase(ctx),
             Action::CloseRebase => self.rebase = None,
             Action::SignIn(creds) => self.sign_in(creds, ctx),
