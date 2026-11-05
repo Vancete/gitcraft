@@ -166,12 +166,12 @@ impl RepoTab {
                                         "Delete tag",
                                         format!("Delete the local tag “{}”?", tag.name),
                                         "Delete",
-                                        ops(&[&["tag", "-d", &tag.name]]),
+                                        ops(&[&["tag", "-d", "--", &tag.name]]),
                                         None,
                                     )
                                     .undo(Undo::Custom {
-                                        undo: ops(&[&["tag", &tag.name, &tag.target]]),
-                                        redo: ops(&[&["tag", "-d", &tag.name]]),
+                                        undo: ops(&[&["tag", "--", &tag.name, &tag.target]]),
+                                        redo: ops(&[&["tag", "-d", "--", &tag.name]]),
                                     }),
                                 ));
                             }
@@ -409,15 +409,15 @@ impl RepoTab {
                     "Delete branch",
                     format!("Delete the local branch “{}”?", b.name),
                     "Delete",
-                    ops(&[&["branch", "-d", &b.name]]),
+                    ops(&[&["branch", "-d", "--", &b.name]]),
                     Some((
                         "Force, even if it isn't merged (-D)".to_owned(),
-                        ops(&[&["branch", "-D", &b.name]]),
+                        ops(&[&["branch", "-D", "--", &b.name]]),
                     )),
                 )
                 .undo(Undo::Custom {
-                    undo: ops(&[&["branch", &b.name, &b.target]]),
-                    redo: ops(&[&["branch", "-D", &b.name]]),
+                    undo: ops(&[&["branch", "--", &b.name, &b.target]]),
+                    redo: ops(&[&["branch", "-D", "--", &b.name]]),
                 }),
             ));
         }
@@ -442,18 +442,26 @@ impl RepoTab {
     fn default_base(&self) -> String {
         let remote = self.default_remote().unwrap_or_else(|| "origin".to_owned());
         let names: Vec<&str> = self
-            .refs
-            .remotes
-            .iter()
-            .filter(|(r, _)| *r == remote)
-            .flat_map(|(_, list)| list.iter().map(|b| b.name.as_str()))
+            .remote_branches(&remote)
+            .filter_map(|b| remote_short(&b.name, &remote))
             .collect();
         for candidate in ["main", "master", "develop"] {
-            if names.contains(&format!("{remote}/{candidate}").as_str()) {
+            if names.contains(&candidate) {
                 return candidate.to_owned();
             }
         }
         "main".to_owned()
+    }
+
+    /// The remote-tracking branches of `remote`. Told apart by name, not by the first part of
+    /// it: a remote can have a slash in its name (`my/fork`).
+    fn remote_branches<'a>(&'a self, remote: &'a str) -> impl Iterator<Item = &'a Branch> + 'a {
+        let names: Vec<&str> = self.remotes.iter().map(|r| r.name.as_str()).collect();
+        self.refs
+            .remotes
+            .iter()
+            .flat_map(|(_, list)| list)
+            .filter(move |b| remote_of(&b.name, &names) == Some(remote))
     }
 
     fn remotes_section(
@@ -485,15 +493,11 @@ impl RepoTab {
         }
         for remote in &self.remotes {
             let branches: Vec<&Branch> = self
-                .refs
-                .remotes
-                .iter()
-                .filter(|(r, _)| *r == remote.name)
-                .flat_map(|(_, list)| list.iter())
+                .remote_branches(&remote.name)
                 .filter(|b| filter.is_empty() || b.name.to_lowercase().contains(filter))
                 .collect();
-            // A collapsible row per remote.
-            let id = ui.id().with(("remote-open", &remote.name));
+            // A collapsible row per remote, open or closed in this repository only.
+            let id = egui::Id::new(("remote-open", self.repo_key(), &remote.name));
             let mut expanded = ui.data_mut(|d| d.get_persisted::<bool>(id)).unwrap_or(true);
             let (rect, r) =
                 ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
@@ -571,10 +575,7 @@ impl RepoTab {
                 continue;
             }
             let tree = branch_tree::build(branches.iter().map(|b| {
-                let short = b
-                    .name
-                    .strip_prefix(&format!("{}/", remote.name))
-                    .unwrap_or(&b.name);
+                let short = remote_short(&b.name, &remote.name).unwrap_or(&b.name);
                 (short, *b)
             }));
             let view = TreeView::branches(
@@ -603,10 +604,7 @@ impl RepoTab {
         row: LeafRow<'_>,
         idle: bool,
     ) {
-        let short = b
-            .name
-            .strip_prefix(&format!("{remote}/"))
-            .unwrap_or(&b.name);
+        let short = remote_short(&b.name, remote).unwrap_or(&b.name);
         let has_pr = self.prs.iter().any(|p| p.branch == short);
         let r = remote_row(ui, row, has_pr)
             .on_hover_text(format!("{}\nDouble-click to check out", b.name));
@@ -668,7 +666,7 @@ impl RepoTab {
                             "Delete “{short}” from {remote}? This changes the remote for everyone.",
                         ),
                         "Delete",
-                        ops(&[&["push", remote, "--delete", short]]),
+                        ops(&[&["push", remote, "--delete", &format!("refs/heads/{short}")]]),
                         None,
                     )));
                 }
@@ -833,7 +831,10 @@ impl RepoTab {
                         .iter()
                         .flat_map(|(_, l)| l.iter())
                         .find(|b| {
-                            b.name.split_once('/').map(|(_, n)| n) == Some(pr.branch.as_str())
+                            self.remotes
+                                .iter()
+                                .filter_map(|r| remote_short(&b.name, &r.name))
+                                .any(|n| n == pr.branch)
                         })
                 })
                 .map(|b| b.target.clone());
@@ -870,6 +871,23 @@ impl RepoTab {
                 });
         }
     }
+}
+
+/// The name of `remote`'s branch `name` on the remote: `main` for `origin/main`. git writes
+/// `remotes/origin/main` when a local branch is called `origin/main` too.
+pub(super) fn remote_short<'a>(name: &'a str, remote: &str) -> Option<&'a str> {
+    let under = |n: &'a str| n.strip_prefix(remote)?.strip_prefix('/');
+    under(name).or_else(|| under(name.strip_prefix("remotes/")?))
+}
+
+/// Which of `remotes` the remote-tracking branch `name` is of: the longest that fits, so that
+/// `my/fork/main` is `my/fork`'s even when there is a remote `my`.
+pub(super) fn remote_of<'r>(name: &str, remotes: &[&'r str]) -> Option<&'r str> {
+    remotes
+        .iter()
+        .copied()
+        .filter(|r| remote_short(name, r).is_some())
+        .max_by_key(|r| r.len())
 }
 
 /// Apply / pop / drop for a stash (sidebar and detail pane).
@@ -1239,4 +1257,33 @@ fn plain_row(ui: &mut Ui, icon: &str, name: &str, sub: &str) -> Response {
         );
     }
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_remote_branch_is_named_without_its_remote() {
+        assert_eq!(remote_short("origin/main", "origin"), Some("main"));
+        assert_eq!(remote_short("origin/feat/x", "origin"), Some("feat/x"));
+        assert_eq!(remote_short("my/fork/main", "my/fork"), Some("main"));
+        assert_eq!(remote_short("origin/main", "orig"), None);
+        assert_eq!(remote_short("upstream/main", "origin"), None);
+    }
+
+    #[test]
+    fn an_ambiguous_remote_branch_is_still_found() {
+        // `refname:short` when a local branch is called `origin/main` too.
+        assert_eq!(remote_short("remotes/origin/main", "origin"), Some("main"));
+    }
+
+    #[test]
+    fn a_remote_with_a_slash_owns_its_branches() {
+        let remotes = ["origin", "my/fork", "my"];
+        assert_eq!(remote_of("my/fork/main", &remotes), Some("my/fork"));
+        assert_eq!(remote_of("my/other", &remotes), Some("my"));
+        assert_eq!(remote_of("origin/my/fork/x", &remotes), Some("origin"));
+        assert_eq!(remote_of("gone/main", &remotes), None);
+    }
 }

@@ -218,6 +218,28 @@ pub(crate) fn ref_tip(answer: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Whether the branch of a merged pull request goes, from what asking for its ref answered: only
+/// while it's still on the merged commit. One that couldn't be checked is kept.
+pub(crate) fn branch_to_delete(answer: Result<&str, &str>, head_oid: &str) -> Result<bool, String> {
+    match answer {
+        Ok(answer) => match ref_tip(answer) {
+            Some(tip) if tip == head_oid => Ok(true),
+            Some(_) => {
+                Err("It's merged, but the branch has new commits, so it was kept".to_owned())
+            }
+            None => Err(
+                "It's merged, but the branch was kept: GitHub didn't say which commit it's on"
+                    .to_owned(),
+            ),
+        },
+        // Gone already: nothing to delete.
+        Err(e) if e.contains("HTTP 404") => Ok(false),
+        Err(e) => Err(format!(
+            "It's merged, but the branch was kept, as its commit couldn't be checked: {e}"
+        )),
+    }
+}
+
 /// A suggested change to apply.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Suggestion {
@@ -339,9 +361,11 @@ impl Target {
         let review = match &self.pending_review {
             Some(review) => review.clone(),
             None => {
+                // On the commit shown: without it, GitHub takes the newest, which the line
+                // numbers may not be of.
                 let answer = self.mutate(
                     "addPullRequestReview",
-                    json!({ "pullRequestId": self.pr_id }),
+                    json!({ "pullRequestId": self.pr_id, "commitOID": self.head_oid }),
                     "pullRequestReview { id }",
                 )?;
                 answer
@@ -440,15 +464,13 @@ impl Target {
             // Commits pushed since the merge would lose their branch. GitHub deletes without
             // asking which commit it's on, so this is checked first; a push can still come in
             // between, just in a much smaller window.
-            if let Ok(answer) = self.api(
+            let answer = self.api(
                 "GET",
                 &format!("repos/{}/git/ref/heads/{branch}", self.path),
                 None,
-            ) && ref_tip(&answer).is_some_and(|tip| tip != self.head_oid)
-            {
-                return Err(
-                    "It's merged, but the branch has new commits, so it was kept".to_owned(),
-                );
+            );
+            if !branch_to_delete(answer.as_deref().map_err(String::as_str), &self.head_oid)? {
+                return Ok(());
             }
             let endpoint = format!("repos/{}/git/refs/heads/{branch}", self.path);
             if let Err(e) = self.api("DELETE", &endpoint, None)
@@ -640,6 +662,22 @@ mod tests {
         assert_eq!(ref_tip(answer).as_deref(), Some("abc123"));
         assert_eq!(ref_tip(r#"{"message":"Not Found"}"#), None);
         assert_eq!(ref_tip("not json"), None);
+    }
+
+    #[test]
+    fn a_merged_branch_goes_only_while_on_the_merged_commit() {
+        let on = r#"{"object":{"sha":"abc"}}"#;
+        assert_eq!(branch_to_delete(Ok(on), "abc"), Ok(true));
+        let moved = r#"{"object":{"sha":"def"}}"#;
+        assert!(branch_to_delete(Ok(moved), "abc").is_err_and(|e| e.contains("new commits")));
+        assert_eq!(
+            branch_to_delete(Err("gh: Not Found (HTTP 404)"), "abc"),
+            Ok(false)
+        );
+        // Not knowing which commit it's on, it isn't deleted.
+        assert!(branch_to_delete(Err("gh: Bad credentials (HTTP 401)"), "abc").is_err());
+        assert!(branch_to_delete(Err("connection reset"), "abc").is_err());
+        assert!(branch_to_delete(Ok("not json"), "abc").is_err());
     }
 
     fn target_without_extras() -> Target {

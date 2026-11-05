@@ -50,19 +50,22 @@ const LONG_OP: Duration = Duration::from_secs(4);
 /// Results coming back from background git calls.
 enum Msg {
     Loaded(Result<Box<Loaded>, String>),
-    More(Result<Vec<Commit>, String>),
+    /// A further page of history, read while `history_gen` was so: a reload since may have
+    /// moved the commits it skipped, so then it no longer fits.
+    More(u64, Result<Vec<Commit>, String>),
     Status(Result<WorkStatus, String>),
     Detail(String, Result<CommitDetail, String>),
     /// The answer to the diff request numbered so (see [`DiffView::next_request`]).
     Diff(u64, Result<diff::DiffData, String>),
-    FileHistory(String, Result<Vec<git::FileCommit>, String>),
+    FileHistory(String, Option<String>, Result<Vec<git::FileCommit>, String>),
     Blame(String, Option<String>, Result<file_view::BlameData, String>),
     RebaseCommits {
         onto: String,
         label: String,
         result: Result<Vec<git::RebaseCommit>, String>,
     },
-    Search(String, Result<Vec<String>, String>),
+    /// Results for a query, searched in the code (`true`) or in the messages.
+    Search(String, bool, Result<Vec<String>, String>),
     /// A comparison's files, for the request numbered so.
     Compare(u64, Result<CompareData, String>),
     Prs(Result<Vec<PullRequest>, String>),
@@ -412,12 +415,16 @@ pub struct RepoTab {
     rx: Receiver<Msg>,
 
     loading: bool,
+    /// A reload was asked for while one was running, which may have read too early.
+    reload_again: bool,
     load_error: Option<String>,
     refs: Refs,
     /// Commits as git listed them.
     history: Vec<Commit>,
     has_more: bool,
     loading_more: bool,
+    /// Counts the reloads of `history`, so that a page asked for before one is dropped.
+    history_gen: u64,
     work: WorkStatus,
     /// Rows of the graph: the WIP pseudo-commit (when the tree is dirty) followed by `history`.
     commits: Vec<Commit>,
@@ -522,11 +529,13 @@ impl RepoTab {
             tx,
             rx,
             loading: false,
+            reload_again: false,
             load_error: None,
             refs: Refs::default(),
             history: Vec::new(),
             has_more: false,
             loading_more: false,
+            history_gen: 0,
             work: WorkStatus::default(),
             commits: Vec::new(),
             graph: Graph {
@@ -608,6 +617,8 @@ impl RepoTab {
     /// Re-reads refs, history, working tree, worktrees, stashes and remotes in the background.
     pub fn reload(&mut self, ctx: &egui::Context) {
         if self.loading {
+            // What changed may have been read before it changed: read again once this is in.
+            self.reload_again = true;
             return;
         }
         self.loading = true;
@@ -650,8 +661,9 @@ impl RepoTab {
         self.loading_more = true;
         let path = self.path.clone();
         let skip = self.history.len();
+        let generation = self.history_gen;
         spawn(&self.tx, ctx, move || {
-            Msg::More(git::log(&path, skip, git::LOG_PAGE))
+            Msg::More(generation, git::log(&path, skip, git::LOG_PAGE))
         });
     }
 
@@ -667,31 +679,22 @@ impl RepoTab {
         use notify::Watcher;
         let (tx, rx) = channel();
         let ctx = ctx.clone();
+        // A linked worktree keeps its HEAD and index, and the repository its refs, outside its
+        // folder: watched too, or commits and checkouts made elsewhere would never show.
+        let linked = linked_git_dirs(&self.path);
+        let git_dirs: Vec<PathBuf> = linked
+            .iter()
+            .flat_map(|(own, common)| [own.clone(), common.clone()])
+            .collect();
         let handler = move |res: notify::Result<notify::Event>| {
             let Ok(event) = res else { return };
             if matches!(event.kind, notify::EventKind::Access(_)) {
                 return;
             }
             for path in &event.paths {
-                let s = path.to_string_lossy().replace('\\', "/");
-                match s.split_once("/.git/") {
-                    // Refs, HEAD, the index and merge state matter; objects and logs don't.
-                    Some((_, inside)) => {
-                        let relevant = inside.starts_with("refs")
-                            || inside == "HEAD"
-                            || inside == "index"
-                            || inside == "packed-refs"
-                            || inside.ends_with("_HEAD")
-                            || inside.starts_with("rebase-");
-                        if relevant {
-                            let _ = tx.send(true);
-                            ctx.request_repaint_after(Duration::from_millis(500));
-                        }
-                    }
-                    None => {
-                        let _ = tx.send(false);
-                        ctx.request_repaint_after(Duration::from_millis(500));
-                    }
+                if let Some(git_dir) = fs_change(path, &git_dirs) {
+                    let _ = tx.send(git_dir);
+                    ctx.request_repaint_after(Duration::from_millis(500));
                 }
             }
         };
@@ -700,6 +703,15 @@ impl RepoTab {
                 .watch(&self.path, notify::RecursiveMode::Recursive)
                 .is_ok()
         {
+            if let Some((own, common)) = &linked {
+                use notify::RecursiveMode::{NonRecursive, Recursive};
+                let _ = watcher.watch(own, Recursive);
+                if common != own {
+                    // Not all of it: objects are written all the time.
+                    let _ = watcher.watch(common, NonRecursive);
+                    let _ = watcher.watch(&common.join("refs"), Recursive);
+                }
+            }
             self.watcher = Some(watcher);
             self.fs_rx = Some(rx);
         }
@@ -1036,7 +1048,7 @@ impl RepoTab {
         match tab {
             file_view::FileTab::History => spawn(&self.tx, ctx, move || {
                 let result = git::file_history(&repo, rev.as_deref(), &path);
-                Msg::FileHistory(path, result)
+                Msg::FileHistory(path, rev, result)
             }),
             file_view::FileTab::Blame => {
                 let dark = Tokens::get(ctx).dark();
@@ -1084,35 +1096,22 @@ impl RepoTab {
         if !quiet {
             self.status = None;
         }
-        self.last_op = Some(PendingOp {
-            label: label.to_owned(),
-            ops: ops.clone(),
-            refresh,
-            kind: kind.clone(),
-            quiet,
-        });
+        // A quiet one (the background fetch) never asks to sign in, and must not take the place
+        // of the operation that did while its sign-in dialog is open.
+        if !quiet {
+            self.last_op = Some(PendingOp {
+                label: label.to_owned(),
+                ops: ops.clone(),
+                refresh,
+                kind: kind.clone(),
+                quiet,
+            });
+        }
         let path = self.path.clone();
         let label = label.to_owned();
         let creds = self.credentials.clone();
         spawn(&self.tx, ctx, move || {
-            let mut result = Ok(String::new());
-            for op in &ops {
-                let args: Vec<&str> = op.iter().map(String::as_str).collect();
-                result = git::run_with(Some(&path), &args, creds.as_ref());
-                if result.is_err() {
-                    break;
-                }
-            }
-            // For HEAD moves, the new HEAD is what redo goes back to.
-            let kind = match kind {
-                OpKind::Normal(Undo::HeadMove { mode }, before) if result.is_ok() => {
-                    OpKind::Normal(
-                        Undo::HeadMove { mode },
-                        format!("{before}\u{0}{}", git::head(&path)),
-                    )
-                }
-                other => other,
-            };
+            let (result, kind) = run_steps(&path, &ops, kind, creds.as_ref());
             Msg::OpDone {
                 label,
                 result,
@@ -1137,6 +1136,9 @@ impl RepoTab {
     }
 
     fn checkout(&mut self, target: &str, ctx: &egui::Context) {
+        if refuse_option_like(target, &mut self.status) {
+            return;
+        }
         let previous = self
             .refs
             .current
@@ -1146,13 +1148,15 @@ impl RepoTab {
             Undo::None
         } else {
             Undo::Custom {
-                undo: ops(&[&["checkout", &previous]]),
-                redo: ops(&[&["checkout", target]]),
+                undo: ops(&[&["checkout", &previous, "--"]]),
+                redo: ops(&[&["checkout", target, "--"]]),
             }
         };
+        // `--`: a name that is no branch (any more) must not be taken for a file to discard
+        // the changes of.
         self.run_undoable(
             &format!("Checkout {target}"),
-            ops(&[&["checkout", target]]),
+            ops(&[&["checkout", target, "--"]]),
             Refresh::All,
             undo,
             ctx,
@@ -1175,12 +1179,18 @@ impl RepoTab {
         else {
             return self.checkout(branch, ctx);
         };
-        let run = ops(&[&["checkout", branch], &["pull", "--ff-only"]]);
+        if refuse_option_like(branch, &mut self.status) {
+            return;
+        }
+        let run = ops(&[&["checkout", branch, "--"], &["pull", "--ff-only"]]);
         let undo = if previous.is_empty() {
             Undo::None
         } else {
             Undo::Custom {
-                undo: ops(&[&["checkout", &previous], &["branch", "-f", branch, &was]]),
+                undo: ops(&[
+                    &["checkout", &previous, "--"],
+                    &["branch", "-f", branch, &was],
+                ]),
                 redo: run.clone(),
             }
         };
@@ -1234,12 +1244,16 @@ impl RepoTab {
     }
 
     fn checkout_remote(&mut self, remote_branch: &str, ctx: &egui::Context) {
-        // `origin/feature` → local `feature` tracking it (or just switch if it exists).
-        let local = remote_branch
-            .split_once('/')
-            .map(|(_, b)| b)
-            .unwrap_or(remote_branch)
-            .to_owned();
+        // `origin/feature` → local `feature` tracking it (or just switch if it exists); `feat`
+        // for `my/fork/feat` of the remote `my/fork`, `main` for `remotes/origin/main`.
+        let remotes: Vec<&str> = self.remotes.iter().map(|r| r.name.as_str()).collect();
+        let local = local_name_of(remote_branch, &remotes);
+        // The name comes from the remote (a pull request's branch…).
+        if refuse_option_like(remote_branch, &mut self.status)
+            || refuse_option_like(&local, &mut self.status)
+        {
+            return;
+        }
         if self.refs.local.iter().any(|b| b.name == local) {
             self.checkout(&local, ctx);
             return;
@@ -1249,14 +1263,20 @@ impl RepoTab {
             .current
             .clone()
             .unwrap_or_else(|| self.refs.head.clone());
+        let undo = if previous.is_empty() {
+            Undo::None
+        } else {
+            Undo::Custom {
+                undo: ops(&[&["checkout", &previous, "--"], &["branch", "-D", &local]]),
+                redo: ops(&[&["checkout", "-b", &local, "--track", remote_branch, "--"]]),
+            }
+        };
+        // Named here, so that it is the branch undo deletes, whatever git would make of it.
         self.run_undoable(
             &format!("Checkout {local}"),
-            ops(&[&["checkout", "--track", remote_branch]]),
+            ops(&[&["checkout", "-b", &local, "--track", remote_branch, "--"]]),
             Refresh::All,
-            Undo::Custom {
-                undo: ops(&[&["checkout", &previous], &["branch", "-D", &local]]),
-                redo: ops(&[&["checkout", "--track", remote_branch]]),
-            },
+            undo,
             ctx,
         );
     }
@@ -1398,7 +1418,7 @@ impl RepoTab {
     }
 
     fn stash_push(&mut self, message: &str, ctx: &egui::Context) {
-        let mut args = vec!["stash", "push", "--include-untracked"];
+        let mut args: Vec<&str> = stash_push_args().to_vec();
         if !message.trim().is_empty() {
             args.extend(["-m", message.trim()]);
         }
@@ -1455,7 +1475,7 @@ impl RepoTab {
             } else {
                 git::search(&path, &query)
             };
-            Msg::Search(query, result)
+            Msg::Search(query, code, result)
         });
     }
 
@@ -1557,6 +1577,10 @@ impl RepoTab {
                 match result {
                     Ok(loaded) => {
                         self.load_error = None;
+                        // A page asked for before this was read past the old history, which
+                        // this one replaces: it would leave a gap.
+                        self.history_gen += 1;
+                        self.loading_more = false;
                         self.refs = loaded.refs;
                         self.has_more = loaded.history.len() >= loaded.requested;
                         self.history = loaded.history;
@@ -1590,8 +1614,12 @@ impl RepoTab {
                     }
                     Err(e) => self.load_error = Some(e),
                 }
+                if std::mem::take(&mut self.reload_again) {
+                    self.reload(ctx);
+                }
             }
-            Msg::More(result) => {
+            Msg::More(generation, _) if generation != self.history_gen => {}
+            Msg::More(_, result) => {
                 self.loading_more = false;
                 match result {
                     Ok(page) => {
@@ -1670,6 +1698,16 @@ impl RepoTab {
                     editor.command()
                 });
                 match result {
+                    // Started while something else ran: say so rather than drop it.
+                    Ok(_) if self.busy_op.is_some() => {
+                        self.status = Some((
+                            format!(
+                                "Edit message: {} is still running, try again when it's done",
+                                self.busy_op.as_deref().unwrap_or_default()
+                            ),
+                            true,
+                        ));
+                    }
                     Ok(command) => self.run_undoable(
                         &format!("Edit the message of {}", short(&hash)),
                         vec![command],
@@ -1680,9 +1718,11 @@ impl RepoTab {
                     Err(e) => self.status = Some((format!("Edit message: {e}"), true)),
                 }
             }
-            Msg::FileHistory(path, result) => {
+            Msg::FileHistory(path, rev, result) => {
+                // Only the history of the revision shown: an older read may answer last.
                 if let Some(view) = &mut self.file_view
                     && view.path == path
+                    && view.rev == rev
                 {
                     view.history = Some(result);
                 }
@@ -1714,8 +1754,8 @@ impl RepoTab {
                     c.data = Some(result);
                 }
             }
-            Msg::Search(query, result) => {
-                if query == self.search.query.trim() {
+            Msg::Search(query, code, result) => {
+                if query == self.search.query.trim() && code == self.search.code {
                     self.search.running = false;
                     self.search.searched = query;
                     match result {
@@ -1945,13 +1985,24 @@ impl RepoTab {
                 if self.busy_op.is_some() {
                     return;
                 }
+                // The remote the forge was found by.
+                let Some(remote) = self.default_remote() else {
+                    return;
+                };
                 let label = format!("Create {}", forge.noun());
                 self.busy_op = Some(label.clone());
                 self.op_started = Some(Instant::now());
+                // Signing in after this fails must not run some earlier operation again.
+                self.last_op = None;
                 let path = self.path.clone();
+                let creds = self.credentials.clone();
                 spawn(&self.tx, ctx, move || {
                     // Publish the branch first, so the forge can see it.
-                    let pushed = git::run(Some(&path), &["push", "-u", "origin", &branch]);
+                    let pushed = git::run_with(
+                        Some(&path),
+                        &["push", "-u", &remote, &branch],
+                        creds.as_ref(),
+                    );
                     let result = pushed.and_then(|_| {
                         forge::create(&path, forge, &branch, &base, &title, &body, draft)
                     });
@@ -2042,7 +2093,15 @@ impl RepoTab {
             Action::CloseRebase => self.rebase = None,
             Action::SignIn(creds) => {
                 self.credentials = Some(creds);
-                if let Some(op) = self.last_op.take() {
+                if let Some(busy) = &self.busy_op
+                    && let Some(op) = &self.last_op
+                {
+                    // It would not start: say so, rather than drop it.
+                    self.status = Some((
+                        format!("{}: run it again once {busy} is done", op.label),
+                        true,
+                    ));
+                } else if let Some(op) = self.last_op.take() {
                     self.run_ops_ex(&op.label, op.ops, op.refresh, op.kind, op.quiet, ctx);
                 }
             }
@@ -2662,21 +2721,35 @@ pub(crate) fn open_in_editor(editor: &str, path: &Path) -> Result<(), String> {
     } else {
         editor.trim()
     };
-    let mut cmd = if cfg!(windows) {
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
         let mut c = std::process::Command::new("cmd");
-        c.arg("/C").arg(editor).arg(path);
+        // The path in quotes and through a variable: a file named `a&calc` must not run `calc`,
+        // and one named `%COMSPEC%` must not open another (cmd expands `%…%` even in quotes,
+        // but not again inside what a variable held). `/S` takes off only the outer quotes,
+        // leaving `editor "path"`.
+        let mut target = path.as_os_str().to_owned();
+        // A backslash before the closing quote would escape it for the editor (the folder
+        // itself ends with one): doubled, it is just a backslash.
+        if target.to_string_lossy().ends_with('\\') {
+            target.push("\\");
+        }
+        c.env("GITCRAFT_OPEN_PATH", target);
+        let mut line = std::ffi::OsString::from("/S /C \"");
+        line.push(editor);
+        line.push(" \"%GITCRAFT_OPEN_PATH%\"\"");
+        c.raw_arg(line);
+        c.creation_flags(0x0800_0000);
         c
-    } else {
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
         let mut c = std::process::Command::new(editor);
         c.arg(path);
         crate::shell_path::apply(&mut c);
         c
     };
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
-    }
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("Could not run {editor}: {e}"))
@@ -2717,6 +2790,119 @@ pub(crate) fn short(hash: &str) -> &str {
     hash.get(..8).unwrap_or(hash)
 }
 
+/// The local branch to check the remote-tracking branch `name` out as: its name on the remote
+/// (`remotes`: the configured ones), or what follows the first `/` for a remote not configured.
+fn local_name_of(name: &str, remotes: &[&str]) -> String {
+    sidebar::remote_of(name, remotes)
+        .and_then(|r| sidebar::remote_short(name, r))
+        .or_else(|| name.split_once('/').map(|(_, b)| b))
+        .unwrap_or(name)
+        .to_owned()
+}
+
+/// Refuses (saying so in `status`) a branch or commit name git would read as an option: one
+/// from a remote or a pull request can be anything a ref name may be.
+fn refuse_option_like(name: &str, status: &mut Option<(String, bool)>) -> bool {
+    let bad = name.is_empty() || name.starts_with('-');
+    if bad {
+        *status = Some((
+            format!("Can't check out \"{name}\": not a usable name"),
+            true,
+        ));
+    }
+    bad
+}
+
+/// Runs git commands one after another, stopping at the first failure; `kind` comes back with
+/// what undoing needs, as found on disk.
+fn run_steps(
+    path: &Path,
+    ops: &[Vec<String>],
+    kind: OpKind,
+    creds: Option<&git::Credentials>,
+) -> (Result<String, String>, OpKind) {
+    // Where HEAD really is now, not where the last reload saw it: a commit made in the
+    // terminal since must not be undone along with this.
+    let head_before =
+        matches!(kind, OpKind::Normal(Undo::HeadMove { .. }, _)).then(|| git::head(path));
+    let pushes_stash = ops.first().is_some_and(|op| {
+        let stash = stash_push_args();
+        op.len() >= stash.len() && op.iter().zip(stash).all(|(a, b)| a == b)
+    });
+    let stash_before = pushes_stash.then(|| git::resolve(path, "refs/stash").ok());
+    let mut result = Ok(String::new());
+    for op in ops {
+        let args: Vec<&str> = op.iter().map(String::as_str).collect();
+        result = git::run_with(Some(path), &args, creds);
+        if result.is_err() {
+            break;
+        }
+    }
+    let kind = match kind {
+        // For HEAD moves, the new HEAD is what redo goes back to.
+        OpKind::Normal(Undo::HeadMove { mode }, before) if result.is_ok() => {
+            let before = head_before.filter(|h| !h.is_empty()).unwrap_or(before);
+            OpKind::Normal(
+                Undo::HeadMove { mode },
+                format!("{before}\u{0}{}", git::head(path)),
+            )
+        }
+        // "No local changes to save" makes no stash: undoing would pop an older one.
+        OpKind::Normal(Undo::Custom { .. }, before)
+            if stash_before.is_some_and(|b| b == git::resolve(path, "refs/stash").ok()) =>
+        {
+            OpKind::Normal(Undo::None, before)
+        }
+        other => other,
+    };
+    (result, kind)
+}
+
+/// A linked worktree's (or submodule's) own git folder and the repository's common one, both
+/// outside `worktree`, which has a `.git` file pointing there. `None` for a `.git` folder.
+fn linked_git_dirs(worktree: &Path) -> Option<(PathBuf, PathBuf)> {
+    let dot_git = std::fs::read_to_string(worktree.join(".git")).ok()?;
+    let own = dot_git
+        .lines()
+        .find_map(|l| l.strip_prefix("gitdir:"))?
+        .trim();
+    let own = std::fs::canonicalize(worktree.join(own)).ok()?;
+    let common = std::fs::read_to_string(own.join("commondir"))
+        .ok()
+        .and_then(|c| std::fs::canonicalize(own.join(c.trim())).ok())
+        .unwrap_or_else(|| own.clone());
+    Some((own, common))
+}
+
+/// What a change on disk at `path` calls for: `Some(true)` a full reload (git's data moved),
+/// `Some(false)` re-reading the working tree, `None` nothing. `git_dirs`: git folders outside
+/// the worktree that are watched too.
+fn fs_change(path: &Path, git_dirs: &[PathBuf]) -> Option<bool> {
+    // Refs, HEAD, the index and merge state matter; objects and logs don't.
+    let relevant = |inside: &str| {
+        inside.starts_with("refs")
+            || inside == "HEAD"
+            || inside == "index"
+            || inside == "packed-refs"
+            || inside.ends_with("_HEAD")
+            || inside.starts_with("rebase-")
+    };
+    if let Some(inside) = git_dirs.iter().find_map(|d| path.strip_prefix(d).ok()) {
+        let inside = inside.to_string_lossy().replace('\\', "/");
+        return relevant(&inside).then_some(true);
+    }
+    let s = path.to_string_lossy().replace('\\', "/");
+    match s.split_once("/.git/") {
+        Some((_, inside)) => relevant(inside).then_some(true),
+        None => Some(false),
+    }
+}
+
+/// How the app stashes (and how `run_ops_ex` knows an operation for one).
+fn stash_push_args() -> [&'static str; 3] {
+    ["stash", "push", "--include-untracked"]
+}
+
 /// `&[&["checkout", "main"]]` → owned argument lists.
 pub(crate) fn ops(list: &[&[&str]]) -> Vec<Vec<String>> {
     list.iter()
@@ -2736,7 +2922,140 @@ fn spawn(tx: &Sender<Msg>, ctx: &egui::Context, job: impl FnOnce() -> Msg + Send
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffKey, DiffView, headline};
+    use std::path::{Path, PathBuf};
+
+    use super::{
+        DiffKey, DiffView, OpKind, Undo, fs_change, headline, linked_git_dirs, local_name_of, ops,
+        refuse_option_like, run_steps, stash_push_args,
+    };
+    use crate::git;
+
+    /// A repository with one commit, in a fresh folder named after `name`.
+    fn repo(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gitcraft-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["commit", "-q", "--allow-empty", "-m", "base"],
+        ] {
+            assert!(git::run(Some(&dir), args).is_ok());
+        }
+        dir
+    }
+
+    #[test]
+    fn stashing_nothing_is_not_undoable() {
+        let dir = repo("stash-nothing");
+        let stash = || ops(&[&stash_push_args()]);
+        let custom = || {
+            OpKind::Normal(
+                Undo::Custom {
+                    undo: ops(&[&["stash", "pop", "--index"]]),
+                    redo: stash(),
+                },
+                String::new(),
+            )
+        };
+        // Nothing to save: undoing would pop some older stash.
+        let (result, kind) = run_steps(&dir, &stash(), custom(), None);
+        assert!(result.is_ok());
+        assert!(matches!(kind, OpKind::Normal(Undo::None, _)));
+        // Something to save: undoable.
+        let _ = std::fs::write(dir.join("f.txt"), "x\n");
+        let (result, kind) = run_steps(&dir, &stash(), custom(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_ok());
+        assert!(matches!(kind, OpKind::Normal(Undo::Custom { .. }, _)));
+    }
+
+    #[test]
+    fn undoing_a_head_move_goes_back_to_where_head_really_was() {
+        let dir = repo("head-before");
+        let head = |dir: &Path| git::head(dir);
+        let seen = head(&dir);
+        // Committed elsewhere (the terminal) since the view last read HEAD.
+        assert!(git::run(Some(&dir), &["commit", "-q", "--allow-empty", "-m", "two"]).is_ok());
+        let before = head(&dir);
+        let kind = OpKind::Normal(Undo::HeadMove { mode: "--soft" }, seen.clone());
+        let commit = ops(&[&["commit", "-q", "--allow-empty", "-m", "three"]]);
+        let (result, kind) = run_steps(&dir, &commit, kind, None);
+        let after = head(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_ok());
+        assert_ne!(seen, before);
+        assert!(matches!(
+            kind,
+            OpKind::Normal(Undo::HeadMove { .. }, heads) if heads == format!("{before}\u{0}{after}")
+        ));
+    }
+
+    #[test]
+    fn a_linked_worktree_is_watched_where_git_keeps_its_data() {
+        let dir = repo("linked-watch");
+        let linked = dir.with_file_name(format!("gitcraft-linked-watch-wt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&linked);
+        let added = git::run(
+            Some(&dir),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "side",
+                &linked.to_string_lossy(),
+            ],
+        );
+        let dirs = linked_git_dirs(&linked);
+        let main = linked_git_dirs(&dir);
+        let canonical = std::fs::canonicalize(dir.join(".git")).ok();
+        let _ = std::fs::remove_dir_all(&linked);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(added.is_ok());
+        assert!(main.is_none());
+        assert!(dirs.is_some());
+        let (own, common) = dirs.unwrap_or_default();
+        assert_eq!(Some(common.clone()), canonical);
+        assert!(own.starts_with(&common) && own != common);
+        let watched = [own.clone(), common.clone()];
+        // Its HEAD and index, the shared refs: reload; objects: nothing; its files: status.
+        assert_eq!(fs_change(&own.join("HEAD"), &watched), Some(true));
+        assert_eq!(fs_change(&own.join("index"), &watched), Some(true));
+        assert_eq!(
+            fs_change(&common.join("refs/heads/side"), &watched),
+            Some(true)
+        );
+        assert_eq!(fs_change(&common.join("objects/ab/cd"), &watched), None);
+        assert_eq!(fs_change(&linked.join("src/a.rs"), &watched), Some(false));
+        // A main worktree as before.
+        assert_eq!(fs_change(Path::new("/r/.git/index"), &[]), Some(true));
+        assert_eq!(fs_change(Path::new("/r/.git/objects/x"), &[]), None);
+        assert_eq!(fs_change(Path::new("/r/a.rs"), &[]), Some(false));
+    }
+
+    #[test]
+    fn a_remote_branch_is_checked_out_under_its_name_on_the_remote() {
+        let remotes = ["origin", "my", "my/fork"];
+        assert_eq!(local_name_of("origin/feature/x", &remotes), "feature/x");
+        assert_eq!(local_name_of("my/fork/feat", &remotes), "feat");
+        assert_eq!(local_name_of("my/feat", &remotes), "feat");
+        assert_eq!(local_name_of("remotes/origin/main", &remotes), "main");
+        // A remote no longer configured, whose branches are still there.
+        assert_eq!(local_name_of("gone/main", &remotes), "main");
+    }
+
+    #[test]
+    fn names_git_would_read_as_options_are_not_checked_out() {
+        let mut status = None;
+        assert!(refuse_option_like("--orphan=x", &mut status));
+        assert!(status.is_some_and(|(_, err)| err));
+        let mut status = None;
+        assert!(!refuse_option_like("feature/-x", &mut status));
+        assert!(!refuse_option_like("refs/tags/v1", &mut status));
+        assert!(status.is_none());
+    }
 
     #[test]
     fn an_older_diff_answer_does_not_replace_a_newer_one() {

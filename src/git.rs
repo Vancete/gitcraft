@@ -11,6 +11,24 @@ const RS: char = '\x1e';
 /// How many commits the graph loads at a time; scrolling to the end loads the next page.
 pub const LOG_PAGE: usize = 1500;
 
+/// For `log` and `show`: `log.showSignature` would print each commit's signature check (or
+/// "No signature") into the output that is parsed, and run gpg for every commit.
+const NO_SIGNATURE: &str = "--no-show-signature";
+
+/// Ends the options: what follows is a revision even when it starts with `-` (a tag named
+/// `--output=x` fetched from a remote, a ref from a forge's answer…), not an option.
+const END_OPTS: &str = "--end-of-options";
+
+/// For commands that don't take [`END_OPTS`] (`rev-parse` before git 2.30, `blame`): a
+/// revision that would be read as an option is refused.
+fn not_an_option(rev: &str) -> Result<&str, String> {
+    if rev.starts_with('-') {
+        Err(format!("{rev} is not a revision"))
+    } else {
+        Ok(rev)
+    }
+}
+
 fn git_cmd() -> Command {
     let mut cmd = Command::new("git");
     // Never block on an interactive prompt: credential helpers with a GUI still work.
@@ -20,6 +38,10 @@ fn git_cmd() -> Command {
     cmd.env("GIT_EDITOR", "true");
     // Interactive rebases set `sequence.editor` themselves; an inherited one would win.
     cmd.env_remove("GIT_SEQUENCE_EDITOR");
+    // Messages in English whatever the user's language: errors are told apart by their words
+    // (`is_auth_error`…). `C` in LANGUAGE wins over LC_ALL / LANG for messages only, so the
+    // character set (and what hooks see of it) stays the user's.
+    cmd.env("LANGUAGE", "C");
     crate::shell_path::apply(&mut cmd);
     #[cfg(windows)]
     {
@@ -204,8 +226,10 @@ pub struct Refs {
 }
 
 pub fn refs(repo: &Path) -> Result<Refs, String> {
+    // Names are the full ones less `refs/heads/`… and not `%(refname:short)`, which makes a
+    // branch `heads/x` when a tag is called `x` too (checking that out detaches HEAD).
     let format = format!(
-        "%(refname){FS}%(refname:short){FS}%(objectname){FS}%(HEAD){FS}%(upstream:short){FS}%(upstream:track){FS}%(*objectname)"
+        "%(refname){FS}%(objectname){FS}%(HEAD){FS}%(upstream:short){FS}%(upstream:track){FS}%(*objectname)"
     );
     let out = run(
         Some(repo),
@@ -217,12 +241,19 @@ pub fn refs(repo: &Path) -> Result<Refs, String> {
             "refs/tags",
         ],
     )?;
+    // Remote names can have slashes in them (`my/fork`).
+    let remote_names = run(Some(repo), &["remote"]).unwrap_or_default();
+    let remote_names: Vec<&str> = remote_names.lines().filter(|r| !r.is_empty()).collect();
     let mut refs = Refs::default();
     for line in out.lines() {
         let f: Vec<&str> = line.split(FS).collect();
-        let [full, short, oid, head, upstream, track, peeled] = f[..] else {
+        let [full, oid, head, upstream, track, peeled] = f[..] else {
             continue;
         };
+        let short = ["refs/heads/", "refs/remotes/", "refs/tags/"]
+            .iter()
+            .find_map(|p| full.strip_prefix(p))
+            .unwrap_or(full);
         // Annotated tags point at a tag object; the commit is the peeled id.
         let target = if peeled.is_empty() { oid } else { peeled };
         let branch = Branch {
@@ -241,7 +272,7 @@ pub fn refs(repo: &Path) -> Result<Refs, String> {
             if rest.ends_with("/HEAD") {
                 continue;
             }
-            let remote = rest.split('/').next().unwrap_or_default().to_owned();
+            let remote = remote_of(rest, &remote_names).to_owned();
             match refs.remotes.iter_mut().find(|(r, _)| *r == remote) {
                 Some((_, list)) => list.push(branch),
                 None => refs.remotes.push((remote, vec![branch])),
@@ -254,6 +285,20 @@ pub fn refs(repo: &Path) -> Result<Refs, String> {
         .map(|s| s.trim().to_owned())
         .unwrap_or_default();
     Ok(refs)
+}
+
+/// The remote the remote-tracking branch `rest` (`my/fork/main`) is of: the longest of
+/// `remotes` it is under, else its first part (a remote since removed from the config).
+fn remote_of<'a>(rest: &'a str, remotes: &[&'a str]) -> &'a str {
+    remotes
+        .iter()
+        .copied()
+        .filter(|r| {
+            rest.strip_prefix(r)
+                .is_some_and(|branch| branch.starts_with('/'))
+        })
+        .max_by_key(|r| r.len())
+        .unwrap_or_else(|| rest.split('/').next().unwrap_or_default())
 }
 
 #[derive(Clone, Debug, Default)]
@@ -282,6 +327,7 @@ pub fn log(repo: &Path, skip: usize, limit: usize) -> Result<Vec<Commit>, String
         Some(repo),
         &[
             "log",
+            NO_SIGNATURE,
             "--exclude=refs/stash",
             "--all",
             "--date-order",
@@ -382,9 +428,11 @@ pub fn commit_detail(repo: &Path, hash: &str) -> Result<CommitDetail, String> {
         Some(repo),
         &[
             "show",
+            NO_SIGNATURE,
             "-s",
             "--date=format-local:%Y-%m-%d %H:%M:%S",
             &format,
+            END_OPTS,
             hash,
         ],
     )?;
@@ -397,11 +445,13 @@ pub fn commit_detail(repo: &Path, hash: &str) -> Result<CommitDetail, String> {
     let diff_args = |kind: &'static str| {
         [
             "show",
+            NO_SIGNATURE,
             "--format=",
             "--diff-merges=first-parent",
             "-M",
             kind,
             "-z",
+            END_OPTS,
             hash,
         ]
     };
@@ -493,6 +543,14 @@ fn parse_numstat(out: &str) -> Vec<(String, Option<u32>, Option<u32>)> {
     result
 }
 
+/// What makes git print a plain patch.
+const PATCH_ARGS: [&str; 4] = [
+    "--no-color",
+    "--no-ext-diff",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+];
+
 /// How a patch is read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DiffOptions {
@@ -504,6 +562,9 @@ pub struct DiffOptions {
 
 impl DiffOptions {
     fn push_args(self, args: &mut Vec<&str>) {
+        // A patch as gitcraft reads it and `git apply` takes it back, whatever the user's
+        // config says (`color.ui=always`, `diff.external`, `diff.noprefix`).
+        args.extend(PATCH_ARGS);
         if self.ignore_ws {
             args.push("-w");
         }
@@ -516,9 +577,34 @@ impl DiffOptions {
 
 /// The patch of one file in a commit.
 pub fn file_diff(repo: &Path, hash: &str, path: &str, opts: DiffOptions) -> Result<String, String> {
-    let mut args = vec!["show", "--format=", "--diff-merges=first-parent", "-M"];
+    let mut args = vec![
+        "show",
+        NO_SIGNATURE,
+        "--format=",
+        "--diff-merges=first-parent",
+        "-M",
+    ];
     opts.push_args(&mut args);
-    args.extend([hash, "--", path]);
+    args.extend([END_OPTS, hash, "--", path]);
+    // Limited to its new name, a file renamed in the commit looks new from top to bottom.
+    let old_path = run(
+        Some(repo),
+        &[
+            "show",
+            NO_SIGNATURE,
+            "--format=",
+            "--diff-merges=first-parent",
+            "-M",
+            "--name-status",
+            "-z",
+            END_OPTS,
+            hash,
+        ],
+    )
+    .ok()
+    .and_then(|out| parse_name_status(&out).into_iter().find(|f| f.path == path))
+    .and_then(|file| file.old_path);
+    args.extend(old_path.as_deref());
     run(Some(repo), &args)
 }
 
@@ -526,7 +612,7 @@ pub fn file_diff(repo: &Path, hash: &str, path: &str, opts: DiffOptions) -> Resu
 /// their line counts.
 pub fn diff_files(repo: &Path, from: &str, to: Option<&str>) -> Result<Vec<ChangedFile>, String> {
     let args = |kind: &'static str| {
-        let mut args = vec!["diff", "-M", kind, "-z", from];
+        let mut args = vec!["diff", "-M", kind, "-z", END_OPTS, from];
         args.extend(to);
         args.push("--");
         args
@@ -551,7 +637,7 @@ pub fn range_file_diff(
 ) -> Result<String, String> {
     let mut args = vec!["diff", "-M"];
     opts.push_args(&mut args);
-    args.push(from);
+    args.extend([END_OPTS, from]);
     args.extend(to);
     args.extend(["--", path]);
     // Limited to its new name, a renamed file looks new from top to bottom.
@@ -565,11 +651,12 @@ pub fn range_file_diff(
 
 /// The best common ancestor of two commits.
 pub fn merge_base(repo: &Path, a: &str, b: &str) -> Result<String, String> {
-    run(Some(repo), &["merge-base", a, b]).map(|s| s.trim().to_owned())
+    run(Some(repo), &["merge-base", END_OPTS, a, b]).map(|s| s.trim().to_owned())
 }
 
 /// The full hash of a branch, tag or abbreviated hash.
 pub fn resolve(repo: &Path, rev: &str) -> Result<String, String> {
+    not_an_option(rev)?;
     run(
         Some(repo),
         &["rev-parse", "--verify", "-q", &format!("{rev}^{{commit}}")],
@@ -582,7 +669,13 @@ pub fn resolve(repo: &Path, rev: &str) -> Result<String, String> {
 pub fn count_apart(repo: &Path, a: &str, b: &str) -> Result<(u32, u32), String> {
     let out = run(
         Some(repo),
-        &["rev-list", "--left-right", "--count", &format!("{a}...{b}")],
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            END_OPTS,
+            &format!("{a}...{b}"),
+        ],
     )?;
     let mut n = out.split_whitespace().map(|x| x.parse().unwrap_or(0));
     Ok((n.next().unwrap_or(0), n.next().unwrap_or(0)))
@@ -594,8 +687,36 @@ pub fn count_apart(repo: &Path, a: &str, b: &str) -> Result<(u32, u32), String> 
 pub fn save_patch(patch: &str) -> Result<PathBuf, String> {
     use std::sync::atomic::{AtomicU32, Ordering};
     static SEQ: AtomicU32 = AtomicU32::new(0);
-    let dir = std::env::temp_dir().join("gitcraft-patches");
+    // One folder per user: it is closed to everyone else below, so a shared one would leave
+    // every user but its first unable to stage a hunk.
+    let user: String = ["USER", "LOGNAME", "USERNAME"]
+        .iter()
+        .find_map(|v| std::env::var(v).ok().filter(|u| !u.is_empty()))
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .collect();
+    let dir = std::env::temp_dir().join(if user.is_empty() {
+        "gitcraft-patches".to_owned()
+    } else {
+        format!("gitcraft-patches-{user}")
+    });
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // `/tmp` is everyone's: a folder someone else made there (or a link to one) could have the
+    // patch read, or swapped before `git apply` reads it. Only its owner can close it to others.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let not_ours = |e: std::io::Error| format!("{} isn't gitcraft's: {e}", dir.display());
+        if std::fs::symlink_metadata(&dir)
+            .map_err(not_ours)?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(format!("{} is a link", dir.display()));
+        }
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(not_ours)?;
+    }
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
             let old = e
@@ -611,7 +732,16 @@ pub fn save_patch(patch: &str) -> Result<PathBuf, String> {
     }
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let path = dir.join(format!("{}-{}-{n}.patch", std::process::id(), now()));
-    std::fs::write(&path, patch).map_err(|e| format!("{}: {e}", path.display()))?;
+    // A new file, never one already there (or a link someone left in its place).
+    let write = || -> std::io::Result<()> {
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?
+            .write_all(patch.as_bytes())
+    };
+    write().map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path)
 }
 
@@ -706,8 +836,15 @@ impl Worktree {
 }
 
 pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, String> {
-    let out = run(Some(repo), &["worktree", "list", "--porcelain", "-z"])?;
-    let mut list = parse_worktrees(&out);
+    let mut list = match run(Some(repo), &["worktree", "list", "--porcelain", "-z"]) {
+        Ok(out) => parse_worktrees(&out, '\0'),
+        // `-z` is git 2.36+; before, one line per field (a path with a line break in it is
+        // misread there).
+        Err(_) => parse_worktrees(
+            &run(Some(repo), &["worktree", "list", "--porcelain"])?,
+            '\n',
+        ),
+    };
     let here = std::fs::canonicalize(repo).ok();
     for wt in &mut list {
         wt.current = here.is_some() && std::fs::canonicalize(&wt.path).ok() == here;
@@ -715,11 +852,12 @@ pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, String> {
     Ok(list)
 }
 
-/// `worktree list --porcelain -z`: `key value\0` lines, an empty line between worktrees.
-fn parse_worktrees(out: &str) -> Vec<Worktree> {
+/// `worktree list --porcelain -z`: `key value\0` lines, an empty line between worktrees
+/// (`sep` is `\n` without `-z`).
+fn parse_worktrees(out: &str, sep: char) -> Vec<Worktree> {
     let mut list: Vec<Worktree> = Vec::new();
     let mut current: Option<Worktree> = None;
-    for line in out.split('\0') {
+    for line in out.split(sep) {
         if line.is_empty() {
             list.extend(current.take());
             continue;
@@ -807,7 +945,8 @@ fn parse_status(out: &str) -> WorkStatus {
             continue;
         };
         let path = chars.as_str().to_owned();
-        let old_path = if matches!(x, 'R' | 'C') {
+        // A rename in the working tree (of a file added with `--intent-to-add`) is `Y`'s.
+        let old_path = if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
             it.next().map(str::to_owned)
         } else {
             None
@@ -846,12 +985,26 @@ pub fn work_diff(repo: &Path, file: &StatusFile, opts: DiffOptions) -> Result<St
     };
     opts.push_args(&mut args);
     args.extend(["--", path]);
+    // A staged rename limited to its new name would look like a new file.
+    if file.area == Area::Staged {
+        args.extend(file.old_path.as_deref());
+    }
     match file.area {
         Area::Staged | Area::Unstaged | Area::Conflicted => run(Some(repo), &args),
         // An untracked file has no history: show it as all added.
         Area::Untracked => run_ok_codes(
             Some(repo),
-            &["diff", "--no-index", "--", "/dev/null", path],
+            &[
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "--no-index",
+                "--",
+                "/dev/null",
+                path,
+            ],
             &[0, 1],
         ),
     }
@@ -862,7 +1015,7 @@ pub fn work_diff(repo: &Path, file: &StatusFile, opts: DiffOptions) -> Result<St
 pub fn file_at(repo: &Path, rev: Option<&str>, path: &str) -> Result<Vec<u8>, String> {
     match rev {
         None => std::fs::read(repo.join(path)).map_err(|e| format!("{path}: {e}")),
-        Some(rev) => run_bytes(Some(repo), &["show", &format!("{rev}:{path}")]),
+        Some(rev) => run_bytes(Some(repo), &["show", END_OPTS, &format!("{rev}:{path}")]),
     }
 }
 
@@ -875,7 +1028,7 @@ pub fn head(repo: &Path) -> String {
 
 /// The full message of HEAD (to amend it).
 pub fn head_message(repo: &Path) -> Result<String, String> {
-    run(Some(repo), &["log", "-1", "--format=%B"]).map(|s| s.trim_end().to_owned())
+    run(Some(repo), &["log", NO_SIGNATURE, "-1", "--format=%B"]).map(|s| s.trim_end().to_owned())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -966,6 +1119,7 @@ pub fn search(repo: &Path, query: &str) -> Result<Vec<String>, String> {
     let mut hashes: Vec<String> = Vec::new();
     let base = [
         "log",
+        NO_SIGNATURE,
         "--exclude=refs/stash",
         "--all",
         "--date-order",
@@ -1004,6 +1158,7 @@ pub fn search_code(repo: &Path, query: &str) -> Result<Vec<String>, String> {
         Some(repo),
         &[
             "log",
+            NO_SIGNATURE,
             "--exclude=refs/stash",
             "--all",
             "--date-order",
@@ -1048,7 +1203,10 @@ pub struct RebaseCommit {
 pub fn rebase_commits(repo: &Path, onto: &str) -> Result<Vec<RebaseCommit>, String> {
     let format = format!("--format={RS}%H{FS}%P{FS}%an{FS}%ae{FS}%s{FS}%B");
     let range = format!("{onto}..HEAD");
-    let out = run(Some(repo), &["log", "--reverse", &format, &range])?;
+    let out = run(
+        Some(repo),
+        &["log", NO_SIGNATURE, "--reverse", &format, END_OPTS, &range],
+    )?;
     Ok(parse_rebase_commits(&out))
 }
 
@@ -1129,13 +1287,15 @@ pub struct FileCommit {
 /// renames.
 pub fn file_history(repo: &Path, rev: Option<&str>, path: &str) -> Result<Vec<FileCommit>, String> {
     let format = format!("--format={RS}%H{FS}%an{FS}%ae{FS}%at{FS}%s");
+    // `-z`: names as they are, not quoted (`"a\"b.txt"`) when they have quotes or tabs in them.
     let mut args = vec![
-        "-c",
-        "core.quotePath=false",
         "log",
+        NO_SIGNATURE,
         "--follow",
         "--name-only",
+        "-z",
         &format,
+        END_OPTS,
     ];
     if let Some(rev) = rev {
         args.push(rev);
@@ -1145,10 +1305,11 @@ pub fn file_history(repo: &Path, rev: Option<&str>, path: &str) -> Result<Vec<Fi
     Ok(parse_file_history(&out))
 }
 
+/// `log --name-only -z`: `RS fields\0`, then `\npath\0` for the file.
 fn parse_file_history(out: &str) -> Vec<FileCommit> {
     out.split(RS)
         .filter_map(|record| {
-            let mut lines = record.lines();
+            let mut lines = record.split('\0').map(|l| l.trim_start_matches('\n'));
             let mut f = lines.next()?.split(FS);
             let mut c = FileCommit {
                 hash: f.next()?.to_owned(),
@@ -1158,7 +1319,7 @@ fn parse_file_history(out: &str) -> Vec<FileCommit> {
                 summary: f.next().unwrap_or_default().to_owned(),
                 path: String::new(),
             };
-            c.path = lines.rfind(|l| !l.trim().is_empty())?.to_owned();
+            c.path = lines.rfind(|l| !l.is_empty())?.to_owned();
             Some(c)
         })
         .collect()
@@ -1186,7 +1347,8 @@ impl BlameLine {
 pub fn blame(repo: &Path, rev: Option<&str>, path: &str) -> Result<Vec<BlameLine>, String> {
     let mut args = vec!["blame", "--porcelain"];
     if let Some(rev) = rev {
-        args.push(rev);
+        // `blame` takes no `--end-of-options`.
+        args.push(not_an_option(rev)?);
     }
     args.extend(["--", path]);
     Ok(parse_blame(&run(Some(repo), &args)?))
@@ -1209,7 +1371,8 @@ fn parse_blame(out: &str) -> Vec<BlameLine> {
         }
         let Some(c) = current.as_mut() else {
             let hash = line.split(' ').next().unwrap_or_default();
-            if hash.len() == 40 {
+            // SHA-1, or SHA-256 in a repository made with `--object-format=sha256`.
+            if matches!(hash.len(), 40 | 64) && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
                 current = Some(known.get(hash).cloned().unwrap_or_else(|| BlameLine {
                     hash: hash.to_owned(),
                     ..BlameLine::default()
@@ -1291,6 +1454,133 @@ mod tests {
         Ok(())
     }
 
+    /// The user's config doesn't change what gitcraft reads, and a ref that looks like an option
+    /// (a tag fetched from somewhere) is read as a ref.
+    #[test]
+    fn hostile_config_and_option_like_refs() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("gitcraft-hostile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let git = |args: &[&str]| run(Some(&dir), args);
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["config", "commit.gpgSign", "false"],
+            &["config", "core.autocrlf", "false"],
+            &["config", "color.ui", "always"],
+            &["config", "diff.external", "false"],
+            &["config", "diff.noprefix", "true"],
+            &["config", "log.showSignature", "true"],
+        ] {
+            git(args)?;
+        }
+        let name = "q\"x.txt";
+        std::fs::write(dir.join(name), "a\n").map_err(|e| e.to_string())?;
+        git(&["add", "-A"])?;
+        git(&["commit", "-qm", "one"])?;
+        std::fs::write(dir.join(name), "b\n").map_err(|e| e.to_string())?;
+        git(&["commit", "-qam", "two"])?;
+        let tag = "--output=written";
+        git(&["update-ref", &format!("refs/tags/{tag}"), "HEAD~1"])?;
+        let head = head(&dir);
+
+        let commits = log(&dir, 0, 10)?;
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].hash, head);
+        let patch = file_diff(&dir, &head, name, DiffOptions::default())?;
+        assert!(patch.starts_with("diff --git \"a/q"), "{patch}");
+        assert!(!patch.contains('\x1b'), "{patch}");
+        let range = range_file_diff(&dir, tag, Some(&head), name, DiffOptions::default())?;
+        assert!(range.contains("+b"), "{range}");
+        assert_eq!(diff_files(&dir, tag, None)?.len(), 1);
+        assert_eq!(count_apart(&dir, tag, "HEAD")?, (0, 1));
+        assert!(merge_base(&dir, tag, "HEAD").is_ok());
+        assert_eq!(rebase_commits(&dir, tag)?.len(), 1);
+        assert_eq!(file_at(&dir, Some(tag), name)?, b"a\n");
+        assert!(resolve(&dir, tag).is_err());
+        assert!(blame(&dir, Some(tag), name).is_err());
+        assert!(!dir.join("written").exists());
+        std::fs::write(dir.join(name), "c\n").map_err(|e| e.to_string())?;
+        let file = StatusFile {
+            path: name.to_owned(),
+            old_path: None,
+            code: 'M',
+            area: Area::Unstaged,
+        };
+        let work = work_diff(&dir, &file, DiffOptions::default())?;
+        assert!(work.contains("+c") && !work.contains('\x1b'), "{work}");
+        let history = file_history(&dir, None, name)?;
+        assert_eq!(history.len(), 2);
+        // A rename is shown as one, in a commit and staged.
+        git(&["mv", name, "moved.txt"])?;
+        let staged = StatusFile {
+            path: "moved.txt".to_owned(),
+            old_path: Some(name.to_owned()),
+            code: 'R',
+            area: Area::Staged,
+        };
+        let work = work_diff(&dir, &staged, DiffOptions::default())?;
+        assert!(work.contains("rename from"), "{work}");
+        git(&["commit", "-qm", "three"])?;
+        let moved = run(Some(&dir), &["rev-parse", "HEAD"])?;
+        let patch = file_diff(&dir, moved.trim(), "moved.txt", DiffOptions::default())?;
+        assert!(patch.contains("rename from"), "{patch}");
+        assert_eq!(head_message(&dir)?, "three");
+        git(&["reset", "-q", "--hard", "HEAD~1"])?;
+        assert!(history.iter().all(|c| c.path == name), "{history:?}");
+        assert_eq!(head_message(&dir)?, "two");
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn remote_with_a_slash() {
+        let remotes = ["my", "my/fork", "origin"];
+        assert_eq!(remote_of("my/fork/main", &remotes), "my/fork");
+        assert_eq!(remote_of("my/main", &remotes), "my");
+        assert_eq!(remote_of("origin/a/b", &remotes), "origin");
+        assert_eq!(remote_of("gone/x", &remotes), "gone");
+    }
+
+    /// A branch and a tag of the same name: the branch is still `x`, not `heads/x`; remote
+    /// branches are grouped by their remote even when its name has a slash.
+    #[test]
+    fn refs_names_and_remotes() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("gitcraft-refs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let git = |args: &[&str]| run(Some(&dir), args);
+        for args in [
+            &["init", "-q", "-b", "x"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["config", "commit.gpgSign", "false"],
+            &["commit", "-q", "--allow-empty", "-m", "one"],
+            &["tag", "x"],
+            &["remote", "add", "my/fork", "https://example.invalid/a.git"],
+            &["update-ref", "refs/remotes/my/fork/main", "HEAD"],
+        ] {
+            git(args)?;
+        }
+        let r = refs(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        let r = r?;
+        assert_eq!(
+            r.local.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(),
+            ["x"]
+        );
+        assert_eq!(r.current.as_deref(), Some("x"));
+        assert_eq!(
+            r.tags.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(),
+            ["x"]
+        );
+        assert_eq!(r.remotes.len(), 1);
+        assert_eq!(r.remotes[0].0, "my/fork");
+        assert_eq!(r.remotes[0].1[0].name, "my/fork/main");
+        Ok(())
+    }
+
     #[test]
     fn gitignore_lines() {
         assert_eq!(gitignore_with("", "/a.log").as_deref(), Some("/a.log\n"));
@@ -1309,13 +1599,13 @@ mod tests {
     #[test]
     fn file_history_follows_renames() {
         let out = format!(
-            "{RS}aaa{FS}Ann{FS}ann@x{FS}200{FS}Rename\n\nsrc/new.rs\n{RS}bbb{FS}Bob{FS}bob@x{FS}100{FS}Add\n\nold.rs\n"
+            "{RS}aaa{FS}Ann{FS}ann@x{FS}200{FS}Rename\0\nsrc/new \"q\".rs\0{RS}bbb{FS}Bob{FS}bob@x{FS}100{FS}Add\0\nold.rs\0"
         );
         let h = parse_file_history(&out);
         assert_eq!(h.len(), 2);
         assert_eq!(
             (h[0].hash.as_str(), h[0].path.as_str()),
-            ("aaa", "src/new.rs")
+            ("aaa", "src/new \"q\".rs")
         );
         assert_eq!(
             (h[1].author.as_str(), h[1].time, h[1].path.as_str()),
@@ -1368,6 +1658,30 @@ mod tests {
         assert_eq!(s.conflicted.len(), 1);
     }
 
+    /// A file added with `--intent-to-add` under a new name is renamed on the working tree's
+    /// side: its old name follows, and isn't an entry of its own.
+    #[test]
+    fn status_rename_in_the_working_tree() {
+        let s = parse_status(" R new.txt\0ab c\0M  other.rs\0");
+        let unstaged: Vec<_> = s
+            .unstaged
+            .iter()
+            .map(|f| (f.code, f.path.as_str(), f.old_path.as_deref()))
+            .collect();
+        assert_eq!(unstaged, vec![('R', "new.txt", Some("ab c"))]);
+        let staged: Vec<_> = s.staged.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(staged, vec!["other.rs"]);
+    }
+
+    #[test]
+    fn blame_of_a_sha256_repository() {
+        let a = "a".repeat(64);
+        let out = format!("{a} 1 1 1\nauthor Ann\nsummary First\nfilename f\n\tone\n");
+        let b = parse_blame(&out);
+        assert_eq!(b.len(), 1);
+        assert_eq!((b[0].hash.len(), b[0].author.as_str()), (64, "Ann"));
+    }
+
     #[test]
     fn relative_times() {
         assert_eq!(relative_time(1000, 1030), "just now");
@@ -1384,8 +1698,10 @@ mod tests {
         let out = "worktree C:/src/app\0HEAD abc\0branch refs/heads/main\0\0\
                    worktree C:/src/app-fix\0HEAD def\0detached\0locked moving disks\0\0\
                    worktree C:/gone\0HEAD 123\0branch refs/heads/old\0prunable gitdir file points to non-existent location\0\0";
-        let list = parse_worktrees(out);
+        let list = parse_worktrees(out, '\0');
         assert_eq!(list.len(), 3);
+        // Git before 2.36 has no `-z`: the same, a field per line.
+        assert_eq!(parse_worktrees(&out.replace('\0', "\n"), '\n'), list);
         assert!(list[0].main && !list[1].main);
         assert_eq!(list[0].branch.as_deref(), Some("main"));
         assert_eq!(list[1].branch, None);

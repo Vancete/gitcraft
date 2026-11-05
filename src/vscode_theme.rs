@@ -167,11 +167,23 @@ fn load(editor: &Editor) -> Option<EditorTheme> {
         Some(_) => true,
         None => ui_dark,
     };
-    Some(EditorTheme {
-        theme: build(&name, &colors, &rules),
-        name,
-        dark,
-    })
+    let mut theme = build(&name, &colors, &rules);
+    default_foreground(&mut theme, dark);
+    Some(EditorTheme { theme, name, dark })
+}
+
+/// VS Code's own `editor.foreground` for a theme that sets none; syntect would otherwise
+/// paint all plain text black, unreadable on a dark background.
+fn default_foreground(theme: &mut Theme, dark: bool) {
+    if theme.settings.foreground.is_none() {
+        let v = if dark { 0xbb } else { 0x33 };
+        theme.settings.foreground = Some(Color {
+            r: v,
+            g: v,
+            b: v,
+            a: 255,
+        });
+    }
 }
 
 /// Finds the theme file contributed under `name` (its label or id), and whether VS Code
@@ -431,6 +443,25 @@ mod tests {
         );
         assert_eq!(parse_color("#12345"), None);
         assert_eq!(parse_color("red"), None);
+    }
+
+    #[test]
+    fn a_theme_without_a_foreground_gets_a_readable_one() {
+        let mut theme = build("Bare", &serde_json::Map::new(), &[]);
+        default_foreground(&mut theme, true);
+        assert_eq!(theme.settings.foreground, parse_color("#bbbbbb"));
+        let mut theme = build("Bare", &serde_json::Map::new(), &[]);
+        default_foreground(&mut theme, false);
+        assert_eq!(theme.settings.foreground, parse_color("#333333"));
+        // A theme's own foreground stays.
+        let colors = serde_json::json!({ "editor.foreground": "#123456" });
+        let mut theme = build(
+            "Own",
+            colors.as_object().unwrap_or(&serde_json::Map::new()),
+            &[],
+        );
+        default_foreground(&mut theme, true);
+        assert_eq!(theme.settings.foreground, parse_color("#123456"));
     }
 
     #[test]

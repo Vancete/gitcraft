@@ -103,6 +103,23 @@ impl PrExtras {
 /// Reads all of it for the pull request `number` of `owner/name`.
 pub fn fetch(repo: &Path, host: &str, path: &str, number: u64) -> Result<PrExtras, String> {
     let (owner, name) = path.split_once('/').ok_or("unexpected repository name")?;
+    // A push between two pages would put threads of two commits together: it's read again.
+    for _ in 0..2 {
+        if let Some(extras) = fetch_pages(repo, host, owner, name, number)? {
+            return Ok(extras);
+        }
+    }
+    Err("The pull request changed while it was read. Load it again.".to_owned())
+}
+
+/// All pages of it, or `None` if they weren't all of the same commit.
+fn fetch_pages(
+    repo: &Path,
+    host: &str,
+    owner: &str,
+    name: &str,
+    number: u64,
+) -> Result<Option<PrExtras>, String> {
     let mut extras: Option<PrExtras> = None;
     let mut after: Option<String> = None;
     loop {
@@ -117,17 +134,28 @@ pub fn fetch(repo: &Path, host: &str, path: &str, number: u64) -> Result<PrExtra
         let out = forge::tool_with_input(Forge::GitHub, repo, &args, Some(&payload.to_string()))?;
         let page = parse(&out)?;
         after = page.next_page.clone();
-        extras = Some(match extras {
-            None => page,
+        extras = match extras {
+            None => Some(page),
             Some(mut all) => {
-                all.threads.extend(page.threads);
-                all
+                if !add_page(&mut all, page) {
+                    return Ok(None);
+                }
+                Some(all)
             }
-        });
+        };
         if after.is_none() {
-            return extras.ok_or_else(|| "no answer".to_owned());
+            return Ok(extras);
         }
     }
+}
+
+/// Adds the threads of a further page, if it's of the same commit as the first.
+fn add_page(all: &mut PrExtras, page: PrExtras) -> bool {
+    if page.head_oid != all.head_oid {
+        return false;
+    }
+    all.threads.extend(page.threads);
+    true
 }
 
 pub(crate) fn parse(json: &str) -> Result<PrExtras, String> {
@@ -352,6 +380,20 @@ mod tests {
     #[test]
     fn knows_when_there_are_more_threads() {
         assert_eq!(parsed().next_page.as_deref(), Some("CURSOR"));
+    }
+
+    #[test]
+    fn pages_of_another_commit_are_not_put_together() {
+        let mut all = parsed();
+        let same = parsed();
+        assert!(add_page(&mut all, same));
+        assert_eq!(all.threads.len(), 4);
+        let pushed = PrExtras {
+            head_oid: "newer".to_owned(),
+            ..parsed()
+        };
+        assert!(!add_page(&mut all, pushed));
+        assert_eq!(all.threads.len(), 4);
     }
 
     #[test]

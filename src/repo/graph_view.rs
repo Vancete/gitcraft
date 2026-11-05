@@ -1231,12 +1231,23 @@ impl Badge {
 /// Turns `git log --format=%D` decorations into pills: `x` and `origin/x` at the same commit
 /// become one pill marked local and remote.
 fn badges(decorations: &[String], refs: &Refs) -> Vec<Badge> {
+    // The remote whose branch list has it, else the longest remote it is under (`my/fork/main`
+    // is `my/fork`'s even when there is a remote `my`), unless it is a local branch's name.
     let remote_of = |d: &str| {
-        refs.remotes.iter().find_map(|(remote, _)| {
-            d.strip_prefix(remote.as_str())
-                .and_then(|r| r.strip_prefix('/'))
-                .map(|branch| (remote.clone(), branch.to_owned()))
-        })
+        let remote = refs
+            .remotes
+            .iter()
+            .find(|(_, list)| list.iter().any(|b| b.name == d))
+            .map(|(remote, _)| remote.as_str())
+            .or_else(|| {
+                if refs.local.iter().any(|b| b.name == d) {
+                    return None;
+                }
+                let names: Vec<&str> = refs.remotes.iter().map(|(r, _)| r.as_str()).collect();
+                super::sidebar::remote_of(d, &names)
+            })?;
+        let branch = super::sidebar::remote_short(d, remote)?;
+        Some((remote.to_owned(), branch.to_owned()))
     };
     fn branch(out: &mut Vec<Badge>, name: &str) -> usize {
         match out
@@ -1516,6 +1527,50 @@ mod tests {
         let widths = Bar::Graph.drag(&prefs, None, 10.0, 700.0);
         save_drag(&mut next, Bar::Graph, &prefs, &widths);
         assert_eq!(next.graph_width, 110.0);
+    }
+
+    fn branch(name: &str) -> git::Branch {
+        git::Branch {
+            name: name.to_owned(),
+            target: String::new(),
+            is_head: false,
+            upstream: String::new(),
+            track: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_remote_named_like_the_start_of_another_does_not_take_its_branches() {
+        let refs = Refs {
+            remotes: vec![
+                ("my".to_owned(), vec![branch("my/dev")]),
+                ("my/fork".to_owned(), vec![branch("my/fork/main")]),
+            ],
+            ..Refs::default()
+        };
+        let b = badges(&["my/fork/main".to_owned()], &refs);
+        assert_eq!(b[0].label, "main");
+        assert_eq!(b[0].remotes, ["my/fork"]);
+        assert_eq!(b[0].git_ref(), "my/fork/main");
+        // Not in the lists yet (refs not reloaded): still the longest remote.
+        let b = badges(&["my/fork/topic".to_owned()], &refs);
+        assert_eq!(
+            (b[0].label.as_str(), b[0].remotes.as_slice()),
+            ("topic", &["my/fork".to_owned()][..])
+        );
+    }
+
+    #[test]
+    fn a_local_branch_named_under_a_remote_is_local() {
+        let refs = Refs {
+            local: vec![branch("origin/wip")],
+            remotes: vec![("origin".to_owned(), vec![branch("origin/main")])],
+            ..Refs::default()
+        };
+        let b = badges(&["origin/wip".to_owned()], &refs);
+        assert_eq!(b[0].label, "origin/wip");
+        assert!(b[0].local && b[0].remotes.is_empty());
+        assert_eq!(b[0].git_ref(), "origin/wip");
     }
 
     #[test]

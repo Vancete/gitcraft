@@ -33,6 +33,22 @@ pub(super) fn deletes_branch(own_branch: bool, repo_deletes: bool, choice: Optio
     own_branch && !repo_deletes && choice == Some(true)
 }
 
+/// What to say of checks that failed or still run when it can be merged. Past the rules (a
+/// blocked pull request merged as an admin) they may well be required ones.
+fn checks_note(blocked: bool, merge_state: &str, failed: usize, running: usize) -> Option<String> {
+    if blocked || (failed == 0 && running == 0) {
+        return None;
+    }
+    let required = if merge_state == "BLOCKED" {
+        "some may be required"
+    } else {
+        "none is required"
+    };
+    Some(format!(
+        "{failed} check(s) failed and {running} still running, but {required}."
+    ))
+}
+
 pub(super) fn merge_box(ui: &mut Ui, draft: &mut PrDraft, d: &PrDetails, acts: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
     let extras = &d.extras;
@@ -92,14 +108,8 @@ pub(super) fn merge_box(ui: &mut Ui, draft: &mut PrDraft, d: &PrDetails, acts: &
         ui.colored_label(t.danger, error);
     }
     let (_, failed, running, _) = crate::pull_request::tally(&d.checks);
-    if blocker.is_none() && (failed > 0 || running > 0) {
-        ui.label(
-            RichText::new(format!(
-                "{failed} check(s) failed and {running} still running, but none is required."
-            ))
-            .color(t.warning)
-            .small(),
-        );
+    if let Some(note) = checks_note(blocker.is_some(), &d.merge_state, failed, running) {
+        ui.label(RichText::new(note).color(t.warning).small());
     }
     if let Some(blocker) = blocker {
         ui.label(RichText::new(blocker).color(t.text_faint).small());
@@ -141,5 +151,23 @@ pub(super) fn merge_box(ui: &mut Ui, draft: &mut PrDraft, d: &PrDetails, acts: &
         .clicked()
     {
         acts.push(Action::Pr(PrAct::AskMerge));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checks_note;
+
+    #[test]
+    fn checks_past_the_rules_are_not_said_to_be_optional() {
+        assert_eq!(checks_note(false, "CLEAN", 0, 0), None);
+        assert_eq!(checks_note(true, "UNSTABLE", 1, 0), None);
+        assert_eq!(
+            checks_note(false, "UNSTABLE", 1, 2).as_deref(),
+            Some("1 check(s) failed and 2 still running, but none is required.")
+        );
+        assert!(
+            checks_note(false, "BLOCKED", 1, 0).is_some_and(|n| !n.contains("none is required"))
+        );
     }
 }
