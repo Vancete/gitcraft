@@ -51,6 +51,8 @@ struct StripActions {
     switch_to: Option<PathBuf>,
     /// The active tab's worktree is to be closed.
     close_worktree: bool,
+    /// The tab closed last is to be opened again.
+    reopen: bool,
 }
 
 /// A tab's name, laid out, its colour, the tab's width, its worktree chip and how many of its
@@ -77,6 +79,8 @@ struct TabEnv<'a> {
     active: usize,
     /// The tab being dragged, if any.
     dragging: Option<usize>,
+    /// A closed tab can be opened again.
+    can_reopen: bool,
     tab_looks: &'a BTreeMap<PathBuf, TabLook>,
     switcher_query: &'a mut String,
     switcher_focus: &'a mut bool,
@@ -135,6 +139,7 @@ impl App {
         let mut env = TabEnv {
             active: self.active,
             dragging,
+            can_reopen: !self.closed.is_empty(),
             tab_looks: &self.tab_looks,
             switcher_query: &mut self.switcher_query,
             switcher_focus: &mut self.switcher_focus,
@@ -326,6 +331,9 @@ impl App {
         }
         if actions.add {
             self.new_tab();
+        }
+        if actions.reopen {
+            self.reopen_closed_tab(ctx);
         }
         // Opened and closed after the strip is drawn.
         if actions.switch_to.is_some() {

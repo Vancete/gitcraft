@@ -124,15 +124,31 @@ pub(super) fn tab_ui(ui: &mut Ui, placed: Placed<'_>, env: &mut TabEnv<'_>) {
         });
         env.actions.select = Some(i);
     }
-    if let Tab::Repo(r) = tab {
-        egui::Popup::context_menu(&resp)
-            .style(theme::menu_style)
-            .show(|ui| {
+    egui::Popup::context_menu(&resp)
+        .style(theme::menu_style)
+        .show(|ui| {
+            if ui
+                .button("Close tab")
+                .on_hover_text("Ctrl+W, or middle-click the tab")
+                .clicked()
+            {
+                env.actions.close = Some(i);
+            }
+            if ui
+                .add_enabled(env.can_reopen, egui::Button::new("Reopen closed tab"))
+                .on_hover_text("Ctrl+Shift+T")
+                .on_disabled_hover_text("No tab closed yet")
+                .clicked()
+            {
+                env.actions.reopen = true;
+            }
+            if let Tab::Repo(r) = tab {
+                ui.separator();
                 if let Some(new) = tab_look::menu(ui, look) {
                     env.actions.restyle = Some((r.path.clone(), new));
                 }
-            });
-    }
+            }
+        });
     if env.dragging.is_none() {
         resp.clone().on_hover_text(tooltip);
     }

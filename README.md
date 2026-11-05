@@ -12,8 +12,8 @@ so your config, credentials and hooks apply as usual.
 
 - Start page: checks that `git` is installed; open, create (`git init`) or clone a repository;
   recent repositories.
-- Browser-like tabs, one per repository (Ctrl+T, Ctrl+W, middle-click). Open tabs, recents,
-  theme and settings are remembered.
+- Browser-like tabs, one per repository (Ctrl+T, Ctrl+W, middle-click; Ctrl+Shift+T reopens a
+  closed one). Open tabs, recents, theme and settings are remembered.
 - Changes made elsewhere (editor, terminal) show up by themselves: the folder is watched.
 
 **Graph**

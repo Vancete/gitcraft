@@ -15,6 +15,7 @@ pub(super) struct Palette {
 /// What a palette entry does outside the open repository.
 enum AppCommand {
     NewTab,
+    ReopenTab,
     Open,
     Create,
     Clone,
@@ -72,6 +73,16 @@ impl App {
                 Entry::App(AppCommand::Manual),
             ),
         ];
+        if !self.closed.is_empty() {
+            list.insert(
+                1,
+                (
+                    "Reopen closed tab".to_owned(),
+                    "Ctrl+Shift+T".to_owned(),
+                    Entry::App(AppCommand::ReopenTab),
+                ),
+            );
+        }
         for kind in ThemeKind::ALL {
             list.push((
                 format!("Theme: {}", kind.label()),
@@ -90,6 +101,7 @@ impl App {
     fn run_entry(&mut self, entry: Entry, ctx: &egui::Context) {
         match entry {
             Entry::App(AppCommand::NewTab) => self.new_tab(),
+            Entry::App(AppCommand::ReopenTab) => self.reopen_closed_tab(ctx),
             Entry::App(AppCommand::Open) => self.pick_existing(ctx),
             Entry::App(AppCommand::Create) => self.pick_new(ctx),
             Entry::App(AppCommand::Clone) => self.start_clone(),

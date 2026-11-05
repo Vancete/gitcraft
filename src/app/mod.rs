@@ -5,6 +5,7 @@ mod home;
 mod palette;
 mod panels;
 mod tab_strip;
+mod tabs;
 #[cfg(test)]
 mod tests;
 mod worktrees;
@@ -92,6 +93,8 @@ pub struct App {
     manual_open: bool,
     palette: Option<Palette>,
     toasts: Vec<Toast>,
+    /// The folders of the last repository tabs closed, the last one at the end.
+    closed: Vec<PathBuf>,
     tab_drag: Option<TabDrag>,
 }
 
@@ -124,6 +127,7 @@ impl App {
             manual_open: false,
             palette: None,
             toasts: Vec::new(),
+            closed: Vec::new(),
             tab_drag: None,
             error: None,
             was_focused: true,
@@ -214,59 +218,6 @@ impl App {
         self.recent.truncate(MAX_RECENT);
     }
 
-    fn close_tab(&mut self, i: usize, ctx: &egui::Context) {
-        if i >= self.tabs.len() {
-            return;
-        }
-        // Work still going on in a parked worktree isn't closed with a click on what is showing.
-        if let Some(Tab::Repo(r)) = self.tabs.get_mut(i)
-            && let Some(next) = r.successor_with_work()
-        {
-            *r = next;
-            r.resume(ctx);
-            let name = r.label(true);
-            let name = name.branch.unwrap_or(name.repo);
-            self.active = i;
-            self.toasts.push(Toast::new(
-                format!("{name} still has work going on, so the tab now shows it"),
-                false,
-            ));
-            return;
-        }
-        self.tabs.remove(i);
-        // A drag going on holds a tab by its index, which now names another one.
-        self.tab_drag = None;
-        if self.tabs.is_empty() {
-            self.tabs.push(Tab::Home);
-        }
-        if self.active > i || self.active >= self.tabs.len() {
-            self.active = self.active.saturating_sub(1);
-        }
-    }
-
-    /// Moves tab `from` to index `to`; the same tab stays active.
-    fn move_tab(&mut self, from: usize, to: usize) {
-        if from >= self.tabs.len() || to >= self.tabs.len() || from == to {
-            return;
-        }
-        let tab = self.tabs.remove(from);
-        self.tabs.insert(to, tab);
-        self.active = if self.active == from {
-            to
-        } else if from < self.active && to >= self.active {
-            self.active - 1
-        } else if from > self.active && to <= self.active {
-            self.active + 1
-        } else {
-            self.active
-        };
-    }
-
-    fn new_tab(&mut self) {
-        self.tabs.push(Tab::Home);
-        self.active = self.tabs.len() - 1;
-    }
-
     fn set_theme(&mut self, ctx: &egui::Context, kind: ThemeKind) {
         self.theme = kind;
         theme::apply(ctx, kind);
@@ -295,9 +246,11 @@ impl App {
             || self.palette.is_some()
             || self.manual_open
             || ctx.egui_wants_keyboard_input();
-        let (new_tab, close, refresh, focused, palette, manual) = ctx.input(|i| {
+        let (new_tab, reopen, close, refresh, focused, palette, manual) = ctx.input(|i| {
+            let t = i.modifiers.command && i.key_pressed(Key::T);
             (
-                i.modifiers.command && i.key_pressed(Key::T),
+                t && !i.modifiers.shift,
+                t && i.modifiers.shift,
                 i.modifiers.command && i.key_pressed(Key::W),
                 i.key_pressed(Key::F5),
                 i.focused,
@@ -317,6 +270,9 @@ impl App {
         }
         if new_tab && !modal_open {
             self.new_tab();
+        }
+        if reopen && !modal_open {
+            self.reopen_closed_tab(ctx);
         }
         if close && !modal_open {
             self.close_tab(self.active, ctx);

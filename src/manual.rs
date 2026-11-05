@@ -69,6 +69,7 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Cmd+T", "New tab"),
             ("Cmd+W", "Close the tab (or middle-click it)"),
+            ("Cmd+Shift+T", "Reopen the tab closed last"),
             ("Cmd+P", "Command palette: every action and branch"),
             ("F5", "Reload the repository"),
             ("F1", "This manual"),
