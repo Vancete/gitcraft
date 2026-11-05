@@ -255,6 +255,22 @@ pub fn location(url: &str) -> Option<(String, String)> {
     (!host.is_empty() && path.contains('/')).then(|| (host.to_lowercase(), path.to_owned()))
 }
 
+/// The web page of the repository at remote `url`: `https://github.com/owner/repo` for
+/// `git@github.com:owner/repo.git`. `None` for a local path, which has no page.
+pub fn web_url(url: &str) -> Option<String> {
+    let (host, path) = location(url)?;
+    // `C:/repos/x` reads as host `c`; a host that serves pages has a domain.
+    if !host.contains('.') {
+        return None;
+    }
+    let scheme = if url.trim_start().to_lowercase().starts_with("http://") {
+        "http"
+    } else {
+        "https"
+    };
+    Some(format!("{scheme}://{host}/{path}"))
+}
+
 /// GitHub accounts' avatars by commit email, from the repository's latest commits (the API ties
 /// each commit to the account its email belongs to). Through `gh` when it's installed (private
 /// repositories, higher limits), else GitHub's public API.
@@ -319,6 +335,20 @@ mod tests {
             Some(("gitlab.example.org".to_owned(), "group/sub/proj".to_owned()))
         );
         assert_eq!(location("/srv/git/repo.git"), None);
+    }
+
+    #[test]
+    fn web_pages_of_remotes() {
+        let page = Some("https://github.com/JKamsker/gitcraft".to_owned());
+        assert_eq!(web_url("https://github.com/JKamsker/gitcraft.git"), page);
+        assert_eq!(web_url("git@github.com:JKamsker/gitcraft.git"), page);
+        assert_eq!(web_url("ssh://git@github.com:22/JKamsker/gitcraft"), page);
+        assert_eq!(
+            web_url("http://git.example.org/team/repo.git"),
+            Some("http://git.example.org/team/repo".to_owned())
+        );
+        assert_eq!(web_url("C:/repos/gitcraft"), None);
+        assert_eq!(web_url("/srv/git/repo.git"), None);
     }
 
     #[test]

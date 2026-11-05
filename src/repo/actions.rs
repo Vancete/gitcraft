@@ -225,6 +225,13 @@ impl RepoTab {
                 Action::OpenInEditor(PathBuf::new()),
             ),
         ];
+        if let Some(url) = self.web_page() {
+            items.push((
+                "Open in browser".into(),
+                "remote".into(),
+                Action::OpenUrl(url),
+            ));
+        }
         if !self.refs.head.is_empty() {
             items.push((
                 "Create branch".into(),
@@ -244,6 +251,9 @@ impl RepoTab {
                     "branch".into(),
                     Action::Checkout(b.name.clone()),
                 ));
+                if let Some((to, push)) = self.push_branch(b) {
+                    items.push((format!("Push {} to {to}", b.name), "remote".into(), push));
+                }
             }
         }
         if let Some(current) = &self.refs.current {

@@ -9,7 +9,7 @@ use crate::repo::branch_tree::{self, LeafRow, TreeView};
 use crate::repo::graph_view;
 use crate::repo::pinned_sections::{Button, Header, Sections};
 use crate::repo::{
-    Action, Dialog, Refresh, RepoTab, Undo, compare_action, fast_forward_action, merge_action, ops,
+    Action, Dialog, RepoTab, Undo, compare_action, fast_forward_action, merge_action, ops,
     rebase_action,
 };
 use crate::settings::Settings;
@@ -228,18 +228,42 @@ impl RepoTab {
         }
     }
 
-    /// Push `b`, and open or create its pull request.
+    /// Push `b` (checked out or not), set what it tracks, and open or create its pull request.
     fn publish_items(&self, ui: &mut Ui, acts: &mut Vec<Action>, b: &Branch, idle: bool) {
-        if let Some(remote) = self.default_remote()
+        if let Some((to, push)) = self.push_branch(b)
             && ui
-                .add_enabled(idle, egui::Button::new(format!("Push to {remote}")))
+                .add_enabled(idle, egui::Button::new(format!("Push to {to}")))
                 .clicked()
         {
-            acts.push(Action::Ops {
-                label: format!("Push {}", b.name),
-                ops: ops(&[&["push", "-u", &remote, &b.name]]),
-                refresh: Refresh::All,
-            });
+            acts.push(push);
+        }
+        if let Some(remote) = self.default_remote()
+            && ui
+                .add_enabled(idle, egui::Button::new("Set upstream…"))
+                .clicked()
+        {
+            let (remote, name) = self
+                .split_upstream(&b.upstream)
+                .map(|(r, n)| (r, n.to_owned()))
+                .unwrap_or((remote, b.name.clone()));
+            let undo = if b.upstream.is_empty() {
+                ops(&[&["branch", "--unset-upstream", &b.name]])
+            } else {
+                self.track_ops(&b.name, &b.upstream)
+            };
+            acts.push(Action::Dialog(Dialog::set_upstream(
+                &b.name, remote, &name, undo,
+            )));
+        }
+        if !b.upstream.is_empty()
+            && ui
+                .add_enabled(
+                    idle,
+                    egui::Button::new(format!("Stop tracking {}", b.upstream)),
+                )
+                .clicked()
+        {
+            acts.push(self.unset_upstream_action(b));
         }
         let Some(forge) = self.forge else { return };
         match self.prs.iter().find(|p| p.branch == b.name) {

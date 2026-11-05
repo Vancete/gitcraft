@@ -128,11 +128,21 @@ impl RepoTab {
         if search.clicked() {
             acts.push(Action::ToggleSearch);
         }
-        let open =
-            icons::tool_button(ui, "external-link", "", true).on_hover_text("Open the folder…");
+        let open = icons::tool_button(ui, "external-link", "", true)
+            .on_hover_text("Open the folder or the repository's page…");
+        let page = self.web_page();
         egui::Popup::menu(&open)
             .style(crate::theme::menu_style)
             .show(|ui| {
+                let browser = ui
+                    .add_enabled(page.is_some(), egui::Button::new("Open in browser"))
+                    .on_disabled_hover_text("No remote with a web page");
+                if let Some(url) = &page {
+                    let browser = browser.on_hover_text(url);
+                    if browser.clicked() {
+                        acts.push(Action::OpenUrl(url.clone()));
+                    }
+                }
                 if ui.button(reveal_label()).clicked() {
                     acts.push(Action::OpenPath(PathBuf::new()));
                 }

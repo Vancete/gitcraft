@@ -3,9 +3,9 @@
 use std::time::Instant;
 
 use super::operations::stash_push_args;
-use super::{Msg, OpKind, Refresh, RepoTab, Undo, ops, sidebar, spawn};
+use super::{Action, Msg, OpKind, Refresh, RepoTab, Undo, ops, sidebar, spawn};
 use crate::forge;
-use crate::git::{self, InProgress};
+use crate::git::{self, Branch, InProgress};
 
 impl RepoTab {
     /// The checked-out branch, or HEAD's commit when detached (empty without commits).
@@ -117,6 +117,105 @@ impl RepoTab {
             .find(|r| *r == "origin")
             .or_else(|| self.remotes.first().map(|r| r.name.as_str()))
             .map(str::to_owned)
+    }
+
+    /// The remote and the branch on it that the remote-tracking `upstream` (`origin/main`) is.
+    pub(super) fn split_upstream<'a>(&self, upstream: &'a str) -> Option<(String, &'a str)> {
+        let names: Vec<&str> = self.remotes.iter().map(|r| r.name.as_str()).collect();
+        let remote = sidebar::remote_of(upstream, &names)?;
+        Some((remote.to_owned(), sidebar::remote_short(upstream, remote)?))
+    }
+
+    /// Pushes `b`, checked out or not: to the branch it tracks, else publishes it on the
+    /// default remote and tracks that. With where it goes: `origin/main`, or `origin`.
+    pub(super) fn push_branch(&self, b: &Branch) -> Option<(String, Action)> {
+        let tracked = if b.upstream_gone() {
+            None
+        } else {
+            self.split_upstream(&b.upstream)
+        };
+        // Full refs: a tag of the same name must not be what is pushed.
+        let (to, args) = match tracked {
+            Some((remote, name)) => (
+                b.upstream.clone(),
+                vec![
+                    "push".to_owned(),
+                    remote,
+                    format!("refs/heads/{}:refs/heads/{name}", b.name),
+                ],
+            ),
+            None => {
+                let remote = self.default_remote()?;
+                (
+                    remote.clone(),
+                    vec![
+                        "push".to_owned(),
+                        "-u".to_owned(),
+                        remote,
+                        format!("refs/heads/{0}:refs/heads/{0}", b.name),
+                    ],
+                )
+            }
+        };
+        let action = Action::Ops {
+            label: format!("Push {}", b.name),
+            ops: vec![args],
+            refresh: Refresh::All,
+        };
+        Some((to, action))
+    }
+
+    /// Makes `b` track nothing, undoably.
+    pub(super) fn unset_upstream_action(&self, b: &Branch) -> Action {
+        let unset = vec![
+            "branch".to_owned(),
+            "--unset-upstream".to_owned(),
+            b.name.clone(),
+        ];
+        Action::UndoableOps {
+            label: format!("Stop tracking {}", b.upstream),
+            ops: vec![unset.clone()],
+            refresh: Refresh::All,
+            undo: Undo::Custom {
+                undo: self.track_ops(&b.name, &b.upstream),
+                redo: vec![unset],
+            },
+        }
+    }
+
+    /// Makes `branch` track `upstream` (`origin/main`) through its config, which works even
+    /// when the remote branch is gone (`git branch -u` refuses then).
+    pub(super) fn track_ops(&self, branch: &str, upstream: &str) -> Vec<Vec<String>> {
+        let Some((remote, name)) = self.split_upstream(upstream) else {
+            return Vec::new();
+        };
+        vec![
+            vec![
+                "config".to_owned(),
+                format!("branch.{branch}.remote"),
+                remote,
+            ],
+            vec![
+                "config".to_owned(),
+                format!("branch.{branch}.merge"),
+                format!("refs/heads/{name}"),
+            ],
+        ]
+    }
+
+    /// The web page of the repository: the one of the remote the checked-out branch tracks
+    /// (a fork's, not the repository it was forked from), else of the default remote.
+    pub(super) fn web_page(&self) -> Option<String> {
+        let tracked = self
+            .refs
+            .current
+            .as_ref()
+            .and_then(|c| self.refs.local.iter().find(|b| &b.name == c))
+            .and_then(|b| self.split_upstream(&b.upstream))
+            .map(|(remote, _)| remote);
+        let remote = tracked.or_else(|| self.default_remote())?;
+        let url = &self.remotes.iter().find(|r| r.name == remote)?.url;
+        forge::web_url(url)
     }
 
     pub(super) fn push(&mut self, ctx: &egui::Context) {

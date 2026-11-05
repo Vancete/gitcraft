@@ -3,6 +3,7 @@
 mod branch;
 mod confirm;
 mod remote;
+mod upstream;
 mod worktree;
 
 use std::path::{Path, PathBuf};
@@ -72,6 +73,14 @@ pub enum Dialog {
         original: Option<(String, String)>,
         name: String,
         url: String,
+        focus: bool,
+    },
+    /// The remote branch `branch` tracks: `remote`/`name`. `undo` brings back the one before.
+    SetUpstream {
+        branch: String,
+        remote: String,
+        name: String,
+        undo: Vec<Vec<String>>,
         focus: bool,
     },
     /// Username and password / token for an HTTPS remote that asked for them.
@@ -179,6 +188,16 @@ impl Dialog {
         }
     }
 
+    pub fn set_upstream(branch: &str, remote: String, name: &str, undo: Vec<Vec<String>>) -> Self {
+        Dialog::SetUpstream {
+            branch: branch.to_owned(),
+            remote,
+            name: name.to_owned(),
+            undo,
+            focus: true,
+        }
+    }
+
     pub fn create_pr(noun: &str, branch: &str, base: &str, title: &str) -> Self {
         Dialog::CreatePr {
             noun: noun.to_owned(),
@@ -241,6 +260,8 @@ impl RepoTab {
 
         let local = &self.refs.local;
         let worktrees = &self.worktrees;
+        let remote_names: Vec<&str> = self.remotes.iter().map(|r| r.name.as_str()).collect();
+        let remote_branches = &self.refs.remotes;
         // What a new branch's undo checks out again.
         let previous = self
             .refs
@@ -303,6 +324,23 @@ impl RepoTab {
                     url,
                     focus,
                 } => remote::remote(ui, enter, original, name, url, focus),
+                Dialog::SetUpstream {
+                    branch,
+                    remote,
+                    name,
+                    undo,
+                    focus,
+                } => upstream::set_upstream(
+                    ui,
+                    enter,
+                    branch,
+                    remote,
+                    name,
+                    undo,
+                    &remote_names,
+                    remote_branches,
+                    focus,
+                ),
                 Dialog::Credentials {
                     url,
                     refused,
