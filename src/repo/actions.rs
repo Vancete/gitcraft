@@ -274,6 +274,13 @@ impl RepoTab {
                 Action::OpenUrl(url),
             ));
         }
+        if !self.submodules.is_empty() {
+            items.push((
+                "Update submodules".into(),
+                "submodule".into(),
+                super::keep_submodules::update_all(),
+            ));
+        }
         if !self.refs.head.is_empty() && self.ci_project().is_some() {
             items.push((
                 "Show CI for HEAD".into(),

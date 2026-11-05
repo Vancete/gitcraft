@@ -17,6 +17,7 @@ mod file_text;
 mod file_view;
 mod graph_view;
 mod highlight;
+mod keep_submodules;
 mod layout;
 mod load;
 mod messages;
@@ -47,7 +48,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
 use crate::forge::{Forge, PullRequest};
-use crate::git::{self, Commit, CommitDetail, Identity, Refs, Remote, Stash, WorkStatus, Worktree};
+use crate::git::{
+    self, Commit, CommitDetail, Identity, Refs, Remote, Stash, Submodule, WorkStatus, Worktree,
+};
 use crate::graph::Graph;
 use crate::terminal::Terminal;
 
@@ -103,6 +106,7 @@ pub struct RepoTab {
     worktrees: Vec<Worktree>,
     stashes: Vec<Stash>,
     remotes: Vec<Remote>,
+    submodules: Vec<Submodule>,
     identity: Identity,
     forge: Option<Forge>,
     prs: Vec<PullRequest>,
@@ -159,6 +163,8 @@ pub struct RepoTab {
 
     busy_op: Option<String>,
     op_started: Option<Instant>,
+    /// The running operation moves the checkout: update the submodules after it, if asked to.
+    update_submodules: bool,
     status: Option<(String, bool)>,
     branch_filter: String,
     /// Where a clicked jump mark wants the sidebar scrolled to.
@@ -230,6 +236,7 @@ impl RepoTab {
             worktrees: Vec::new(),
             stashes: Vec::new(),
             remotes: Vec::new(),
+            submodules: Vec::new(),
             identity: Identity::default(),
             forge: None,
             prs: Vec::new(),
@@ -269,6 +276,7 @@ impl RepoTab {
             redo_stack: Vec::new(),
             busy_op: None,
             op_started: None,
+            update_submodules: false,
             status: None,
             branch_filter: String::new(),
             sidebar_jump: None,

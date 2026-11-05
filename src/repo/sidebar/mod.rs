@@ -1,11 +1,12 @@
-//! Left pane: local branches, remotes and their branches, worktrees, stashes, pull requests,
-//! tags.
+//! Left pane: local branches, remotes and their branches, worktrees, submodules, stashes, pull
+//! requests, tags.
 
 mod branch_delete;
 mod branches;
 mod pull_requests;
 mod remotes;
 mod stashes;
+mod submodules;
 mod tags;
 mod visibility;
 mod worktrees;
@@ -74,6 +75,7 @@ impl RepoTab {
             self.remotes_section(ui, acts, idle, &filter, &mut sections);
             ui.add_space(gap);
             self.worktree_section(ui, acts, idle, &mut sections);
+            self.submodule_section(ui, acts, idle, &mut sections);
             self.stash_section(ui, acts, idle, &mut sections);
             self.pr_section(ui, acts, idle, &mut sections);
             self.tags_section(ui, acts, idle, &filter, &mut sections);
@@ -128,12 +130,14 @@ impl RepoTab {
             crate::forge::Forge::GitLab => "Merge requests",
         });
         let tags = (!self.refs.tags.is_empty()).then_some("Tags");
+        let submodules = (!self.submodules.is_empty()).then_some("Submodules");
         let top = [
             ("local", "laptop", Some("Local branches")),
             ("remotes", "cloud", Some("Remotes")),
         ];
         let lower = [
             ("worktrees", "folder-tree", Some("Worktrees")),
+            ("submodules", "package", submodules),
             ("stashes", "archive", Some("Stashes")),
             ("prs", "git-pull-request", prs),
             ("tags", "tag", tags),

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use super::branch_visibility::Visibility;
 use super::{DiffKey, DiffView, MAX_HISTORY, Msg, RepoTab, WIP_HASH, spawn};
 use crate::forge::{self, Forge};
-use crate::git::{self, Commit, Identity, Refs, Remote, Stash, WorkStatus, Worktree};
+use crate::git::{self, Commit, Identity, Refs, Remote, Stash, Submodule, WorkStatus, Worktree};
 use crate::graph;
 use crate::settings::Settings;
 
@@ -17,6 +17,7 @@ pub(super) struct Loaded {
     pub(super) worktrees: Vec<Worktree>,
     pub(super) stashes: Vec<Stash>,
     pub(super) remotes: Vec<Remote>,
+    pub(super) submodules: Vec<Submodule>,
     pub(super) identity: Identity,
     /// How many commits were asked for (more exist when that many came back).
     pub(super) requested: usize,
@@ -25,7 +26,8 @@ pub(super) struct Loaded {
 }
 
 impl RepoTab {
-    /// Re-reads refs, history, working tree, worktrees, stashes and remotes in the background.
+    /// Re-reads refs, history, working tree, worktrees, stashes, remotes and submodules in the
+    /// background.
     pub fn reload(&mut self, ctx: &egui::Context) {
         if self.loading {
             // What changed may have been read before it changed: read again once this is in.
@@ -48,6 +50,7 @@ impl RepoTab {
                 let worktrees = git::worktrees(&path).unwrap_or_default();
                 let stashes = git::stashes(&path).unwrap_or_default();
                 let remotes = git::remotes(&path).unwrap_or_default();
+                let submodules = git::submodules(&path).unwrap_or_default();
                 let identity = git::identity(&path);
                 Ok(Box::new(Loaded {
                     refs,
@@ -56,6 +59,7 @@ impl RepoTab {
                     worktrees,
                     stashes,
                     remotes,
+                    submodules,
                     identity,
                     requested: count,
                     log_from,
@@ -123,6 +127,7 @@ impl RepoTab {
         self.stashes = loaded.stashes;
         self.stash_view = viewed.and_then(|h| self.stashes.iter().position(|s| s.hash == h));
         self.identity = loaded.identity;
+        self.submodules = loaded.submodules;
         let forge = forge::detect(&loaded.remotes);
         self.remotes = loaded.remotes;
         if forge != self.forge {

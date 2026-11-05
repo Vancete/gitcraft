@@ -7,6 +7,7 @@ mod diff;
 mod files;
 mod refs;
 mod status;
+mod submodule;
 mod worktree;
 
 pub use self::command::*;
@@ -15,6 +16,7 @@ pub use self::diff::*;
 pub use self::files::*;
 pub use self::refs::*;
 pub use self::status::*;
+pub use self::submodule::*;
 pub use self::worktree::*;
 
 use std::path::{Path, PathBuf};

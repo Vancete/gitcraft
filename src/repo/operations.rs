@@ -37,6 +37,7 @@ impl RepoTab {
         }
         self.busy_op = Some(label.to_owned());
         self.op_started = Some(Instant::now());
+        self.note_checkout_move(&ops, ctx);
         if !quiet {
             self.status = None;
         }
@@ -118,7 +119,8 @@ impl RepoTab {
     }
 
     /// Takes in how an operation ended: the status line, undo history, sign-in, a notification
-    /// for a long one, then re-reads what it changed.
+    /// for a long one, then re-reads what it changed (and updates the submodules after a
+    /// checkout, if asked to).
     pub(super) fn op_done(
         &mut self,
         label: String,
@@ -184,6 +186,7 @@ impl RepoTab {
             Refresh::Status => self.reload_status(ctx),
             Refresh::All => self.reload(ctx),
         }
+        self.follow_checkout_move(result.is_ok(), ctx);
     }
 
     fn record_undo(&mut self, label: &str, kind: OpKind) {

@@ -69,6 +69,11 @@ so your config, credentials and hooks apply as usual.
 - Worktrees: a yellow dot in place of the folder icon marks the others with uncommitted changes,
   here and in the switcher. Add (existing or new branch), open in the same tab (the tab then shows the branch, a searchable switcher and a button to close the worktree, and what you left keeps running; can be turned off in Settings) or a new one, open a terminal there, lock, remove,
   prune.
+- Submodules (shown when the repository has any): each with its commit and whether it is
+  modified, not initialised or out of date. Update one or all (`git submodule update --init
+  --recursive`), open one in a new tab (or double-click it), show it in its folder. _Keep
+  submodules up to date_ in Settings → Git updates them after every checkout, pull, merge and
+  rebase.
 - Stashes: stash (with a message, untracked files included), see what a stash holds, apply, pop,
   drop.
 - Pull / merge requests of GitHub (through `gh`) or GitLab (through `glab`): list, open in the
@@ -140,7 +145,8 @@ so your config, credentials and hooks apply as usual.
   GitHub's API); on GitLab, the host's avatar API; elsewhere Gravatar (a hash of the email).
   Cached on disk; can be turned off.
 - Settings: zoom, branch column width, graph columns, avatars, notifications, update check,
-  background fetch, editor command, default shell and terminal font size, saved identities.
+  background fetch, keeping submodules up to date, editor command, default shell and terminal
+  font size, saved identities.
 - Checks GitHub every 12 hours for a newer release and shows a pill to download it (can be turned
   off).
 - Toasts, and a desktop notification when a long operation ends while the window is in the

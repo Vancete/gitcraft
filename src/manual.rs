@@ -57,7 +57,8 @@ const FEATURES: &[(&str, &[&str])] = &[
     (
         "Branches, remotes and more",
         &[
-            "Left pane: local branches with ahead / behind counts, remotes, worktrees, stashes, pull requests and tags.",
+            "Left pane: local branches with ahead / behind counts, remotes, worktrees, submodules, stashes, pull requests and tags.",
+            "Submodules show whether they are modified, not initialised or out of date; right-click one to update it or open it in a tab. Settings → Git can keep them up to date after each checkout, pull, merge and rebase.",
             "Hover a branch and click its eye to hide it from the graph, or Solo it from its menu to see only the branches soloed; “Show all” at the top brings them all back.",
             "Conflicts open in a three-pane editor with Ours, Theirs and Both for each conflict.",
             "Right-click a file for its history, its blame or the whole file as it is at the commit.",
