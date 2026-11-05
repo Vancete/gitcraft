@@ -2803,7 +2803,10 @@ fn local_name_of(name: &str, remotes: &[&str]) -> String {
 fn refuse_option_like(name: &str, status: &mut Option<(String, bool)>) -> bool {
     let bad = name.is_empty() || name.starts_with('-');
     if bad {
-        *status = Some((format!("Can't check out \"{name}\": not a usable name"), true));
+        *status = Some((
+            format!("Can't check out \"{name}\": not a usable name"),
+            true,
+        ));
     }
     bad
 }
@@ -2818,8 +2821,8 @@ fn run_steps(
 ) -> (Result<String, String>, OpKind) {
     // Where HEAD really is now, not where the last reload saw it: a commit made in the
     // terminal since must not be undone along with this.
-    let head_before = matches!(kind, OpKind::Normal(Undo::HeadMove { .. }, _))
-        .then(|| git::head(path));
+    let head_before =
+        matches!(kind, OpKind::Normal(Undo::HeadMove { .. }, _)).then(|| git::head(path));
     let pushes_stash = ops.first().is_some_and(|op| {
         let stash = stash_push_args();
         op.len() >= stash.len() && op.iter().zip(stash).all(|(a, b)| a == b)
@@ -2920,8 +2923,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        DiffKey, DiffView, OpKind, Undo, fs_change, headline, linked_git_dirs, ops,
-        local_name_of, refuse_option_like, run_steps, stash_push_args,
+        DiffKey, DiffView, OpKind, Undo, fs_change, headline, linked_git_dirs, local_name_of, ops,
+        refuse_option_like, run_steps, stash_push_args,
     };
     use crate::git;
 
@@ -2994,7 +2997,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&linked);
         let added = git::run(
             Some(&dir),
-            &["worktree", "add", "-q", "-b", "side", &linked.to_string_lossy()],
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "side",
+                &linked.to_string_lossy(),
+            ],
         );
         let dirs = linked_git_dirs(&linked);
         let main = linked_git_dirs(&dir);
@@ -3011,7 +3021,10 @@ mod tests {
         // Its HEAD and index, the shared refs: reload; objects: nothing; its files: status.
         assert_eq!(fs_change(&own.join("HEAD"), &watched), Some(true));
         assert_eq!(fs_change(&own.join("index"), &watched), Some(true));
-        assert_eq!(fs_change(&common.join("refs/heads/side"), &watched), Some(true));
+        assert_eq!(
+            fs_change(&common.join("refs/heads/side"), &watched),
+            Some(true)
+        );
         assert_eq!(fs_change(&common.join("objects/ab/cd"), &watched), None);
         assert_eq!(fs_change(&linked.join("src/a.rs"), &watched), Some(false));
         // A main worktree as before.

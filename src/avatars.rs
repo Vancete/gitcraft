@@ -374,7 +374,10 @@ mod tests {
             "-x@users.noreply.github.com",
             "x?y=1@users.noreply.github.com",
         ] {
-            assert!(url(email).starts_with("https://www.gravatar.com/"), "{email}");
+            assert!(
+                url(email).starts_with("https://www.gravatar.com/"),
+                "{email}"
+            );
         }
         assert_eq!(
             url("my-name@users.noreply.github.com"),
