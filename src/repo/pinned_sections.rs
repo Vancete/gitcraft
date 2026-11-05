@@ -209,6 +209,12 @@ pub(super) fn jump_offset(natural: f32, index: usize, top: f32, offset: f32, hei
     (natural - top + offset - index as f32 * height).max(0.0)
 }
 
+/// The room to leave in a pane `pane_h` high so that content `content_h` high, without that
+/// room, ends at its bottom edge. None once the content does not fit, or is not measured yet.
+pub(super) fn bottom_gap(pane_h: f32, content_h: f32) -> f32 {
+    (pane_h - content_h).max(0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +291,26 @@ mod tests {
     #[test]
     fn jumping_never_asks_for_a_negative_offset() {
         assert_eq!(jump_offset(110.0, 2, TOP, 0.0, H), 0.0);
+    }
+
+    #[test]
+    fn content_shorter_than_the_pane_leaves_the_difference() {
+        assert_eq!(bottom_gap(400.0, 250.0), 150.0);
+    }
+
+    #[test]
+    fn content_as_tall_as_the_pane_leaves_no_gap() {
+        assert_eq!(bottom_gap(400.0, 400.0), 0.0);
+    }
+
+    #[test]
+    fn content_taller_than_the_pane_leaves_no_gap_not_a_negative_one() {
+        assert_eq!(bottom_gap(400.0, 900.0), 0.0);
+        assert_eq!(bottom_gap(0.0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn content_not_measured_yet_leaves_no_gap() {
+        assert_eq!(bottom_gap(400.0, f32::INFINITY), 0.0);
     }
 }
