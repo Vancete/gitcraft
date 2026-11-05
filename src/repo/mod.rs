@@ -323,6 +323,10 @@ pub(crate) enum Action {
     /// Open a worktree the way the settings say: in this tab, or in its own.
     OpenWorktree(PathBuf),
     ToggleTerminal,
+    /// Collapse or bring back the branches panel.
+    ToggleBranches,
+    /// Collapse or bring back the detail panel.
+    ToggleDetail,
     NewTerminal {
         shell: Option<ShellSpec>,
         cwd: Option<PathBuf>,
@@ -1905,6 +1909,16 @@ impl RepoTab {
             Action::StashPush(message) => self.stash_push(&message, ctx),
             Action::OpenTab(path) => self.open_request = Some(OpenRequest::NewTab(path)),
             Action::OpenWorktree(path) => self.open_request = Some(OpenRequest::Worktree(path)),
+            Action::ToggleBranches => {
+                let mut settings = Settings::get(ctx);
+                settings.show_branches = !settings.show_branches;
+                settings.set(ctx);
+            }
+            Action::ToggleDetail => {
+                let mut settings = Settings::get(ctx);
+                settings.show_detail = !settings.show_detail;
+                settings.set(ctx);
+            }
             Action::ToggleTerminal => {
                 self.terminal_open = !self.terminal_open;
                 if self.terminal_open && self.terminals.is_empty() {
@@ -2245,18 +2259,62 @@ impl RepoTab {
             )
             .show(ui, |ui| self.toolbar(ui, &mut acts));
         let side = egui::Frame::new().fill(t.card);
-        egui::Panel::left("repo_branches")
-            .resizable(true)
-            .default_size(270.0)
-            .size_range(170.0..=520.0)
-            .frame(side)
-            .show(ui, |ui| self.sidebar(ui, &mut acts));
-        egui::Panel::right("repo_detail")
-            .resizable(true)
-            .default_size(420.0)
-            .size_range(280.0..=900.0)
-            .frame(side)
-            .show(ui, |ui| self.detail_panel(ui, &mut acts));
+        // Both side panels fold down to a strip holding their footer's toggle, also when an
+        // edge is dragged past its minimum; dragging the strip out opens them again.
+        let mut settings = Settings::get(&ctx);
+        let (mut show_branches, mut show_detail) = (settings.show_branches, settings.show_detail);
+        let area = ui.available_rect_before_wrap();
+        egui::Panel::show_switched(
+            ui,
+            &mut show_branches,
+            egui::Panel::left("repo_branches_folded")
+                .resizable(true)
+                .exact_size(widgets::FOLDED_W)
+                .frame(side),
+            egui::Panel::left("repo_branches")
+                .resizable(true)
+                .default_size(270.0)
+                .size_range(170.0..=520.0)
+                .frame(side),
+            |ui, open| {
+                widgets::panel_footer(ui, "repo_branches_footer", area.left(), false, |ui| {
+                    if panel_toggle(ui, "panel-left", "branches", open) {
+                        acts.push(Action::ToggleBranches);
+                    }
+                });
+                if open {
+                    self.sidebar(ui, &mut acts);
+                }
+            },
+        );
+        egui::Panel::show_switched(
+            ui,
+            &mut show_detail,
+            egui::Panel::right("repo_detail_folded")
+                .resizable(true)
+                .exact_size(widgets::FOLDED_W)
+                .frame(side),
+            egui::Panel::right("repo_detail")
+                .resizable(true)
+                .default_size(420.0)
+                .size_range(280.0..=900.0)
+                .frame(side),
+            |ui, open| {
+                widgets::panel_footer(ui, "repo_detail_footer", area.right(), true, |ui| {
+                    if panel_toggle(ui, "panel-right", "detail", open) {
+                        acts.push(Action::ToggleDetail);
+                    }
+                });
+                if open {
+                    self.detail_panel(ui, &mut acts);
+                }
+            },
+        );
+        if (show_branches, show_detail) != (settings.show_branches, settings.show_detail) {
+            settings.show_branches = show_branches;
+            settings.show_detail = show_detail;
+            settings.set(&ctx);
+        }
         if self.terminal_open {
             egui::Panel::bottom("repo_terminal")
                 .resizable(true)
@@ -2634,6 +2692,18 @@ pub(crate) fn rebase_action(onto: &str, current: &str) -> Action {
         refresh: Refresh::All,
         undo: Undo::HeadMove { mode: "--keep" },
     }
+}
+
+/// The footer button folding a side panel down to its strip, or opening it back up.
+fn panel_toggle(ui: &mut Ui, icon: &str, name: &str, open: bool) -> bool {
+    let tip = if open {
+        format!("Hide the {name} panel")
+    } else {
+        format!("Show the {name} panel")
+    };
+    icons::tool_button(ui, icon, "", true)
+        .on_hover_text(tip)
+        .clicked()
 }
 
 fn abort_action(state: InProgress) -> Action {

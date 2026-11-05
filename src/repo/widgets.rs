@@ -15,6 +15,52 @@ pub fn toolbar_separator(ui: &mut Ui) {
     ui.add_space(4.0);
 }
 
+/// Width of a folded side panel: its footer's toggle and the footer's margins.
+pub const FOLDED_W: f32 = 36.0;
+
+/// The row of buttons along the bottom of a side panel, starting from its outer edge (the
+/// right one for a panel on the right), which lies at `outer_edge`. Call it before the
+/// panel's other contents.
+pub fn panel_footer(
+    ui: &mut Ui,
+    id: &'static str,
+    outer_edge: f32,
+    right: bool,
+    add_buttons: impl FnOnce(&mut Ui),
+) {
+    let t = Tokens::get(ui.ctx());
+    // A panel folding or opening slides toward its outer edge, where the part still in view
+    // is; the buttons stay put there instead of sliding out of sight and back.
+    let panel = ui.max_rect();
+    let slid = if right {
+        outer_edge - panel.right()
+    } else {
+        outer_edge - panel.left()
+    };
+    egui::Panel::bottom(id)
+        .frame(
+            egui::Frame::new()
+                .fill(t.tab_strip)
+                .inner_margin(egui::Margin::same(4)),
+        )
+        .show(ui, |ui| {
+            let layout = if right {
+                egui::Layout::right_to_left(egui::Align::Center)
+            } else {
+                egui::Layout::left_to_right(egui::Align::Center)
+            };
+            // A child the parent doesn't grow by: the slid rect lies partly outside the panel.
+            let mut row = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(ui.max_rect().translate(vec2(slid, 0.0)))
+                    .layout(layout),
+            );
+            row.spacing_mut().item_spacing.x = 2.0;
+            add_buttons(&mut row);
+            ui.allocate_exact_size(vec2(0.0, row.min_rect().height()), Sense::hover());
+        });
+}
+
 /// A rounded label with a tinted background.
 pub fn chip(ui: &mut Ui, text: &str, color: Color32) -> Response {
     let font = theme::medium(11.0);

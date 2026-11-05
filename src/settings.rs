@@ -41,6 +41,10 @@ pub struct Settings {
     /// An absolute date column.
     pub show_date: bool,
     pub show_hash: bool,
+    /// The branches panel on the left of a repository tab.
+    pub show_branches: bool,
+    /// The commit detail / changes panel on the right of a repository tab.
+    pub show_detail: bool,
     /// A worktree opens in the tab it was opened from, which then shows its branch.
     pub worktrees_in_same_tab: bool,
     /// Changed files in a tree of their folders rather than a flat list.
@@ -82,6 +86,8 @@ impl Default for Settings {
             show_when: true,
             show_date: false,
             show_hash: false,
+            show_branches: true,
+            show_detail: true,
             worktrees_in_same_tab: true,
             files_as_tree: true,
             diff_split: false,
