@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::ChangedFile;
 use super::diff::commit_files;
-use super::{END_OPTS, FS, NO_SIGNATURE, RS, not_an_option, run};
+use super::{END_OPTS, NO_SIGNATURE, UTF8, not_an_option, run};
 
 #[derive(Clone, Debug, Default)]
 pub struct Commit {
@@ -43,14 +43,23 @@ pub fn log(
         Err(e) if e.contains("does not have any commits") => String::new(),
         Err(e) => return Err(e),
     };
-    Ok(out.split(RS).filter_map(parse_record).collect())
+    let fields: Vec<&str> = out.split('\0').collect();
+    Ok(fields
+        .chunks_exact(LOG_FIELDS)
+        .filter_map(parse_record)
+        .collect())
 }
+
+/// How many fields [`log_args`]' format has, each ended by a NUL. No commit can hold one (git
+/// refuses it in a message), where the unit and record separators may well be in a message
+/// someone pasted, and would cut the commit in two or leave it out of the graph.
+const LOG_FIELDS: usize = 9;
 
 /// The arguments of `log` / [`LogStream`]: the revisions `from` (else every branch), after the
 /// first `skip`, at most `limit` (`--max-count=n`) when given.
 fn log_args<'a>(from: Option<&'a [String]>, skip: usize, limit: Option<&'a str>) -> LogArgs<'a> {
     LogArgs {
-        format: format!("--format=%H{FS}%P{FS}%an{FS}%ae{FS}%at{FS}%ad{FS}%s{FS}%D{FS}%b{RS}"),
+        format: "--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%ad%x00%s%x00%D%x00%b%x00".to_owned(),
         skip: format!("--skip={skip}"),
         limit,
         from,
@@ -69,6 +78,7 @@ impl LogArgs<'_> {
         let mut args = vec![
             "log",
             NO_SIGNATURE,
+            UTF8,
             "--date-order",
             "--date=format-local:%Y-%m-%d %H:%M",
             &self.skip,
@@ -80,13 +90,8 @@ impl LogArgs<'_> {
     }
 }
 
-/// One commit of `log`'s output, between record separators.
-fn parse_record(record: &str) -> Option<Commit> {
-    let record = record.trim_start_matches('\n');
-    if record.is_empty() {
-        return None;
-    }
-    let f: Vec<&str> = record.split(FS).collect();
+/// One commit of `log`'s output: its [`LOG_FIELDS`] fields.
+fn parse_record<S: AsRef<str>>(fields: &[S]) -> Option<Commit> {
     let [
         hash,
         parents,
@@ -97,10 +102,17 @@ fn parse_record(record: &str) -> Option<Commit> {
         summary,
         decor,
         body,
-    ] = f[..]
+    ] = fields
     else {
         return None;
     };
+    let [parents, author, email, time, date, summary, decor, body] =
+        [parents, author, email, time, date, summary, decor, body].map(AsRef::as_ref);
+    // The line git ends each commit with is before the next one's hash.
+    let hash = hash.as_ref().trim_start_matches('\n');
+    if hash.is_empty() {
+        return None;
+    }
     Some(Commit {
         hash: hash.to_owned(),
         parents: parents.split_whitespace().map(str::to_owned).collect(),
@@ -167,19 +179,23 @@ impl LogStream {
             return Ok(Vec::new());
         };
         let mut page = Vec::with_capacity(n);
-        let mut record = Vec::new();
+        let mut field = Vec::new();
+        let mut fields: Vec<String> = Vec::with_capacity(LOG_FIELDS);
         while page.len() < n {
-            record.clear();
-            let read = git
-                .out
-                .read_until(RS as u8, &mut record)
+            field.clear();
+            git.out
+                .read_until(0, &mut field)
                 .map_err(|e| format!("could not read git log: {e}"))?;
-            if read == 0 {
+            // Only the line after the last commit is left at the end.
+            if field.pop() != Some(0) {
                 git.check_exit()?;
                 break;
             }
-            let text = String::from_utf8_lossy(&record);
-            page.extend(parse_record(text.trim_end_matches(RS)));
+            fields.push(String::from_utf8_lossy(&field).into_owned());
+            if fields.len() == LOG_FIELDS {
+                page.extend(parse_record(&fields));
+                fields.clear();
+            }
         }
         Ok(page)
     }
@@ -249,20 +265,22 @@ pub struct CommitDetail {
 }
 
 pub fn commit_detail(repo: &Path, hash: &str) -> Result<CommitDetail, String> {
-    let format = format!("--format=%H{FS}%P{FS}%an{FS}%ae{FS}%ad{FS}%cn{FS}%cd{FS}%B");
+    // NULs between the fields: no commit has one, unlike the unit separator.
+    let format = "--format=%H%x00%P%x00%an%x00%ae%x00%ad%x00%cn%x00%cd%x00%B";
     let out = run(
         Some(repo),
         &[
             "show",
             NO_SIGNATURE,
+            UTF8,
             "-s",
             "--date=format-local:%Y-%m-%d %H:%M:%S",
-            &format,
+            format,
             END_OPTS,
             hash,
         ],
     )?;
-    let f: Vec<&str> = out.splitn(8, FS).collect();
+    let f: Vec<&str> = out.splitn(8, '\0').collect();
     let [h, parents, author, email, adate, committer, cdate, message] = f[..] else {
         return Err("unexpected output from git show".to_owned());
     };
@@ -292,7 +310,11 @@ pub fn commit_detail(repo: &Path, hash: &str) -> Result<CommitDetail, String> {
 
 /// The full message of HEAD (to amend it).
 pub fn head_message(repo: &Path) -> Result<String, String> {
-    run(Some(repo), &["log", NO_SIGNATURE, "-1", "--format=%B"]).map(|s| s.trim_end().to_owned())
+    run(
+        Some(repo),
+        &["log", NO_SIGNATURE, UTF8, "-1", "--format=%B"],
+    )
+    .map(|s| s.trim_end().to_owned())
 }
 
 /// The best common ancestor of two commits.
@@ -336,7 +358,14 @@ fn push_revisions<'a>(args: &mut Vec<&'a str>, from: Option<&'a [String]>) {
             args.extend(revs.iter().map(String::as_str));
             args.push("--");
         }
-        None => args.extend(["--exclude=refs/stash", "--all"]),
+        // Nor the history of notes (`git notes`), nor what `git maintenance` fetches ahead
+        // into `refs/prefetch/`: commits on no branch, not the repository's history.
+        None => args.extend([
+            "--exclude=refs/stash",
+            "--exclude=refs/notes/*",
+            "--exclude=refs/prefetch/*",
+            "--all",
+        ]),
     }
 }
 
@@ -349,7 +378,14 @@ pub fn search(repo: &Path, from: Option<&[String]>, query: &str) -> Result<Vec<S
     let mut hashes: Vec<String> = Vec::new();
     // A short query matches most of history: a linear check per hash would be quadratic.
     let mut seen: HashSet<String> = HashSet::new();
-    let base = ["log", NO_SIGNATURE, "--date-order", "-i", "--format=%H"];
+    let base = [
+        "log",
+        NO_SIGNATURE,
+        UTF8,
+        "--date-order",
+        "-i",
+        "--format=%H",
+    ];
     for filter in [format!("--grep={query}"), format!("--author={query}")] {
         let mut args = base.to_vec();
         args.push("--fixed-strings");
@@ -410,30 +446,44 @@ pub struct RebaseCommit {
 
 /// The commits `git rebase -i onto` would list (`onto..HEAD`), oldest first.
 pub fn rebase_commits(repo: &Path, onto: &str) -> Result<Vec<RebaseCommit>, String> {
-    let format = format!("--format={RS}%H{FS}%P{FS}%an{FS}%ae{FS}%s{FS}%B");
+    // Each field ended by a NUL, which no commit has: a record separator in a message would
+    // cut it short, and rewording the commit would lose the rest.
+    let format = "--format=%H%x00%P%x00%an%x00%ae%x00%s%x00%B%x00";
     let range = format!("{onto}..HEAD");
     let out = run(
         Some(repo),
-        &["log", NO_SIGNATURE, "--reverse", &format, END_OPTS, &range],
+        &[
+            "log",
+            NO_SIGNATURE,
+            UTF8,
+            "--reverse",
+            format,
+            END_OPTS,
+            &range,
+        ],
     )?;
     Ok(parse_rebase_commits(&out))
 }
 
 fn parse_rebase_commits(out: &str) -> Vec<RebaseCommit> {
-    out.split(RS)
-        .filter_map(|record| {
-            let mut f = record.splitn(6, FS);
-            let hash = f.next()?.trim().to_owned();
+    let fields: Vec<&str> = out.split('\0').collect();
+    fields
+        .chunks_exact(6)
+        .filter_map(|f| {
+            let [hash, parents, author, email, summary, message] = f else {
+                return None;
+            };
+            let hash = hash.trim();
             if hash.is_empty() {
                 return None;
             }
             Some(RebaseCommit {
-                hash,
-                merge: f.next()?.split_whitespace().count() > 1,
-                author: f.next()?.to_owned(),
-                email: f.next()?.to_owned(),
-                summary: f.next()?.to_owned(),
-                message: f.next()?.trim_end().to_owned(),
+                hash: hash.to_owned(),
+                merge: parents.split_whitespace().count() > 1,
+                author: (*author).to_owned(),
+                email: (*email).to_owned(),
+                summary: (*summary).to_owned(),
+                message: message.trim_end().to_owned(),
             })
         })
         .collect()
@@ -442,6 +492,95 @@ fn parse_rebase_commits(out: &str) -> Vec<RebaseCommit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every branch's history leaves out the commits of notes and of `git maintenance`'s
+    /// prefetching, which are on no branch.
+    #[test]
+    fn history_of_branches_has_no_notes_or_prefetched_commits() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("gitcraft-notes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let git = |args: &[&str]| run(Some(&dir), args);
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["config", "commit.gpgSign", "false"],
+            &["commit", "-q", "--allow-empty", "-m", "one"],
+            &["notes", "add", "-m", "a note", "HEAD"],
+            &["tag", "v1"],
+        ] {
+            git(args)?;
+        }
+        let ahead = git(&[
+            "commit-tree",
+            "-p",
+            "HEAD",
+            "-m",
+            "fetched ahead",
+            "HEAD^{tree}",
+        ])?;
+        git(&[
+            "update-ref",
+            "refs/prefetch/remotes/origin/main",
+            ahead.trim(),
+        ])?;
+        let whole = log(&dir, None, 0, 10);
+        let found = search(&dir, None, "a");
+        let _ = std::fs::remove_dir_all(&dir);
+        let summaries: Vec<String> = whole?.into_iter().map(|c| c.summary).collect();
+        assert_eq!(summaries, ["one"]);
+        assert!(found?.is_empty());
+        Ok(())
+    }
+
+    /// A message with the unit and record separators in it (pasted from somewhere) is one
+    /// commit like any other: in the graph, page after page, its details and a rebase.
+    #[test]
+    fn separators_in_a_message_are_only_text() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("gitcraft-separators-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let git = |args: &[&str]| run(Some(&dir), args);
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["config", "commit.gpgSign", "false"],
+            &["commit", "-q", "--allow-empty", "-m", "base"],
+            &[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "odd \x1f one\n\nbody \x1f a \x1e b \x1e",
+            ],
+            &["commit", "-q", "--allow-empty", "-m", "top"],
+        ] {
+            git(args)?;
+        }
+        let odd = git(&["rev-parse", "HEAD~1"])?;
+        let odd = odd.trim();
+        let whole = log(&dir, None, 0, 10);
+        let paged = LogStream::start(&dir, None, 0).and_then(|mut s| s.next_page(10));
+        let detail = commit_detail(&dir, odd);
+        let rebase = rebase_commits(&dir, "HEAD~2");
+        let _ = std::fs::remove_dir_all(&dir);
+        for commits in [whole?, paged?] {
+            let summaries: Vec<&str> = commits.iter().map(|c| c.summary.as_str()).collect();
+            assert_eq!(summaries, ["top", "odd \x1f one", "base"]);
+            assert_eq!(commits[1].body, "body \x1f a \x1e b \x1e");
+            assert_eq!(commits[0].parents, [odd]);
+        }
+        let detail = detail?;
+        assert_eq!((detail.author.as_str(), detail.parents.len()), ("t", 1));
+        assert_eq!(detail.message, "odd \x1f one\n\nbody \x1f a \x1e b \x1e");
+        let rebase = rebase?;
+        assert_eq!(rebase.len(), 2);
+        assert_eq!(rebase[0].message, detail.message);
+        assert_eq!(rebase[1].summary, "top");
+        Ok(())
+    }
 
     #[test]
     fn bodies_fit_on_one_line() {

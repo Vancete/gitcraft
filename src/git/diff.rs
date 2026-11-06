@@ -232,6 +232,13 @@ pub fn work_diff(repo: &Path, file: &StatusFile, opts: DiffOptions) -> Result<St
         _ => vec![LITERAL_PATHS, "diff"],
     };
     opts.push_args(&mut args);
+    // Lines picked from this patch go back through `git apply`, which refuses a hunk without
+    // lines of context around it: with `diff.context=0` in the user's config, every one.
+    let no_context = run(Some(repo), &["config", "--type=int", "diff.context"])
+        .is_ok_and(|n| n.trim().parse::<u64>().is_ok_and(|n| n == 0));
+    if no_context && !opts.whole_file {
+        args.push("--unified=3");
+    }
     args.extend(["--", path]);
     // A staged rename limited to its new name would look like a new file.
     if file.area == Area::Staged {
@@ -395,6 +402,48 @@ mod tests {
             assert!(diff.contains("+y"), "{diff}");
             assert!(!diff.contains("a.txt"), "{diff}");
         }
+        Ok(())
+    }
+
+    /// With no lines of context in the user's config, a patch of the working tree still has
+    /// the context `git apply` needs to take lines of it back.
+    #[test]
+    fn work_patches_keep_context_for_git_apply() -> Result<(), String> {
+        let text = |e: std::io::Error| e.to_string();
+        let dir = std::env::temp_dir().join(format!("gitcraft-context-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(text)?;
+        let git = |args: &[&str]| run(Some(&dir), args);
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["config", "commit.gpgSign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            git(args)?;
+        }
+        std::fs::write(dir.join("a.txt"), "1\n2\n3\n4\n5\n").map_err(text)?;
+        git(&["add", "a.txt"])?;
+        git(&["commit", "-qm", "one"])?;
+        git(&["config", "diff.context", "0"])?;
+        std::fs::write(dir.join("a.txt"), "1\n2\nX\n4\n5\n").map_err(text)?;
+        let file = StatusFile {
+            path: "a.txt".to_owned(),
+            old_path: None,
+            code: 'M',
+            area: Area::Unstaged,
+        };
+        let patch = work_diff(&dir, &file, DiffOptions::default());
+        let applied = patch
+            .as_deref()
+            .map_err(String::clone)
+            .and_then(save_patch)
+            .and_then(|p| git(&["apply", "--cached", "--check", &p.to_string_lossy()]));
+        let _ = std::fs::remove_dir_all(&dir);
+        let patch = patch?;
+        assert!(patch.contains("\n 2\n-3\n+X\n 4\n"), "{patch}");
+        applied?;
         Ok(())
     }
 

@@ -80,15 +80,8 @@ pub(crate) fn tool_with_input(
     args: &[&str],
     input: Option<&str>,
 ) -> Result<String, String> {
-    let mut cmd = Command::new(forge.tool());
+    let mut cmd = tool_command(forge);
     cmd.current_dir(repo).args(args);
-    cmd.env("GH_PROMPT_DISABLED", "1").env("NO_PROMPT", "1");
-    crate::shell_path::apply(&mut cmd);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
-    }
     let not_installed = |_| {
         format!(
             "{} isn't installed: gitcraft uses it for {}s",
@@ -118,6 +111,28 @@ pub(crate) fn tool_with_input(
     } else {
         Err(failure(forge, &out))
     }
+}
+
+/// The forge's tool, set to answer this repository in plain JSON.
+fn tool_command(forge: Forge) -> Command {
+    let mut cmd = Command::new(forge.tool());
+    cmd.env("GH_PROMPT_DISABLED", "1").env("NO_PROMPT", "1");
+    // What it prints is read as JSON: `CLICOLOR_FORCE` or `GH_FORCE_TTY` in the user's
+    // environment would colour it even into a pipe, escape codes no JSON reader takes.
+    cmd.env_remove("CLICOLOR_FORCE")
+        .env_remove("GH_FORCE_TTY")
+        .env("NO_COLOR", "1");
+    // About the repository it runs in and the host it is given, not one the environment names:
+    // `GH_REPO` would answer for another repository, `GH_HOST` send `gh api` (and `-R owner/repo`)
+    // to another host than github.com.
+    cmd.env_remove("GH_REPO").env_remove("GH_HOST");
+    crate::shell_path::apply(&mut cmd);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd
 }
 
 /// What a tool that failed said, or that it failed: an empty error would read as nothing wrong.
@@ -355,6 +370,26 @@ fn parse_github_avatars(json: &str) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The user's environment can't colour the JSON read from the tools, nor point them at
+    /// another repository or host.
+    #[test]
+    fn tools_answer_in_plain_json_about_this_repository() {
+        for forge in [Forge::GitHub, Forge::GitLab] {
+            let cmd = tool_command(forge);
+            let envs: HashMap<String, Option<String>> = cmd
+                .get_envs()
+                .map(|(k, v)| {
+                    let text = |s: &std::ffi::OsStr| s.to_string_lossy().into_owned();
+                    (text(k), v.map(text))
+                })
+                .collect();
+            for removed in ["CLICOLOR_FORCE", "GH_FORCE_TTY", "GH_REPO", "GH_HOST"] {
+                assert_eq!(envs.get(removed), Some(&None), "{removed}");
+            }
+            assert_eq!(envs.get("NO_COLOR"), Some(&Some("1".to_owned())));
+        }
+    }
 
     #[test]
     fn remote_locations() {

@@ -203,3 +203,55 @@ fn history_read_in_pages_reports_failure() -> Result<(), String> {
     assert!(result.is_err());
     Ok(())
 }
+
+/// Messages and names read in UTF-8 even where the config has git write its logs in another
+/// encoding (`i18n.commitEncoding` of an old project).
+#[test]
+fn messages_in_utf8_whatever_the_log_encoding() -> Result<(), String> {
+    let dir = std::env::temp_dir().join(format!("gitcraft-encoding-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let git = |args: &[&str]| run(Some(&dir), args);
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.name", "Jürgen"],
+        &["config", "user.email", "j@t"],
+        &["config", "commit.gpgSign", "false"],
+    ] {
+        git(args)?;
+    }
+    std::fs::write(dir.join("a.txt"), "a\n").map_err(|e| e.to_string())?;
+    git(&["add", "a.txt"])?;
+    git(&["commit", "-qm", "héllo\n\nwörld"])?;
+    std::fs::write(dir.join("a.txt"), "b\n").map_err(|e| e.to_string())?;
+    git(&["stash", "push", "-qm", "stäsh"])?;
+    git(&["config", "i18n.commitEncoding", "ISO-8859-1"])?;
+    let head = head(&dir);
+    let commits = log(&dir, None, 0, 10);
+    let detail = commit_detail(&dir, &head);
+    let message = head_message(&dir);
+    let history = file_history(&dir, None, "a.txt");
+    let blamed = blame(&dir, None, "a.txt");
+    let stashed = stashes(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let commits = commits?;
+    assert_eq!(
+        (commits[0].summary.as_str(), commits[0].author.as_str()),
+        ("héllo", "Jürgen")
+    );
+    assert_eq!(commits[0].body, "wörld");
+    let detail = detail?;
+    assert_eq!(
+        (detail.message.as_str(), detail.author.as_str()),
+        ("héllo\n\nwörld", "Jürgen")
+    );
+    assert_eq!(message?, "héllo\n\nwörld");
+    assert_eq!(history?[0].summary, "héllo");
+    let blamed = blamed?;
+    assert_eq!(
+        (blamed[0].author.as_str(), blamed[0].summary.as_str()),
+        ("Jürgen", "héllo")
+    );
+    assert_eq!(stashed?[0].message, "stäsh");
+    Ok(())
+}

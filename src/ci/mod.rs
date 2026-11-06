@@ -203,7 +203,15 @@ fn plain_text(log: &str) -> String {
                     while chars.next().is_some_and(|c| !c.is_ascii_alphabetic()) {}
                 }
             }
-            '\r' => {}
+            '\r' => {
+                // `\r\r\n` (text written twice over on Windows) ends the line all the same.
+                while chars.next_if_eq(&'\r').is_some() {}
+                // A carriage return alone starts the line over, as on a terminal: what a
+                // progress bar overwrote, GitLab's `section_start:…` marks, are not to be read.
+                if chars.peek().is_some_and(|&c| c != '\n') {
+                    out.truncate(out.rfind('\n').map_or(0, |n| n + 1));
+                }
+            }
             c => out.push(c),
         }
     }
@@ -256,6 +264,16 @@ mod tests {
         let kept = plain_text(&long);
         assert!(kept.starts_with("… (the start is left out)\nline\n"));
         assert!(kept.len() < MAX_LOG + 40);
+    }
+
+    #[test]
+    fn what_a_log_wrote_over_is_left_out() {
+        let gitlab = "\u{1b}[0Ksection_start:1730000000:prepare_executor\r\u{1b}[0K\u{1b}[0;mPreparing\n\
+                      Downloading 10%\r30%\r100%\n\
+                      \u{1b}[0Ksection_end:1730000001:prepare_executor\r\u{1b}[0K\n\
+                      done\r\n\
+                      twice\r\r\nend\r";
+        assert_eq!(plain_text(gitlab), "Preparing\n100%\n\ndone\ntwice\nend");
     }
 
     #[test]

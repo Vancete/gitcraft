@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use super::{END_OPTS, FS, LITERAL_PATHS, NO_SIGNATURE, RS, not_an_option, run, run_bytes};
+use super::{END_OPTS, FS, LITERAL_PATHS, NO_SIGNATURE, RS, UTF8, not_an_option, run, run_bytes};
 
 /// The contents of `path` at `rev` (`HEAD`, a hash, or `""` for the index), or from disk when
 /// `rev` is `None`.
@@ -99,6 +99,7 @@ pub fn file_history(repo: &Path, rev: Option<&str>, path: &str) -> Result<Vec<Fi
         LITERAL_PATHS,
         "log",
         NO_SIGNATURE,
+        UTF8,
         "--follow",
         "--name-only",
         "-z",
@@ -153,13 +154,23 @@ impl BlameLine {
 
 /// `git blame` of `path`, as of `rev` (the working tree when `None`).
 pub fn blame(repo: &Path, rev: Option<&str>, path: &str) -> Result<Vec<BlameLine>, String> {
-    let mut args = vec!["blame", "--porcelain"];
+    // Names and summaries in UTF-8, whatever `i18n.logOutputEncoding` says (`blame` has no
+    // `--encoding`).
+    let mut args = vec!["-c", "i18n.logOutputEncoding=UTF-8", "blame", "--porcelain"];
     if let Some(rev) = rev {
         // `blame` takes no `--end-of-options`.
         args.push(not_an_option(rev)?);
     }
     args.extend(["--", path]);
-    Ok(parse_blame(&run(Some(repo), &args)?))
+    match run(Some(repo), &args) {
+        // `blame.ignoreRevsFile` set for all repositories (`.git-blame-ignore-revs`) names a
+        // file this one may not have, and git then blames nothing at all.
+        Err(e) if e.contains("could not open object name list") => {
+            args.insert(4, "--no-ignore-revs-file");
+            Ok(parse_blame(&run(Some(repo), &args)?))
+        }
+        out => Ok(parse_blame(&out?)),
+    }
 }
 
 fn parse_blame(out: &str) -> Vec<BlameLine> {
@@ -224,6 +235,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(staged?, b"a\n");
         assert_eq!(tracked, (false, true));
+        Ok(())
+    }
+
+    /// A `blame.ignoreRevsFile` this repository hasn't got doesn't keep the file from its blame.
+    #[test]
+    fn blame_without_the_ignore_revs_file() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("gitcraft-blame-revs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let git = |args: &[&str]| run(Some(&dir), args);
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["config", "commit.gpgSign", "false"],
+            &["config", "blame.ignoreRevsFile", ".git-blame-ignore-revs"],
+        ] {
+            git(args)?;
+        }
+        std::fs::write(dir.join("a.txt"), "one\n").map_err(|e| e.to_string())?;
+        git(&["add", "a.txt"])?;
+        git(&["commit", "-qm", "first"])?;
+        let lines = blame(&dir, None, "a.txt");
+        let _ = std::fs::remove_dir_all(&dir);
+        let lines = lines?;
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            (lines[0].summary.as_str(), lines[0].text.as_str()),
+            ("first", "one")
+        );
         Ok(())
     }
 

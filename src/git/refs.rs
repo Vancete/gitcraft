@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use super::{FS, run};
+use super::{FS, UTF8, run};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Branch {
@@ -148,6 +148,7 @@ pub fn stashes(repo: &Path) -> Result<Vec<Stash>, String> {
         &[
             "stash",
             "list",
+            UTF8,
             "--date=format-local:%Y-%m-%d %H:%M",
             &format!("--format=%H{FS}%P{FS}%gs{FS}%an{FS}%ae{FS}%at{FS}%ad"),
         ],

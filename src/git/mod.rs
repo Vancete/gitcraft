@@ -34,6 +34,11 @@ pub const LOG_PAGE: usize = 1500;
 /// "No signature") into the output that is parsed, and run gpg for every commit.
 const NO_SIGNATURE: &str = "--no-show-signature";
 
+/// For `log`, `show` and `stash list`: messages and names in UTF-8, as they are read, whatever
+/// `i18n.logOutputEncoding` (or `i18n.commitEncoding`, its default) says. In another encoding
+/// they would come out garbled, and an edited message would be saved so.
+const UTF8: &str = "--encoding=UTF-8";
+
 /// Ends the options: what follows is a revision even when it starts with `-` (a tag named
 /// `--output=x` fetched from a remote, a ref from a forge's answer…), not an option.
 const END_OPTS: &str = "--end-of-options";

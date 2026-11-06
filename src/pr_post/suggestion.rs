@@ -78,12 +78,15 @@ pub(crate) fn apply_lines(
             lines.len()
         ));
     }
-    let line_end = if content.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
     let (from, to) = (start as usize - 1, end as usize);
+    // The line end of the lines replaced (or of the line before, for a last line without one):
+    // a file with a stray CRLF elsewhere keeps LF here.
+    let ended =
+        (lines[from..to].iter().chain(lines[..from].iter().rev())).find(|l| l.ends_with('\n'));
+    let line_end = match ended {
+        Some(line) if line.ends_with("\r\n") => "\r\n",
+        _ => "\n",
+    };
     let keeps_no_end = to == lines.len() && !lines[to - 1].ends_with('\n');
     let mut out = lines[..from].concat();
     if !replacement.is_empty() {
@@ -212,6 +215,18 @@ mod tests {
         assert_eq!(
             apply_lines("a\r\nb\r\nc\r\n", 2, 2, "x\ny").as_deref(),
             Ok("a\r\nx\r\ny\r\nc\r\n")
+        );
+    }
+
+    #[test]
+    fn keeps_the_line_ends_of_the_lines_replaced() {
+        assert_eq!(
+            apply_lines("a\r\nb\nc\n", 2, 2, "x\ny").as_deref(),
+            Ok("a\r\nx\ny\nc\n")
+        );
+        assert_eq!(
+            apply_lines("a\nb\r\nc", 3, 3, "x\ny").as_deref(),
+            Ok("a\nb\r\nx\r\ny")
         );
     }
 
