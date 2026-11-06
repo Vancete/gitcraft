@@ -21,7 +21,13 @@ fn data_home() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .or_else(|| {
+            // An empty or relative HOME would put the entry under the current folder.
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|h| h.is_absolute())
+                .map(|h| h.join(".local/share"))
+        })
 }
 
 fn entry_path(data: &Path) -> PathBuf {

@@ -39,7 +39,8 @@ fn login_path() -> Option<OsString> {
     (joined != own).then_some(joined)
 }
 
-/// Every folder of `paths` once, in order, then the fallbacks.
+/// Every folder of `paths` once, in order, then the fallbacks. Only whole paths: git runs in
+/// the repository's folder, where `.` or `bin` would find a `git` the repository brought.
 fn merge<const N: usize>(paths: [&OsString; N]) -> OsString {
     let mut dirs: Vec<PathBuf> = Vec::new();
     let candidates = paths
@@ -47,7 +48,7 @@ fn merge<const N: usize>(paths: [&OsString; N]) -> OsString {
         .flat_map(|p| std::env::split_paths(p).collect::<Vec<_>>())
         .chain(FALLBACK.iter().map(PathBuf::from));
     for dir in candidates {
-        if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
+        if dir.is_absolute() && !dirs.contains(&dir) {
             dirs.push(dir);
         }
     }
@@ -121,6 +122,18 @@ mod tests {
         assert_eq!(
             merged,
             ["/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/local/bin"].map(PathBuf::from)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn folders_relative_to_the_repository_are_left_out() {
+        let shell = OsString::from(".:bin:/usr/bin::node_modules/.bin");
+        let merged: Vec<PathBuf> =
+            std::env::split_paths(&merge([&shell, &OsString::new()])).collect();
+        assert_eq!(
+            merged,
+            ["/usr/bin", "/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from)
         );
     }
 

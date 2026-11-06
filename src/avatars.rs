@@ -252,6 +252,17 @@ fn query_escape(s: &str) -> String {
         .collect()
 }
 
+/// Writes `name` in `dir` all at once: a picture cut short (the app stopped while writing it,
+/// another instance reading it meanwhile) is never there to be read back as the cached one.
+fn write_whole(dir: &std::path::Path, name: &str, bytes: &[u8]) {
+    let _ = std::fs::create_dir_all(dir);
+    let part = dir.join(format!("{name}.{}.part", std::process::id()));
+    if std::fs::write(&part, bytes).is_ok() && std::fs::rename(&part, dir.join(name)).is_ok() {
+        return;
+    }
+    let _ = std::fs::remove_file(&part);
+}
+
 fn fetch(agent: &ureq::Agent, email: &str, hint: Option<&Hint>) -> State {
     let dir = cache_dir();
     let k = cache_key(email, hint);
@@ -276,8 +287,7 @@ fn fetch(agent: &ureq::Agent, email: &str, hint: Option<&Hint>) -> State {
     match download(agent, &url) {
         Answer::Picture(bytes) => {
             if let Some(dir) = &dir {
-                let _ = std::fs::create_dir_all(dir);
-                let _ = std::fs::write(dir.join(format!("{k}.img")), &bytes);
+                write_whole(dir, &format!("{k}.img"), &bytes);
             }
             State::Ready(Arc::from(bytes.into_boxed_slice()), k)
         }
@@ -328,6 +338,18 @@ pub fn paint(ui: &egui::Ui, rect: Rect, email: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cached_picture_is_written_whole_and_alone() {
+        let dir = std::env::temp_dir().join(format!("gitcraft-avatars-{}", std::process::id()));
+        write_whole(&dir, "k.img", b"one");
+        write_whole(&dir, "k.img", b"two");
+        let read = std::fs::read(dir.join("k.img")).unwrap_or_default();
+        let files = std::fs::read_dir(&dir).map(Iterator::count).unwrap_or(0);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(read, b"two");
+        assert_eq!(files, 1);
+    }
 
     #[test]
     fn hinted_sources() {

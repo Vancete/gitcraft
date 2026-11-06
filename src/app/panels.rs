@@ -155,7 +155,7 @@ impl App {
 
 /// A desktop notification, on its own thread (it can take a moment to show).
 fn notify(text: &str) {
-    let text = text.to_owned();
+    let text = notification_body(text);
     std::thread::spawn(move || {
         let _ = notify_rust::Notification::new()
             .appname("gitcraft")
@@ -163,4 +163,35 @@ fn notify(text: &str) {
             .body(&text)
             .show();
     });
+}
+
+/// `text` as a notification's body. Linux notification servers read the body as markup, and
+/// what is shown comes partly from a remote's messages: its `<` and `&` are text, not tags or
+/// links.
+fn notification_body(text: &str) -> String {
+    if cfg!(all(unix, not(target_os = "macos"))) {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    } else {
+        text.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_notification_shows_tags_as_text() {
+        let body = notification_body("push failed: remote: <a href=\"https://x\">see</a> & more");
+        if cfg!(all(unix, not(target_os = "macos"))) {
+            assert_eq!(
+                body,
+                "push failed: remote: &lt;a href=\"https://x\"&gt;see&lt;/a&gt; &amp; more"
+            );
+        } else {
+            assert!(body.contains("<a href"));
+        }
+    }
 }
