@@ -107,6 +107,7 @@ impl App {
             .unwrap_or_default();
         let ctx = &cc.egui_ctx;
         egui_extras::install_image_loaders(ctx);
+        crate::image_fit::install(ctx);
         theme::install_fonts(ctx);
         theme::apply(ctx, saved.theme);
         saved.settings.set(ctx);
@@ -298,7 +299,11 @@ impl App {
             Some(Tab::Repo(repo)) => {
                 repo.keys_blocked =
                     self.palette.is_some() || self.manual_open || self.clone_form.is_some();
-                repo.ui(ui);
+                // Its widgets' state (scroll offsets, text fields' undo, open menus) is its own:
+                // every repository tab lays out the same widgets, which would otherwise share
+                // it with the tab shown before.
+                let scope = repo_scope(&repo.path);
+                ui.push_id(scope, |ui| repo.ui(ui));
                 // A tab asked for a folder to be opened.
                 match repo.open_request.take() {
                     Some(OpenRequest::NewTab(path)) => self.open_repo(&path, &ctx),
@@ -435,6 +440,11 @@ fn active_among_kept(kept: &[bool], active: usize) -> usize {
         .filter(|&&k| k)
         .count()
         .saturating_sub(1)
+}
+
+/// What the widgets of the repository tab of `path` are told apart from another tab's by.
+fn repo_scope(path: &Path) -> egui::Id {
+    egui::Id::new(("repo-tab", path))
 }
 
 /// The top of the repository `path` is in, in the form tabs are told apart by.

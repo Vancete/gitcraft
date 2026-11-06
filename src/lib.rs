@@ -8,6 +8,7 @@ mod forge;
 mod git;
 mod graph;
 mod icons;
+mod image_fit;
 mod manual;
 mod mergiraf;
 mod pr_post;

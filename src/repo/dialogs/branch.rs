@@ -2,8 +2,8 @@
 
 use egui::Ui;
 
-use crate::repo::{Action, Refresh, Undo};
 use crate::repo::operations::expect_ref_at;
+use crate::repo::{Action, Refresh, Undo};
 use crate::theme::Tokens;
 
 use super::{Outcome, buttons, dash_spaces, field, title, usable};

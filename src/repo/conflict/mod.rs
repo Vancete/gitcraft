@@ -212,7 +212,8 @@ fn unresolved_in(result: &str, segments: &[Segment]) -> usize {
 impl ConflictEditor {
     /// Opens `path` if it still has conflict markers.
     pub fn open(repo: &Path, path: &str, state: Option<InProgress>) -> Option<Self> {
-        let text = std::fs::read_to_string(repo.join(path)).ok()?;
+        // Not through a link: a merge can leave one from the other side here.
+        let text = String::from_utf8(crate::git::worktree_file(&repo.join(path)).ok()?).ok()?;
         let (segments, ours_label, theirs_label) = parse(&text);
         let conflicts = segments
             .iter()
@@ -238,7 +239,11 @@ impl ConflictEditor {
 
     /// Whether the file in the repository at `repo` is no longer as it was opened.
     pub fn changed_on_disk(&self, repo: &Path) -> bool {
-        std::fs::read_to_string(repo.join(&self.path)).ok().as_ref() != Some(&self.opened)
+        crate::git::worktree_file(&repo.join(&self.path))
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .as_ref()
+            != Some(&self.opened)
     }
 
     /// Takes `text`, the file with some of its conflicts solved elsewhere (by Mergiraf): the
@@ -489,6 +494,30 @@ mod tests {
         // All solved: nothing left to choose, ready to save.
         assert_eq!(ed.take_solved("ab\nmid\ncd\n".into()), 0);
         assert_eq!(ed.unresolved(), 0);
+        Ok(())
+    }
+
+    /// A merge leaves the other side's link where it conflicts with a file: the editor doesn't
+    /// read (or later write) what it points to, which may never end (`/dev/zero`) or have
+    /// conflict markers of its own.
+    #[cfg(unix)]
+    #[test]
+    fn a_conflicted_link_is_not_followed() -> Result<(), String> {
+        let dir =
+            std::env::temp_dir().join(format!("gitcraft-conflict-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let marked = "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> x\n";
+        std::fs::write(dir.join("elsewhere"), marked).map_err(|e| e.to_string())?;
+        std::os::unix::fs::symlink(dir.join("elsewhere"), dir.join("f"))
+            .map_err(|e| e.to_string())?;
+        std::os::unix::fs::symlink("/dev/zero", dir.join("z")).map_err(|e| e.to_string())?;
+        let (link, zero) = (
+            ConflictEditor::open(&dir, "f", None),
+            ConflictEditor::open(&dir, "z", None),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(link.is_none() && zero.is_none());
         Ok(())
     }
 

@@ -8,11 +8,28 @@ use super::{END_OPTS, FS, LITERAL_PATHS, NO_SIGNATURE, RS, UTF8, not_an_option, 
 /// `rev` is `None`.
 pub fn file_at(repo: &Path, rev: Option<&str>, path: &str) -> Result<Vec<u8>, String> {
     match rev {
-        None => std::fs::read(repo.join(path)).map_err(|e| format!("{path}: {e}")),
+        None => worktree_file(&repo.join(path)).map_err(|e| format!("{path}: {e}")),
         // The index as `:0:path`: `:path` of a file named `1:x` would be stage 1 of `x`.
         Some("") => run_bytes(Some(repo), &["show", END_OPTS, &format!(":0:{path}")]),
         Some(rev) => run_bytes(Some(repo), &["show", END_OPTS, &format!("{rev}:{path}")]),
     }
+}
+
+/// A file of the working tree as git sees it: a symbolic link is the path it holds (what git
+/// stores and diffs), not what it points to, which can be anywhere and need not end. A merge
+/// leaves the other side's link in place when it conflicts with a file (`x -> /dev/zero`):
+/// read through, the app would never stop reading it. Anything else but a file is refused.
+pub fn worktree_file(file: &Path) -> std::io::Result<Vec<u8>> {
+    let meta = std::fs::symlink_metadata(file)?;
+    if meta.file_type().is_symlink() {
+        return Ok(std::fs::read_link(file)?
+            .into_os_string()
+            .into_encoded_bytes());
+    }
+    if !meta.is_file() {
+        return Err(std::io::Error::other("not a file"));
+    }
+    std::fs::read(file)
 }
 
 /// Every file in the tree of commit `rev`, sorted by path.
@@ -235,6 +252,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(staged?, b"a\n");
         assert_eq!(tracked, (false, true));
+        Ok(())
+    }
+
+    /// A link on disk is read as git stores it, the path it holds, not what it points to.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_on_disk_is_its_target_path() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("gitcraft-disk-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::os::unix::fs::symlink("/dev/zero", dir.join("x")).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(dir.join("sub")).map_err(|e| e.to_string())?;
+        let link = file_at(&dir, None, "x");
+        let folder = file_at(&dir, None, "sub");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(link?, b"/dev/zero");
+        assert!(folder.is_err());
         Ok(())
     }
 

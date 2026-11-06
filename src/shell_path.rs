@@ -12,17 +12,29 @@ use std::time::{Duration, Instant};
 /// Folders added in any case (Homebrew on Apple silicon, then on Intel).
 const FALLBACK: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
 
-/// The PATH for commands gitcraft runs, when it differs from its own (macOS only).
+/// The PATH for commands gitcraft runs, when it differs from its own: on macOS the login
+/// shell's, elsewhere its own without relative folders. `gh`, `glab` and Mergiraf run in the
+/// repository's folder, where an empty entry or `.` (`PATH=$PATH:`) would run a `gh` the
+/// repository brought.
 pub fn path() -> Option<&'static OsString> {
     static PATH: OnceLock<Option<OsString>> = OnceLock::new();
     PATH.get_or_init(|| {
         if cfg!(target_os = "macos") {
             login_path()
         } else {
-            None
+            absolute_only(&std::env::var_os("PATH").unwrap_or_default())
         }
     })
     .as_ref()
+}
+
+/// `own` without its relative folders, when it has any.
+fn absolute_only(own: &OsString) -> Option<OsString> {
+    let dirs: Vec<PathBuf> = std::env::split_paths(own)
+        .filter(|d| d.is_absolute())
+        .collect();
+    let joined = std::env::join_paths(dirs).ok()?;
+    (joined != *own).then_some(joined)
 }
 
 /// Gives `cmd` that PATH.
@@ -135,6 +147,16 @@ mod tests {
             merged,
             ["/usr/bin", "/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_folders_are_left_out_everywhere() {
+        let own = OsString::from("/usr/bin:/bin:");
+        assert_eq!(absolute_only(&own), Some(OsString::from("/usr/bin:/bin")));
+        let own = OsString::from(".:/usr/bin::bin");
+        assert_eq!(absolute_only(&own), Some(OsString::from("/usr/bin")));
+        assert_eq!(absolute_only(&OsString::from("/usr/bin:/bin")), None);
     }
 
     #[test]
