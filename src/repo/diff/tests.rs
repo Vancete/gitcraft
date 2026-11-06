@@ -142,6 +142,25 @@ fn numbers_ignore_the_hunk_headers_function_name() {
     assert_eq!(lines[3].new, Some(14));
 }
 
+/// A hunk header that claims to start at the last line number there is: the numbers stop
+/// there rather than overflow.
+#[test]
+fn numbers_past_the_largest_stay_there() {
+    let lines = parse("@@ -4294967295 +4294967295 @@\n a\n b\n-c\n+d\n");
+    let numbers: Vec<_> = lines.iter().map(|l| (l.old, l.new)).collect();
+    let max = Some(u32::MAX);
+    assert_eq!(
+        numbers,
+        vec![
+            (None, None),
+            (max, max),
+            (max, max),
+            (max, None),
+            (None, max)
+        ]
+    );
+}
+
 /// The last line changed in a file without a final newline: its old and new versions are
 /// still side by side, the note after them.
 #[test]

@@ -94,20 +94,50 @@ pub(super) enum Msg {
     },
     /// Mergiraf's take on a conflicted file.
     Mergiraf(String, Result<String, String>),
+    /// Work started with [`spawn`] panicked (a bug, perhaps in a dependency): what it said.
+    JobPanicked(String),
 }
 
-/// Runs `job` on a background thread and wakes the UI when its message is sent.
+/// Runs `job` on a background thread and wakes the UI when its message is sent. Should it
+/// panic, [`Msg::JobPanicked`] comes instead: for work the tab waits for (an operation, a
+/// reload…), [`spawn_or`] says what to send then, so that the tab doesn't wait forever.
 pub(super) fn spawn(
     tx: &Sender<Msg>,
     ctx: &egui::Context,
     job: impl FnOnce() -> Msg + Send + 'static,
 ) {
+    spawn_or(tx, ctx, Msg::JobPanicked, job);
+}
+
+/// [`spawn`], sending what `failed` makes of what `job` said if it panics: the message it
+/// would have sent had it failed, so that whatever waits for that message (the busy
+/// operation, the loading flag…) is let go of.
+pub(super) fn spawn_or(
+    tx: &Sender<Msg>,
+    ctx: &egui::Context,
+    failed: impl FnOnce(String) -> Msg + Send + 'static,
+    job: impl FnOnce() -> Msg + Send + 'static,
+) {
     let tx = tx.clone();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        let _ = tx.send(job());
+        // What the job owned goes with it; a lock it held is left poisoned, which those
+        // taking it handle.
+        let msg = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job))
+            .unwrap_or_else(|payload| failed(panic_text(payload.as_ref())));
+        let _ = tx.send(msg);
         ctx.request_repaint();
     });
+}
+
+/// What a panic said, as an error to show.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    let said = payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no details".to_owned());
+    format!("Internal error: {said}")
 }
 
 impl RepoTab {
@@ -310,6 +340,7 @@ impl RepoTab {
                 }
             }
             Msg::Mergiraf(path, result) => self.mergiraf_done(path, result),
+            Msg::JobPanicked(e) => self.status = Some((e, true)),
             Msg::Search(query, code, result) => self.search_done(query, code, result, ctx),
             // Asked before the list asked for last (one read before a merge answering after
             // the one read since), or of the forge the remotes no longer point to.

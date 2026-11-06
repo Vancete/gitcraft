@@ -89,7 +89,8 @@ impl Terminal {
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        if let Some(path) = crate::shell_path::path() {
+        // The user's own PATH, relative folders and all: not the one for gitcraft's own tools.
+        if let Some(path) = crate::shell_path::terminal_path() {
             cmd.env("PATH", path);
         }
         let child = pair

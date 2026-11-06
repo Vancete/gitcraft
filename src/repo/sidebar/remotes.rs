@@ -93,6 +93,7 @@ impl RepoTab {
                 &tree,
                 &view,
                 &|_: &&Branch| false,
+                &|b: &&Branch| ("branch-row", remote_ref(&b.name)),
                 &mut |ui, row, b: &&Branch| {
                     self.remote_branch_row(ui, acts, &remote.name, b, row, idle);
                 },

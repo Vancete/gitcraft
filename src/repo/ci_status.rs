@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, Id, Painter, Pos2, Rect, Response, Sense, Stroke, Ui, vec2};
 
-use super::{Action, Msg, RepoTab, WIP_HASH, spawn};
+use super::{Action, Msg, RepoTab, WIP_HASH};
 use crate::ci::{self, CheckState, Project, Status};
 use crate::theme::Tokens;
 
@@ -141,7 +141,9 @@ impl RepoTab {
         self.ci.next = None;
         self.ci.asked = shas.iter().cloned().collect();
         let path = self.path.clone();
-        spawn(&self.tx, ctx, move || {
+        // Answered all the same if it panics: no statuses are read again until it is.
+        let failed = move |e| Msg::CiStatuses(fresh, Err(e));
+        super::messages::spawn_or(&self.tx, ctx, failed, move || {
             Msg::CiStatuses(fresh, ci::statuses(&path, &project, &shas))
         });
     }

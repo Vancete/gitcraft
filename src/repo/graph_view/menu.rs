@@ -6,7 +6,7 @@ use super::badge::{BadgeKind, badges};
 use super::compare_items;
 use crate::git;
 use crate::repo::actions::{BranchRef, interactive_rebase_action};
-use crate::repo::operations::expect_ref_at;
+use crate::repo::operations::{expect_ref_at, expect_symref};
 use crate::repo::{
     Action, Dialog, Refresh, RepoTab, Undo, WIP_HASH, fast_forward_action, merge_action, ops,
     rebase_action,
@@ -383,12 +383,19 @@ fn reset_items(ui: &mut Ui, r: &Rewrite<'_>, acts: &mut Vec<Action>) {
 /// `git reset <mode> <hash>` of the branch `target` (or of a detached `HEAD`), which the dialog
 /// asking first named, at `head`: it resets whatever is checked out when it runs, so it refuses
 /// once that has moved (another branch checked out, a commit made, in the terminal, while the
-/// dialog was open). A hard reset would throw away that branch's uncommitted work.
+/// dialog was open). A hard reset would throw away that branch's uncommitted work. That it is
+/// still `target` that is checked out is checked by name: another branch at the same commit
+/// resolves the same.
 fn reset_steps(mode: &str, hash: &str, target: &str, head: &str) -> Vec<Vec<String>> {
-    let mut steps = vec![expect_ref_at("HEAD", head)];
-    if target != "HEAD" {
-        steps.push(expect_ref_at(&format!("refs/heads/{target}"), head));
-    }
+    let checked_out = if target == "HEAD" {
+        String::new()
+    } else {
+        format!("refs/heads/{target}")
+    };
+    let mut steps = vec![
+        expect_symref("HEAD", &checked_out),
+        expect_ref_at("HEAD", head),
+    ];
     steps.extend(ops(&[&["reset", mode, hash]]));
     steps
 }
@@ -457,5 +464,50 @@ mod tests {
         assert_eq!(kept, (other, true));
         assert!(back.is_ok() && reset.is_ok());
         assert_eq!(now, base);
+    }
+
+    /// Nor once another branch at the same commit is checked out: it would move that branch.
+    /// And one asked for on a detached HEAD refuses once a branch is checked out there.
+    #[test]
+    fn a_reset_refuses_once_a_branch_at_the_same_commit_is_checked_out() {
+        let dir = std::env::temp_dir().join(format!("gitcraft-reset-same-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let git = |args: &[&str]| git::run(Some(&dir), args);
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["commit", "-q", "--allow-empty", "-m", "base"],
+        ] {
+            assert!(git(args).is_ok(), "{args:?}");
+        }
+        let base = git::head(&dir);
+        assert!(git(&["commit", "-q", "--allow-empty", "-m", "two"]).is_ok());
+        let seen = git::head(&dir);
+        let steps = reset_steps("--hard", &base, "main", &seen);
+        let detached = reset_steps("--hard", &base, "HEAD", &seen);
+        // `feature` is where `main` is, and gets checked out while the dialog is open.
+        let switched = git(&["switch", "-q", "-c", "feature"]);
+        let (refused, _) = run_steps(&dir, &steps, OpKind::plain(), None);
+        let (refused_detached, _) = run_steps(&dir, &detached, OpKind::plain(), None);
+        let feature = git::resolve(&dir, "refs/heads/feature");
+        // Back on main, it goes through; detached, so does the other.
+        let back = git(&["switch", "-q", "main"]);
+        let (reset, _) = run_steps(&dir, &steps, OpKind::plain(), None);
+        let main = git::resolve(&dir, "refs/heads/main");
+        let detach = git(&["switch", "-q", "--detach", "feature"]);
+        let (reset_detached, _) = run_steps(&dir, &detached, OpKind::plain(), None);
+        let (head, feature_after) = (git::head(&dir), git::resolve(&dir, "refs/heads/feature"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(switched.is_ok() && back.is_ok() && detach.is_ok());
+        assert!(refused.is_err());
+        assert!(refused_detached.is_err());
+        assert_eq!(feature, Ok(seen.clone()));
+        assert!(reset.is_ok(), "{reset:?}");
+        assert_eq!(main, Ok(base.clone()));
+        assert!(reset_detached.is_ok(), "{reset_detached:?}");
+        assert_eq!(head, base);
+        assert_eq!(feature_after, Ok(seen));
     }
 }

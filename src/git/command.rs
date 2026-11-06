@@ -60,7 +60,7 @@ pub(super) fn spawn_piped(dir: &Path, args: &[&str]) -> Result<std::process::Chi
 
 /// Like [`run`], but exit codes in `ok` count as success (`diff --no-index` exits 1 on changes).
 pub fn run_ok_codes(dir: Option<&Path>, args: &[&str], ok: &[i32]) -> Result<String, String> {
-    run_inner(dir, args, ok, None)
+    run_inner(dir, args, ok, None, false)
 }
 
 /// A username and password (or token) for an HTTPS remote, typed into gitcraft.
@@ -83,7 +83,30 @@ pub fn run_with(
     args: &[&str],
     creds: Option<&Credentials>,
 ) -> Result<String, String> {
-    run_inner(dir, args, &[0], creds)
+    run_inner(dir, args, &[0], creds, false)
+}
+
+/// [`run_with`] for an operation nobody is waiting on (the background fetch): it asks nobody
+/// for credentials (see [`unattended`]). Helpers that answer from what they stored still do,
+/// as do credentials typed into the tab (`creds`).
+pub fn run_unattended(
+    dir: Option<&Path>,
+    args: &[&str],
+    creds: Option<&Credentials>,
+) -> Result<String, String> {
+    run_inner(dir, args, &[0], creds, true)
+}
+
+/// Sets `cmd` (before its subcommand) to open no sign-in window: no credential helper window
+/// (Git Credential Manager and git ≥ 2.46 heed `credential.interactive`), nor git's askpass
+/// program. git reads `GIT_ASKPASS` before `core.askPass` and `SSH_ASKPASS`, so an inherited one
+/// (VS Code's terminal, ksshaskpass) would win over an empty `core.askPass`, and its being set
+/// but empty makes git skip all three. ssh, which has no terminal here, would run
+/// `SSH_ASKPASS` itself: `SSH_ASKPASS_REQUIRE=never` stops that.
+fn unattended(cmd: &mut Command) {
+    cmd.args(["-c", "credential.interactive=false", "-c", "core.askPass="]);
+    cmd.env("GIT_ASKPASS", "");
+    cmd.env("SSH_ASKPASS_REQUIRE", "never");
 }
 
 /// Whether `err` says git needed a username / password it couldn't get or that were refused.
@@ -108,10 +131,14 @@ fn run_inner(
     args: &[&str],
     ok: &[i32],
     creds: Option<&Credentials>,
+    quiet: bool,
 ) -> Result<String, String> {
     let mut cmd = git_cmd();
     if let Some(dir) = dir {
         cmd.arg("-C").arg(dir);
+    }
+    if quiet {
+        unattended(&mut cmd);
     }
     if let Some(c) = creds {
         cmd.args(["-c", ENV_HELPER]);
@@ -180,6 +207,147 @@ mod tests {
         );
         assert!(text.contains(&format!("username={user}\n")), "{text}");
         assert!(text.contains(&format!("password={pass}\n")), "{text}");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn scratch(name: &str) -> Result<std::path::PathBuf, String> {
+        let dir = std::env::temp_dir().join(format!("gitcraft-cmd-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        Ok(dir)
+    }
+
+    /// A script that leaves `marker` behind when run, then prints `x` (an askpass answer).
+    #[cfg(unix)]
+    fn marking_script(dir: &Path, marker: &Path) -> Result<std::path::PathBuf, String> {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("askpass.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\necho x\n", marker.display()),
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+        Ok(script)
+    }
+
+    /// Whether git, asked for a credential (quietly or not) in an environment that sets
+    /// `SSH_ASKPASS` (KDE's opens a window) and maybe `GIT_ASKPASS` (VS Code's terminal), ran
+    /// the askpass program.
+    #[cfg(unix)]
+    fn askpass_asked(dir: &Path, quiet: bool, git_askpass: bool) -> Result<bool, String> {
+        let marker = dir.join("asked");
+        let _ = std::fs::remove_file(&marker);
+        let script = marking_script(dir, &marker)?;
+        let mut cmd = git_cmd();
+        // What the app inherited, which `unattended` then has to override.
+        cmd.env("SSH_ASKPASS", &script);
+        if git_askpass {
+            cmd.env("GIT_ASKPASS", &script);
+        } else {
+            cmd.env_remove("GIT_ASKPASS");
+        }
+        if quiet {
+            unattended(&mut cmd);
+        }
+        let mut child = cmd
+            .args(["-c", "credential.helper=", "credential", "fill"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(b"protocol=https\nhost=example.invalid\n\n");
+        }
+        child.wait().map_err(|e| e.to_string())?;
+        Ok(marker.exists())
+    }
+
+    /// The background fetch asks nobody to sign in, every few minutes, through a window: not
+    /// even with a `GIT_ASKPASS` in the environment, which git reads before `core.askPass`.
+    #[cfg(unix)]
+    #[test]
+    fn a_quiet_operation_opens_no_sign_in_window() -> Result<(), String> {
+        let dir = scratch("unattended")?;
+        let asked = [(false, false), (true, false), (false, true), (true, true)]
+            .map(|(quiet, git_askpass)| askpass_asked(&dir, quiet, git_askpass));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Without it, git does ask (or the test would prove nothing).
+        assert_eq!(asked, [Ok(true), Ok(false), Ok(true), Ok(false)]);
+        Ok(())
+    }
+
+    /// Nor does ssh, which runs `SSH_ASKPASS` itself when it has no terminal.
+    #[cfg(unix)]
+    #[test]
+    fn a_quiet_operation_tells_ssh_to_ask_nobody() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("unattended-ssh")?;
+        let seen = dir.join("seen");
+        let ssh = dir.join("ssh.sh");
+        std::fs::write(
+            &ssh,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$SSH_ASKPASS_REQUIRE\" > '{}'\nexit 1\n",
+                seen.display()
+            ),
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+        let mut cmd = git_cmd();
+        cmd.env("GIT_SSH_COMMAND", &ssh)
+            .env_remove("SSH_ASKPASS_REQUIRE");
+        unattended(&mut cmd);
+        let out = cmd
+            .args(["ls-remote", "ssh://example.invalid/repo.git"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let required = std::fs::read_to_string(&seen);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!out.status.success());
+        assert_eq!(required.map_err(|e| e.to_string())?, "never");
+        Ok(())
+    }
+
+    /// Credentials typed into the tab still answer a quiet operation.
+    #[test]
+    fn typed_credentials_answer_a_quiet_operation() -> Result<(), String> {
+        let mut cmd = git_cmd();
+        unattended(&mut cmd);
+        let mut child = cmd
+            .args([
+                "-c",
+                "credential.helper=",
+                "-c",
+                ENV_HELPER,
+                "credential",
+                "fill",
+            ])
+            .env("GITCRAFT_GIT_USERNAME", "nancy")
+            .env("GITCRAFT_GIT_PASSWORD", "secret")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(b"protocol=https\nhost=example.invalid\n\n")
+                .map_err(|e| e.to_string())?;
+        }
+        let out = child.wait_with_output().map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(text.contains("username=nancy\n"), "{text}");
+        assert!(text.contains("password=secret\n"), "{text}");
         Ok(())
     }
 }

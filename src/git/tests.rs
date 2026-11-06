@@ -111,6 +111,7 @@ fn relative_times() {
     assert_eq!(relative_time(0, 3 * 604_800), "3 weeks ago");
     assert_eq!(relative_time(0, 400 * 86_400), "1 year ago");
     assert_eq!(relative_time(100, 50), "just now");
+    assert_eq!(relative_time(i64::MIN, 1), "292271023045 years ago");
 }
 
 #[test]

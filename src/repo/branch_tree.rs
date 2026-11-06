@@ -31,65 +31,126 @@ pub(super) struct Folder<'a, T> {
     pub children: Vec<Node<'a, T>>,
 }
 
+// Folders can nest as deep as a repository makes them (thousands of levels, in one made to
+// do it): nothing here recurses over them, which would run out of stack (1 MiB for the main
+// thread on Windows).
+
+impl<T> Drop for Folder<'_, T> {
+    /// A level at a time: dropped recursively, deep folders would run out of stack.
+    fn drop(&mut self) {
+        let mut rest = std::mem::take(&mut self.children);
+        while let Some(node) = rest.pop() {
+            if let Node::Folder(mut folder) = node {
+                rest.append(&mut folder.children);
+            }
+        }
+    }
+}
+
 impl<T> Folder<'_, T> {
     /// How many branches are in here, at any depth.
     pub fn leaves(&self) -> usize {
-        self.children
-            .iter()
-            .map(|node| match node {
-                Node::Folder(folder) => folder.leaves(),
-                Node::Leaf { .. } => 1,
-            })
-            .sum()
+        let mut count = 0;
+        let mut levels = vec![self.children.as_slice()];
+        while let Some(nodes) = levels.pop() {
+            for node in nodes {
+                match node {
+                    Node::Folder(folder) => levels.push(&folder.children),
+                    Node::Leaf { .. } => count += 1,
+                }
+            }
+        }
+        count
     }
 
     /// Whether a branch in here, at any depth, satisfies `pred`.
     pub fn any(&self, pred: &impl Fn(&T) -> bool) -> bool {
-        self.children.iter().any(|node| match node {
-            Node::Folder(folder) => folder.any(pred),
-            Node::Leaf { item, .. } => pred(item),
-        })
+        let mut levels = vec![self.children.as_slice()];
+        while let Some(nodes) = levels.pop() {
+            for node in nodes {
+                match node {
+                    Node::Folder(folder) => levels.push(&folder.children),
+                    Node::Leaf { item, .. } if pred(item) => return true,
+                    Node::Leaf { .. } => {}
+                }
+            }
+        }
+        false
     }
+}
+
+/// What goes in a folder while the tree is built.
+enum Part<'a, T> {
+    /// A folder, by where it is in the list of them.
+    Folder(usize),
+    Leaf(&'a str, T),
 }
 
 /// The tree of `(name, item)`. Siblings keep the order they first appear in, so a sorted list
 /// stays sorted.
 pub(super) fn build<'a, T>(items: impl IntoIterator<Item = (&'a str, T)>) -> Vec<Node<'a, T>> {
-    let mut roots = Vec::new();
-    // Where each folder is among its siblings, by its whole path: a folder can hold thousands
-    // of files, and looking through them for each would be quadratic.
-    let mut folders = HashMap::new();
-    for (name, item) in items {
-        insert(&mut roots, &mut folders, name, 0, item);
+    // The folders in the order they are found, each after the one holding it; the first holds
+    // the top level.
+    let mut found: Vec<(&'a str, &'a str, Vec<Part<'a, T>>)> = vec![("", "", Vec::new())];
+    // Each folder by the one holding it and its own name: a folder can hold thousands of files,
+    // and looking through them for each would be quadratic; by its whole path, hashing each
+    // folder of each name would take time growing with the cube of how deep they go.
+    let mut folders: HashMap<(usize, &'a str), usize> = HashMap::new();
+    // The name before, and its folders: where each one's name ends in it, and which it is.
+    // Those the next name shares (most of them, in a sorted list) need no looking up.
+    let mut before = "";
+    let mut opened: Vec<(usize, usize)> = Vec::new();
+    for (full, item) in items {
+        let shared = opened.partition_point(|&(end, _)| {
+            end + 1 < full.len() && full.as_bytes().get(..=end) == before.as_bytes().get(..=end)
+        });
+        opened.truncate(shared);
+        let (mut parent, mut start) = opened.last().map_or((0, 0), |&(end, f)| (f, end + 1));
+        // A slash at the end doesn't open a folder: git shows a nested repository as `sub/`.
+        while let Some(end) = full[start..]
+            .find('/')
+            .map(|i| start + i)
+            .filter(|&end| end + 1 < full.len())
+        {
+            let name = &full[start..end];
+            let next = found.len();
+            let folder = *folders.entry((parent, name)).or_insert(next);
+            if folder == next {
+                found.push((name, &full[..end], Vec::new()));
+                if let Some((_, _, parts)) = found.get_mut(parent) {
+                    parts.push(Part::Folder(folder));
+                }
+            }
+            opened.push((end, folder));
+            parent = folder;
+            start = end + 1;
+        }
+        before = full;
+        if let Some((_, _, parts)) = found.get_mut(parent) {
+            parts.push(Part::Leaf(&full[start..], item));
+        }
     }
-    roots
-}
-
-/// Puts `item` into `nodes`, for the part of the name `full` that starts at `start`.
-fn insert<'a, T>(
-    nodes: &mut Vec<Node<'a, T>>,
-    folders: &mut HashMap<&'a str, usize>,
-    full: &'a str,
-    start: usize,
-    item: T,
-) {
-    let rest = &full[start..];
-    // A slash at the end doesn't open a folder: git shows a nested repository as `sub/`.
-    let Some(slash) = rest.find('/').filter(|&i| i + 1 < rest.len()) else {
-        nodes.push(Node::Leaf { name: rest, item });
-        return;
-    };
-    let path = &full[..start + slash];
-    let index = *folders.entry(path).or_insert_with(|| {
-        nodes.push(Node::Folder(Folder {
-            name: &rest[..slash],
-            path,
-            children: Vec::new(),
-        }));
-        nodes.len() - 1
-    });
-    if let Some(Node::Folder(folder)) = nodes.get_mut(index) {
-        insert(&mut folder.children, folders, full, start + slash + 1, item);
+    // From the last folder found back to the first: those in a folder are made before it.
+    let mut made: Vec<Option<Folder<'a, T>>> = (0..found.len()).map(|_| None).collect();
+    while let Some((name, path, parts)) = found.pop() {
+        let children = parts
+            .into_iter()
+            .filter_map(|part| match part {
+                Part::Folder(i) => made.get_mut(i).and_then(Option::take).map(Node::Folder),
+                Part::Leaf(name, item) => Some(Node::Leaf { name, item }),
+            })
+            .collect();
+        if let Some(slot) = made.get_mut(found.len()) {
+            *slot = Some(Folder {
+                name,
+                path,
+                children,
+            });
+        }
+    }
+    match made.first_mut().and_then(Option::take) {
+        Some(mut top) => std::mem::take(&mut top.children),
+        None => Vec::new(),
     }
 }
 
@@ -104,19 +165,22 @@ pub(super) struct LeafRow<'a> {
 /// Merges each folder whose only child is a folder with it, `src/repo` instead of `src` holding
 /// `repo`, and puts folders before what isn't one, at every level.
 pub(super) fn compact<T>(nodes: &mut [Node<'_, T>]) {
-    nodes.sort_by_key(|node| !matches!(node, Node::Folder(_)));
-    for node in nodes {
-        if let Node::Folder(folder) = node {
-            while let [Node::Folder(_)] = folder.children.as_slice() {
-                let Some(Node::Folder(child)) = folder.children.pop() else {
-                    break;
-                };
-                let start = folder.path.len() - folder.name.len();
-                folder.name = &child.path[start..];
-                folder.path = child.path;
-                folder.children = child.children;
+    let mut levels = vec![nodes];
+    while let Some(nodes) = levels.pop() {
+        nodes.sort_by_key(|node| !matches!(node, Node::Folder(_)));
+        for node in nodes {
+            if let Node::Folder(folder) = node {
+                while let [Node::Folder(_)] = folder.children.as_slice() {
+                    let Some(Node::Folder(mut child)) = folder.children.pop() else {
+                        break;
+                    };
+                    let start = folder.path.len() - folder.name.len();
+                    folder.name = &child.path[start..];
+                    folder.path = child.path;
+                    folder.children = std::mem::take(&mut child.children);
+                }
+                levels.push(&mut folder.children);
             }
-            compact(&mut folder.children);
         }
     }
 }
@@ -172,7 +236,9 @@ pub(super) fn files<'a, T>(
         // shown), row by row.
         if egui::Popup::is_any_open(ui.ctx()) {
             for f in files {
-                if !skip_unseen(ui, widgets::ROW_H) {
+                if widgets::keyed_row_menu_open(ui, file_key(path(f)))
+                    || !skip_unseen(ui, widgets::ROW_H)
+                {
                     row(ui, None, f);
                 }
             }
@@ -209,9 +275,15 @@ pub(super) fn files<'a, T>(
         left: 18.0,
         leaf_h: Some(widgets::ROW_H),
     };
-    show(ui, &tree, &view, selected, &mut |ui, leaf, f| {
+    let key = |f: &&'a T| file_key(path(f));
+    show(ui, &tree, &view, selected, &key, &mut |ui, leaf, f| {
         row(ui, Some(leaf.indent), f);
     });
+}
+
+/// What [`widgets::file_row`] knows the row of the file at `path` by.
+fn file_key(path: &str) -> (&'static str, &str) {
+    ("file-row", path)
 }
 
 /// The panel-header switch that shows files as a flat list of their paths or as a tree of their
@@ -226,22 +298,35 @@ pub(super) fn files_toggle(ui: &mut Ui) {
 }
 
 /// Shows the rows of a tree, with `leaf` drawing the branches. A folder with a branch for which
-/// `is_head` holds stands out, so that a collapsed tree still shows where HEAD is.
-pub(super) fn show<'a, T>(
+/// `is_head` holds stands out, so that a collapsed tree still shows where HEAD is. `key` is what
+/// `leaf` gives its row to [`widgets::keyed_row`]: a row out of sight is drawn all the same
+/// while its menu is open, as a menu not shown for a frame closes.
+pub(super) fn show<'a, T, K: egui::AsIdSalt>(
     ui: &mut Ui,
     nodes: &[Node<'a, T>],
     view: &TreeView,
     is_head: &impl Fn(&T) -> bool,
+    key: &impl Fn(&T) -> K,
     leaf: &mut impl FnMut(&mut Ui, LeafRow<'a>, &T),
 ) {
-    for node in nodes {
+    // The folders open, outermost first, each with what is left to show of it.
+    let mut levels = vec![(nodes.iter(), view.indent)];
+    while let Some((nodes, indent)) = levels.last_mut() {
+        let indent = *indent;
+        let Some(node) = nodes.next() else {
+            levels.pop();
+            continue;
+        };
+        let view = &TreeView { indent, ..*view };
         match node {
-            Node::Leaf { .. } if view.leaf_h.is_some_and(|h| skip_unseen(ui, h)) => {}
+            Node::Leaf { item, .. }
+                if view.leaf_h.is_some_and(|h| {
+                    let menu = egui::Popup::is_any_open(ui.ctx())
+                        && widgets::keyed_row_menu_open(ui, key(item));
+                    !menu && skip_unseen(ui, h)
+                }) => {}
             Node::Leaf { name, item } => {
-                let row = LeafRow {
-                    name,
-                    indent: view.indent,
-                };
+                let row = LeafRow { name, indent };
                 leaf(ui, row, item);
             }
             Node::Folder(folder) => {
@@ -264,11 +349,7 @@ pub(super) fn show<'a, T>(
                     });
                 }
                 if open != toggled {
-                    let inner = TreeView {
-                        indent: view.indent + INDENT,
-                        ..*view
-                    };
-                    show(ui, &folder.children, &inner, is_head, leaf);
+                    levels.push((folder.children.iter(), indent + INDENT));
                 }
             }
         }
@@ -554,5 +635,142 @@ mod tests {
                 leaf("README.md", 3),
             ]
         );
+    }
+
+    #[test]
+    fn a_name_after_one_in_the_same_folders_goes_in_them() {
+        assert_eq!(
+            build([
+                ("a/b/1", 1),
+                ("a/c/2", 2),
+                ("a/b/3", 3),
+                ("a/c/", 4),
+                ("a/c/d/5", 5)
+            ]),
+            vec![folder(
+                "a",
+                "a",
+                vec![
+                    folder("b", "a/b", vec![leaf("1", 1), leaf("3", 3)]),
+                    folder(
+                        "c",
+                        "a/c",
+                        vec![leaf("2", 2), folder("d", "a/c/d", vec![leaf("5", 5)])]
+                    ),
+                    leaf("c/", 4),
+                ]
+            )]
+        );
+    }
+
+    /// A leaf out of sight whose menu is open is drawn all the same, found by its key (not its
+    /// place, which a reload can give another), or the menu would close.
+    #[test]
+    fn a_leaf_out_of_sight_with_its_menu_open_is_drawn() {
+        let names: Vec<String> = (0..200).map(|i| format!("f{i}")).collect();
+        let tree = build(names.iter().enumerate().map(|(i, n)| (n.as_str(), i)));
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let view = TreeView {
+            id: Id::new("menu"),
+            filtering: false,
+            indent: 0.0,
+            start_open: true,
+            left: 18.0,
+            leaf_h: Some(ROW_H),
+        };
+        let key = |i: &usize| ("leaf", *i);
+        let mut drawn = Vec::new();
+        for _ in 0..2 {
+            drawn.clear();
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0))),
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                ui.set_clip_rect(Rect::from_min_size(ui.cursor().min, vec2(300.0, 200.0)));
+                let menu = ui.id().with(key(&150)).with("popup");
+                if !egui::Popup::is_id_open(ui.ctx(), menu) {
+                    egui::Popup::open_id(ui.ctx(), menu);
+                }
+                show(ui, &tree, &view, &|_| false, &key, &mut |ui, _, i| {
+                    ui.allocate_space(vec2(10.0, ROW_H));
+                    drawn.push(*i);
+                });
+            })
+            .drop_without_applying_deltas();
+        }
+        assert!(drawn.contains(&150), "{drawn:?}");
+        assert!(!drawn.contains(&149), "{drawn:?}");
+        assert!(drawn.contains(&0));
+    }
+
+    /// `a/f`, `a/a/f`, … `a/…/a/f` (`depth` folders deep), and a lone chain beside them.
+    fn deep_paths(depth: usize) -> Vec<String> {
+        let mut paths: Vec<String> = (1..=depth).map(|d| "a/".repeat(d) + "f").collect();
+        paths.push("b/".repeat(depth) + "f");
+        paths
+    }
+
+    /// A repository can nest folders thousands deep: building the tree of a commit's files
+    /// (every frame), showing it and dropping it neither takes seconds nor runs out of stack.
+    #[test]
+    fn a_very_deep_tree_is_quick_and_needs_little_stack() -> Result<(), String> {
+        const DEPTH: usize = 3000;
+        let paths = deep_paths(DEPTH);
+        let worker = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let started = std::time::Instant::now();
+                let mut tree = build(paths.iter().enumerate().map(|(i, p)| (p.as_str(), i)));
+                compact(&mut tree);
+                let built = started.elapsed();
+                let count: usize = tree
+                    .iter()
+                    .map(|node| match node {
+                        Node::Folder(folder) => folder.leaves(),
+                        Node::Leaf { .. } => 1,
+                    })
+                    .sum();
+                let deepest = tree.iter().any(|node| match node {
+                    Node::Folder(folder) => folder.any(&|i| *i == DEPTH - 1),
+                    Node::Leaf { .. } => false,
+                });
+                // The chain of lone folders is one row.
+                let chain = tree.iter().find_map(|node| match node {
+                    Node::Folder(f) if f.name.starts_with('b') => Some(f.children.len()),
+                    _ => None,
+                });
+                // Every folder open, as file folders start.
+                let ctx = egui::Context::default();
+                crate::theme::install_fonts(&ctx);
+                let mut rows = 0;
+                ctx.run_ui(egui::RawInput::default(), |ui| {
+                    let view = TreeView {
+                        id: Id::new("deep"),
+                        filtering: false,
+                        indent: 0.0,
+                        start_open: true,
+                        left: 18.0,
+                        leaf_h: None,
+                    };
+                    show(ui, &tree, &view, &|_| false, &|i| *i, &mut |_, _, _| {
+                        rows += 1
+                    });
+                })
+                .drop_without_applying_deltas();
+                drop(tree);
+                (built, count, deepest, chain, rows)
+            })
+            .map_err(|e| e.to_string())?;
+        let (built, count, deepest, chain, rows) =
+            worker.join().map_err(|_| "ran out of stack".to_owned())?;
+        assert_eq!(count, DEPTH + 1);
+        assert!(deepest);
+        assert_eq!(chain, Some(1));
+        assert_eq!(rows, DEPTH + 1);
+        // It took about 5 s at 1500 deep, in a debug build.
+        assert!(built < std::time::Duration::from_millis(500), "{built:?}");
+        Ok(())
     }
 }

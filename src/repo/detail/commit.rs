@@ -396,11 +396,19 @@ fn reword_editor(ui: &mut Ui, reword: &mut Reword) -> Option<bool> {
     let can_save = !reword.subject.trim().is_empty();
     // The keys are the editor's from its own fields, or when nothing else has them: Escape in
     // the terminal or another field, or one closing a dialog, doesn't throw the message away.
+    // Escape in a text field takes the focus away before anything is drawn, so what counts is
+    // which widget had it as the pass began.
+    let ctx = ui.ctx().clone();
+    ctx.add_plugin(FocusBefore);
+    let before = ctx.data(|d| d.get_temp::<Option<egui::Id>>(egui::Id::new(FocusBefore::KEY)));
     let keys_here = summary.has_focus()
         || body.has_focus()
-        || ui
-            .ctx()
-            .memory(|m| m.focused().is_none() && m.top_modal_layer().is_none());
+        || match before {
+            Some(Some(id)) => id == summary.id || id == body.id,
+            Some(None) => ctx.memory(|m| m.focused().is_none() && m.top_modal_layer().is_none()),
+            // Not known yet (the editor's first pass): only its own fields.
+            None => false,
+        };
     let (save_keys, cancel_keys) = ui.input(|i| {
         (
             keys_here && i.modifiers.command && i.key_pressed(Key::Enter),
@@ -427,6 +435,27 @@ fn reword_editor(ui: &mut Ui, reword: &mut Reword) -> Option<bool> {
         out = Some(false);
     }
     out
+}
+
+/// Keeps in temp memory (under [`FocusBefore::KEY`]) which widget had the keyboard when the
+/// last pass ended, before the next one's input is taken in: egui then takes the focus away
+/// from a text field for an Escape pressed in it, so that afterwards an Escape typed in the
+/// commit box or a search field looks like one pressed with nothing focused.
+struct FocusBefore;
+
+impl FocusBefore {
+    const KEY: &'static str = "gitcraft-focus-before-pass";
+}
+
+impl egui::Plugin for FocusBefore {
+    fn debug_name(&self) -> &'static str {
+        "focus before the pass"
+    }
+
+    fn input_hook(&mut self, ctx: &egui::Context, _input: &mut egui::RawInput) {
+        let focused = ctx.memory(|m| m.focused());
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(Self::KEY), focused));
+    }
 }
 
 /// How many rows `text` wraps to across the space left in `ui`, and how tall each is.
@@ -457,37 +486,76 @@ fn clamped(ui: &Ui, text: RichText, rows: usize) -> egui::text::LayoutJob {
 mod tests {
     use super::*;
 
-    /// What the editor answers to Escape pressed while a terminal drawn after it has the
-    /// keyboard (keeping Escape for the shell), or while nothing has.
-    fn escape(terminal_focused: bool) -> Option<bool> {
+    /// What has the keyboard when a key is pressed with the reword editor open.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Focus {
+        Nothing,
+        /// The terminal, drawn after the editor, which keeps Escape for the shell.
+        Terminal,
+        /// A plain text field drawn before the editor (the search box).
+        FieldBefore,
+        /// A plain text field drawn after it (the commit box).
+        FieldAfter,
+        /// The editor's own summary.
+        Summary,
+    }
+
+    /// What the editor answers to Escape (or Ctrl+Enter when `save`) pressed while `focus` has
+    /// the keyboard.
+    fn press(focus: Focus, save: bool) -> Option<bool> {
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx);
         let mut reword = Reword {
             hash: "a".repeat(40),
             subject: "Fix the login".to_owned(),
             body: "A long explanation being typed".to_owned(),
-            focus: false,
+            focus: focus == Focus::Summary,
             fill: false,
         };
         let terminal_id = egui::Id::new("terminal");
-        let escape = egui::Event::Key {
-            key: Key::Escape,
+        let (key, modifiers) = if save {
+            (Key::Enter, egui::Modifiers::COMMAND)
+        } else {
+            (Key::Escape, egui::Modifiers::NONE)
+        };
+        let event = egui::Event::Key {
+            key,
             physical_key: None,
             pressed: true,
             repeat: false,
-            modifiers: egui::Modifiers::NONE,
+            modifiers,
         };
+        let mut other = "something typed".to_owned();
         let mut out = None;
-        for events in [Vec::new(), Vec::new(), vec![escape]] {
+        for (pass, events) in [
+            Vec::new(),
+            Vec::new(),
+            vec![egui::Event::ModifiersChanged(modifiers), event],
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let input = egui::RawInput {
                 events,
                 ..Default::default()
             };
             ctx.run_ui(input, |ui| {
+                let mut field = |ui: &mut Ui| {
+                    let r = ui.text_edit_singleline(&mut other);
+                    if pass == 0 {
+                        r.request_focus();
+                    }
+                };
+                if focus == Focus::FieldBefore {
+                    field(ui);
+                }
                 out = reword_editor(ui, &mut reword);
+                if focus == Focus::FieldAfter {
+                    field(ui);
+                }
                 let (_, rect) = ui.allocate_space(vec2(200.0, 100.0));
                 let terminal = ui.interact(rect, terminal_id, Sense::click());
-                if terminal_focused {
+                if focus == Focus::Terminal {
                     terminal.request_focus();
                     let keep = egui::EventFilter {
                         escape: true,
@@ -505,7 +573,21 @@ mod tests {
     /// reworded isn't thrown away. With nothing else holding the keyboard it cancels.
     #[test]
     fn escape_elsewhere_does_not_cancel_a_reword() {
-        assert_eq!(escape(true), None);
-        assert_eq!(escape(false), Some(false));
+        assert_eq!(press(Focus::Terminal, false), None);
+        // egui takes the focus from a text field for an Escape before the editor is drawn.
+        assert_eq!(press(Focus::FieldBefore, false), None);
+        assert_eq!(press(Focus::FieldAfter, false), None);
+        assert_eq!(press(Focus::Nothing, false), Some(false));
+        assert_eq!(press(Focus::Summary, false), Some(false));
+    }
+
+    /// Nor does Ctrl+Enter there save it.
+    #[test]
+    fn ctrl_enter_elsewhere_does_not_save_a_reword() {
+        assert_eq!(press(Focus::Terminal, true), None);
+        assert_eq!(press(Focus::FieldBefore, true), None);
+        assert_eq!(press(Focus::FieldAfter, true), None);
+        assert_eq!(press(Focus::Nothing, true), Some(true));
+        assert_eq!(press(Focus::Summary, true), Some(true));
     }
 }

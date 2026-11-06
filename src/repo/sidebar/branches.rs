@@ -64,6 +64,7 @@ impl RepoTab {
             &tree,
             &view,
             &|b: &&Branch| b.is_head,
+            &|b: &&Branch| ("branch-row", local_ref(&b.name)),
             &mut |ui, row, b: &&Branch| self.local_branch_row(ui, acts, b, row, idle),
         );
     }

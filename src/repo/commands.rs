@@ -3,8 +3,9 @@
 use std::time::Instant;
 
 use super::actions::BranchRef;
+use super::messages::spawn_or;
 use super::operations::{expect_ref, stash_push_args};
-use super::{Action, Msg, OpKind, Refresh, RepoTab, Undo, ops, sidebar, spawn};
+use super::{Action, Msg, OpKind, Refresh, RepoTab, Undo, ops, sidebar};
 use crate::forge;
 use crate::git::{self, Branch};
 
@@ -349,7 +350,19 @@ impl RepoTab {
         self.last_op = None;
         let path = self.path.clone();
         let creds = self.credentials.clone();
-        spawn(&self.tx, ctx, move || {
+        // Ended all the same if it panics: the tab stays busy until then.
+        let failed = {
+            let label = label.clone();
+            move |e| Msg::OpDone {
+                label,
+                result: Err(e),
+                refresh: Refresh::All,
+                kind: OpKind::plain(),
+                quiet: false,
+                stopped: 0,
+            }
+        };
+        spawn_or(&self.tx, ctx, failed, move || {
             // Publish the branch first, so the forge can see it.
             // No `:dst`, which would bypass `remote.<name>.push`.
             let refspec = format!("refs/heads/{branch}");

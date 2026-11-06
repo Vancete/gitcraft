@@ -541,3 +541,87 @@ fn aborting_asks_first() {
     };
     assert_eq!(asks, Some(ops(&[&["merge", "--abort"]])));
 }
+
+/// An undo that needed signing in stays undoable when the sign-in is cancelled, and signing in
+/// runs it again without leaving a second copy of it behind.
+#[test]
+fn an_undo_whose_sign_in_is_cancelled_stays_undoable() {
+    use super::{RepoTab, UndoEntry};
+    let dir = repo("sign-in-undo");
+    let ctx = egui::Context::default();
+    let mut tab = RepoTab::new_deferred(dir.clone(), &ctx);
+    // An undo git answers like one that needs signing in.
+    let entry = UndoEntry {
+        label: "Push".to_owned(),
+        undo: ops(&[&["push", "terminal prompts disabled", "refs/tags/v1"]]),
+        redo: Vec::new(),
+        heads: None,
+    };
+    tab.undo_stack.push(entry.clone());
+    tab.undo(&ctx);
+    let running = tab.undo_stack.len();
+    finish(&mut tab, &ctx);
+    let asked = matches!(tab.dialog, Some(super::Dialog::Credentials { .. }));
+    // Cancelled.
+    tab.dialog = None;
+    let after_cancel = tab.undo_stack.clone();
+    let creds = git::Credentials {
+        username: "u".to_owned(),
+        password: "p".to_owned(),
+    };
+    tab.sign_in(creds, &ctx);
+    let retrying = tab.undo_stack.len();
+    finish(&mut tab, &ctx);
+    let after_retry = tab.undo_stack.clone();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(running, 0);
+    assert!(asked);
+    assert_eq!(after_cancel, vec![entry.clone()]);
+    assert_eq!(retrying, 0);
+    // Refused again: back once more, still only once.
+    assert_eq!(after_retry, vec![entry]);
+}
+
+/// Work that panics (a bug in a dependency) still ends: the tab isn't left busy for good.
+#[test]
+fn an_operation_that_panics_leaves_the_tab_idle() {
+    use super::messages::spawn_or;
+    use super::{Msg, Refresh, RepoTab, spawn};
+    let dir = repo("job-panics");
+    let ctx = egui::Context::default();
+    let mut tab = RepoTab::new_deferred(dir.clone(), &ctx);
+    tab.busy_op = Some("Push".to_owned());
+    let failed = |e| Msg::OpDone {
+        label: "Push".to_owned(),
+        result: Err(e),
+        refresh: Refresh::Status,
+        kind: OpKind::plain(),
+        quiet: false,
+        stopped: 0,
+    };
+    spawn_or(&tab.tx, &ctx, failed, || {
+        std::panic::resume_unwind(Box::new("boom"))
+    });
+    finish(&mut tab, &ctx);
+    let op_status = tab.status.clone().map(|(s, _)| s);
+    // Work nothing waits for says so.
+    tab.status = None;
+    spawn(&tab.tx, &ctx, || {
+        std::panic::resume_unwind(Box::new("bang".to_owned()))
+    });
+    for _ in 0..400 {
+        tab.poll(&ctx);
+        if tab.status.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let job_status = tab.status.clone().map(|(s, _)| s);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(tab.busy_op.is_none());
+    assert_eq!(
+        op_status.as_deref(),
+        Some("Push failed: Internal error: boom")
+    );
+    assert_eq!(job_status.as_deref(), Some("Internal error: bang"));
+}

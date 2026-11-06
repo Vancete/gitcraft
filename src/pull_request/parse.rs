@@ -144,6 +144,16 @@ pub(crate) fn parse_time(iso: &str) -> Option<i64> {
     };
     let [year, month, day] = numbers(date, '-')?;
     let [hour, minute, second] = numbers(time.split('.').next()?, ':')?;
+    // Out of range is no time (and huge numbers would overflow below).
+    let fits = (0..=9999).contains(&year)
+        && (1..=12).contains(&month)
+        && (1..=31).contains(&day)
+        && (0..=23).contains(&hour)
+        && (0..=59).contains(&minute)
+        && (0..=60).contains(&second);
+    if !fits {
+        return None;
+    }
     // Days from the civil calendar, counted from the March before: leap days come last then.
     let year = if month <= 2 { year - 1 } else { year };
     let era = year.div_euclid(400);
@@ -298,6 +308,10 @@ mod tests {
         assert_eq!(parse_time("2026-11-02T20:37:34Z"), Some(1_793_651_854));
         assert_eq!(parse_time("not a time"), None);
         assert_eq!(parse_time(""), None);
+        // Out of range: no time, rather than an overflow.
+        assert_eq!(parse_time("0-0-52T9223372036854775807:4294967295:0Z"), None);
+        assert_eq!(parse_time("9223372036854775807-01-01T00:00:00Z"), None);
+        assert_eq!(parse_time("2026-13-01T00:00:00Z"), None);
     }
 
     #[test]

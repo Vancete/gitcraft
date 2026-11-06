@@ -20,9 +20,25 @@ pub fn path() -> Option<&'static OsString> {
     static PATH: OnceLock<Option<OsString>> = OnceLock::new();
     PATH.get_or_init(|| {
         if cfg!(target_os = "macos") {
-            login_path()
+            login_path(false)
         } else {
             absolute_only(&std::env::var_os("PATH").unwrap_or_default())
+        }
+    })
+    .as_ref()
+}
+
+/// The PATH for the embedded terminal, when it differs from gitcraft's own: on macOS the login
+/// shell's, elsewhere none (the terminal keeps gitcraft's own). Relative folders stay: what the
+/// user types there is theirs to run, and a deliberate `node_modules/.bin` must not go missing
+/// from their shell. Only the commands gitcraft starts by itself need [`path`].
+pub fn terminal_path() -> Option<&'static OsString> {
+    static PATH: OnceLock<Option<OsString>> = OnceLock::new();
+    PATH.get_or_init(|| {
+        if cfg!(target_os = "macos") {
+            login_path(true)
+        } else {
+            None
         }
     })
     .as_ref()
@@ -44,23 +60,27 @@ pub fn apply(cmd: &mut Command) {
     }
 }
 
-fn login_path() -> Option<OsString> {
+/// The login shell's PATH merged with gitcraft's own, with its relative folders if
+/// `keep_relative`. The shell is asked once, for both [`path`] and [`terminal_path`].
+fn login_path(keep_relative: bool) -> Option<OsString> {
+    static SHELL: OnceLock<OsString> = OnceLock::new();
     let own = std::env::var_os("PATH").unwrap_or_default();
-    let shell = shell_path().unwrap_or_default();
-    let joined = merge([&shell, &own]);
+    let shell = SHELL.get_or_init(|| shell_path().unwrap_or_default());
+    let joined = merge([shell, &own], keep_relative);
     (joined != own).then_some(joined)
 }
 
-/// Every folder of `paths` once, in order, then the fallbacks. Only whole paths: git runs in
-/// the repository's folder, where `.` or `bin` would find a `git` the repository brought.
-fn merge<const N: usize>(paths: [&OsString; N]) -> OsString {
+/// Every folder of `paths` once, in order, then the fallbacks. Only whole paths unless
+/// `keep_relative`: git runs in the repository's folder, where `.` or `bin` would find a `git`
+/// the repository brought.
+fn merge<const N: usize>(paths: [&OsString; N], keep_relative: bool) -> OsString {
     let mut dirs: Vec<PathBuf> = Vec::new();
     let candidates = paths
         .iter()
         .flat_map(|p| std::env::split_paths(p).collect::<Vec<_>>())
         .chain(FALLBACK.iter().map(PathBuf::from));
     for dir in candidates {
-        if dir.is_absolute() && !dirs.contains(&dir) {
+        if (keep_relative || dir.is_absolute()) && !dirs.contains(&dir) {
             dirs.push(dir);
         }
     }
@@ -130,7 +150,7 @@ mod tests {
     fn folders_are_kept_once_in_order() {
         let shell = std::env::join_paths(["/opt/homebrew/bin", "/usr/bin"]).unwrap_or_default();
         let own = std::env::join_paths(["/usr/bin", "/bin"]).unwrap_or_default();
-        let merged: Vec<PathBuf> = std::env::split_paths(&merge([&shell, &own])).collect();
+        let merged: Vec<PathBuf> = std::env::split_paths(&merge([&shell, &own], false)).collect();
         assert_eq!(
             merged,
             ["/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/local/bin"].map(PathBuf::from)
@@ -142,11 +162,43 @@ mod tests {
     fn folders_relative_to_the_repository_are_left_out() {
         let shell = OsString::from(".:bin:/usr/bin::node_modules/.bin");
         let merged: Vec<PathBuf> =
-            std::env::split_paths(&merge([&shell, &OsString::new()])).collect();
+            std::env::split_paths(&merge([&shell, &OsString::new()], false)).collect();
         assert_eq!(
             merged,
             ["/usr/bin", "/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from)
         );
+    }
+
+    /// The terminal's PATH is the user's own: a deliberate `node_modules/.bin` stays there.
+    #[cfg(unix)]
+    #[test]
+    fn the_terminal_keeps_relative_folders() {
+        let shell = OsString::from(".:/usr/bin:node_modules/.bin");
+        let own = OsString::from("/usr/bin:bin");
+        let merged: Vec<PathBuf> = std::env::split_paths(&merge([&shell, &own], true)).collect();
+        assert_eq!(
+            merged,
+            [
+                ".",
+                "/usr/bin",
+                "node_modules/.bin",
+                "bin",
+                "/opt/homebrew/bin",
+                "/usr/local/bin"
+            ]
+            .map(PathBuf::from)
+        );
+    }
+
+    /// Outside macOS the terminal gets gitcraft's PATH as it is, relative folders included,
+    /// while the commands gitcraft starts get it without them.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn outside_macos_the_terminal_keeps_the_apps_own_path() {
+        assert_eq!(terminal_path(), None);
+        let own = std::env::var_os("PATH").unwrap_or_default();
+        let tools = path().unwrap_or(&own);
+        assert!(std::env::split_paths(tools).all(|d| d.is_absolute()));
     }
 
     #[cfg(unix)]

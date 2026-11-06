@@ -114,7 +114,7 @@ pub fn identity(repo: &Path) -> Identity {
 
 /// "3 minutes ago", "2 days ago"… for `time` seen from `now` (both Unix seconds).
 pub fn relative_time(time: i64, now: i64) -> String {
-    let secs = (now - time).max(0);
+    let secs = now.saturating_sub(time).max(0);
     let (n, unit) = match secs {
         0..60 => return "just now".to_owned(),
         60..3_600 => (secs / 60, "minute"),

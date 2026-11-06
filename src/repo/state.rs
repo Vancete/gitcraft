@@ -31,7 +31,7 @@ pub(crate) enum Undo {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct UndoEntry {
     pub(super) label: String,
     pub(super) undo: Vec<Vec<String>>,

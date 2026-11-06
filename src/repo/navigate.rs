@@ -331,7 +331,12 @@ impl RepoTab {
         let code = self.search.code;
         // In the branches the graph shows.
         let from = self.log_from.clone();
-        spawn(&self.tx, ctx, move || {
+        // Answered all the same if it panics: the search runs until it is.
+        let failed = {
+            let query = query.clone();
+            move |e| Msg::Search(query, code, Err(e))
+        };
+        super::messages::spawn_or(&self.tx, ctx, failed, move || {
             let result = if code {
                 git::search_code(&path, from.as_deref(), &query)
             } else {

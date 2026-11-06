@@ -3,8 +3,9 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use super::messages::spawn_or;
 use super::toolbar::headline;
-use super::{Dialog, Msg, OpKind, PendingOp, Refresh, RepoTab, Undo, UndoEntry, ops, spawn};
+use super::{Dialog, Msg, OpKind, PendingOp, Refresh, RepoTab, Undo, UndoEntry, ops};
 use crate::git;
 
 /// An operation that takes longer than this gets a notification when it ends.
@@ -52,14 +53,27 @@ impl RepoTab {
                 quiet,
             });
         }
-        // Nor does a credential helper on its behalf: Git Credential Manager would otherwise
-        // open its sign-in window every few minutes while a token has expired.
-        let ops = if quiet { unattended(ops) } else { ops };
+        // Nor does a credential helper on its behalf (`run_steps_counted` runs it unattended): Git
+        // Credential Manager would otherwise open its sign-in window every few minutes while a
+        // token has expired.
         let path = self.path.clone();
         let label = label.to_owned();
         let creds = self.credentials.clone();
-        spawn(&self.tx, ctx, move || {
-            let (result, kind, stopped) = run_steps_counted(&path, &ops, kind, creds.as_ref());
+        // Ended all the same if it panics: the tab stays busy until then.
+        let failed = {
+            let (label, kind) = (label.clone(), kind.clone());
+            move |e| Msg::OpDone {
+                label,
+                result: Err(e),
+                refresh,
+                kind,
+                quiet,
+                stopped: 0,
+            }
+        };
+        spawn_or(&self.tx, ctx, failed, move || {
+            let (result, kind, stopped) =
+                run_steps_counted(&path, &ops, kind, creds.as_ref(), quiet);
             Msg::OpDone {
                 label,
                 result,
@@ -106,7 +120,21 @@ impl RepoTab {
                 true,
             ));
         } else if let Some(op) = self.last_op.take() {
+            self.take_back(&op.kind);
             self.run_ops_ex(&op.label, op.ops, op.refresh, op.kind, op.quiet, ctx);
+        }
+    }
+
+    /// Takes the undo or redo of `kind` off its stack again, to run it: it went back there when
+    /// it needed signing in, so that cancelling the sign-in keeps it (see `op_done`).
+    fn take_back(&mut self, kind: &OpKind) {
+        let (stack, entry) = match kind {
+            OpKind::Undo(entry) => (&mut self.undo_stack, entry),
+            OpKind::Redo(entry) => (&mut self.redo_stack, entry),
+            OpKind::Normal(..) => return,
+        };
+        if let Some(i) = stack.iter().rposition(|e| e == entry) {
+            stack.remove(i);
         }
     }
 
@@ -175,6 +203,13 @@ impl RepoTab {
                     .map(|r| r.url.clone())
                     .unwrap_or_default();
                 self.dialog = Some(Dialog::credentials(&url, refused));
+                // Back on its stack until signing in runs it again: the sign-in can be
+                // cancelled, and the undo must not be lost then.
+                match kind {
+                    OpKind::Undo(entry) => self.undo_stack.push(entry),
+                    OpKind::Redo(entry) => self.redo_stack.push(entry),
+                    OpKind::Normal(..) => {}
+                }
             }
             Err(e) => {
                 self.focus_wip = e.contains("CONFLICT") || e.contains("could not apply");
@@ -246,19 +281,20 @@ pub(super) fn run_steps(
     kind: OpKind,
     creds: Option<&git::Credentials>,
 ) -> (Result<String, String>, OpKind) {
-    let (result, kind, _) = run_steps_counted(path, ops, kind, creds);
+    let (result, kind, _) = run_steps_counted(path, ops, kind, creds, false);
     (result, kind)
 }
 
 /// Runs git commands one after another, stopping at the first failure; `kind` comes back with
 /// what undoing needs, as found on disk. Also says which step it stopped at (`ops.len()` when
 /// all ran): the steps before it are done, and running the operation again (after signing in)
-/// starts there.
+/// starts there. A `quiet` one asks nobody for credentials ([`git::run_unattended`]).
 pub(super) fn run_steps_counted(
     path: &Path,
     ops: &[Vec<String>],
     kind: OpKind,
     creds: Option<&git::Credentials>,
+    quiet: bool,
 ) -> (Result<String, String>, OpKind, usize) {
     // Undoing a HEAD move resets the branch checked out now: after a checkout or a commit made
     // elsewhere since, that would throw away commits that aren't the operation's.
@@ -298,11 +334,15 @@ pub(super) fn run_steps_counted(
     let mut result = Ok(String::new());
     let mut stopped = ops.len();
     for (i, op) in ops.iter().enumerate() {
-        if expected_ref(op).is_some() {
+        if is_expectation(op) {
             continue;
         }
         let args: Vec<&str> = op.iter().map(String::as_str).collect();
-        result = git::run_with(Some(path), &args, creds);
+        result = if quiet {
+            git::run_unattended(Some(path), &args, creds)
+        } else {
+            git::run_with(Some(path), &args, creds)
+        };
         if result.is_err() {
             stopped = i;
             break;
@@ -358,6 +398,16 @@ pub(super) fn expect_ref_at(name: &str, commit: &str) -> Vec<String> {
     vec![EXPECT.to_owned(), name.to_owned(), commit.to_owned()]
 }
 
+/// Marks a step that runs no git and expects a symbolic ref.
+const EXPECT_SYMREF: &str = "\u{0}expect-symref";
+
+/// A step that runs nothing, but refuses the whole operation unless the symbolic ref `name`
+/// (`HEAD`) points to the ref `target` (`refs/heads/main`), or is detached when `target` is
+/// empty: two branches at the same commit can't be told apart by what they resolve to.
+pub(super) fn expect_symref(name: &str, target: &str) -> Vec<String> {
+    vec![EXPECT_SYMREF.to_owned(), name.to_owned(), target.to_owned()]
+}
+
 /// The ref and the commit an `expect_ref` step expects.
 fn expected_ref(op: &[String]) -> Option<(&str, &str)> {
     match op {
@@ -366,7 +416,39 @@ fn expected_ref(op: &[String]) -> Option<(&str, &str)> {
     }
 }
 
+/// The symbolic ref and the ref it should point to of an `expect_symref` step.
+fn expected_symref(op: &[String]) -> Option<(&str, &str)> {
+    match op {
+        [mark, name, target] if mark == EXPECT_SYMREF => Some((name, target)),
+        _ => None,
+    }
+}
+
+/// Whether `op` is a step that runs nothing, only checks.
+fn is_expectation(op: &[String]) -> bool {
+    expected_ref(op).is_some() || expected_symref(op).is_some()
+}
+
 fn check_expected(path: &Path, ops: &[Vec<String>]) -> Result<(), String> {
+    for (name, target) in ops.iter().filter_map(|op| expected_symref(op)) {
+        // Exit 1, nothing printed: detached.
+        let now = git::run_ok_codes(Some(path), &["symbolic-ref", "-q", name], &[0, 1])
+            .map(|s| s.trim().to_owned());
+        if now.as_deref() != Ok(target) {
+            let says = |r: &str| {
+                if r.is_empty() {
+                    "a detached HEAD".to_owned()
+                } else {
+                    r.strip_prefix("refs/heads/").unwrap_or(r).to_owned()
+                }
+            };
+            let now = now.map_or_else(|_| "something else".to_owned(), |r| says(&r));
+            return Err(format!(
+                "{now} is checked out now, not {}: going ahead would change it instead",
+                says(target)
+            ));
+        }
+    }
     for (name, value) in ops.iter().filter_map(|op| expected_ref(op)) {
         let now = git::resolve(path, name).unwrap_or_default();
         if now != value {
@@ -402,25 +484,6 @@ pub(super) fn stash_push_args() -> [&'static str; 3] {
     ["stash", "push", "--include-untracked"]
 }
 
-/// `ops` set to ask nobody for credentials: no credential helper window (Git Credential Manager
-/// and git ≥ 2.46 heed `credential.interactive`), nor git's own askpass program (an empty
-/// `core.askPass` also keeps it from falling back to `SSH_ASKPASS`). Helpers that answer from
-/// what they stored still do, as do credentials typed into the tab.
-fn unattended(ops: Vec<Vec<String>>) -> Vec<Vec<String>> {
-    ops.into_iter()
-        .map(|op| {
-            if expected_ref(&op).is_some() {
-                return op;
-            }
-            ["-c", "credential.interactive=false", "-c", "core.askPass="]
-                .into_iter()
-                .map(str::to_owned)
-                .chain(op)
-                .collect()
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -445,60 +508,26 @@ mod tests {
         dir
     }
 
-    /// Whether git, asked for a credential with `op`'s settings, ran the askpass program
-    /// (an `SSH_ASKPASS` like KDE's, which would open a window).
-    #[cfg(unix)]
-    fn askpass_asked(dir: &Path, op: &[String]) -> Result<bool, String> {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-        let script = dir.join("askpass.sh");
-        let marker = dir.join("asked");
-        let _ = std::fs::remove_file(&marker);
-        std::fs::write(
-            &script,
-            format!("#!/bin/sh\ntouch '{}'\necho x\n", marker.display()),
-        )
-        .map_err(|e| e.to_string())?;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| e.to_string())?;
-        let mut child = std::process::Command::new("git")
-            .args(op)
-            .env("SSH_ASKPASS", &script)
-            .env_remove("GIT_ASKPASS")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(b"protocol=https\nhost=example.invalid\n\n");
-        }
-        child.wait().map_err(|e| e.to_string())?;
-        Ok(marker.exists())
-    }
-
-    /// The background fetch asks nobody to sign in, every few minutes, through a window.
-    #[cfg(unix)]
+    /// A quiet operation (the background fetch) runs its git steps, and only checks its
+    /// expectations: git is not given them.
     #[test]
-    fn a_quiet_operation_opens_no_sign_in_window() -> Result<(), String> {
-        let dir = repo("unattended");
-        let fill = ops(&[&["-c", "credential.helper=", "credential", "fill"]]);
-        let plain = fill.first().cloned().unwrap_or_default();
-        let quiet = super::unattended(fill).first().cloned().unwrap_or_default();
-        let asked_plain = askpass_asked(&dir, &plain);
-        let asked_quiet = askpass_asked(&dir, &quiet);
+    fn a_quiet_operation_runs_its_steps_but_not_its_expectations() {
+        let dir = repo("quiet-steps");
+        let before = git::head(&dir);
+        let steps: Vec<Vec<String>> = [
+            super::expect_symref("HEAD", "refs/heads/main"),
+            super::expect_ref_at("HEAD", &before),
+        ]
+        .into_iter()
+        .chain(ops(&[&["commit", "-q", "--allow-empty", "-m", "quiet"]]))
+        .collect();
+        let (result, _, stopped) =
+            super::run_steps_counted(&dir, &steps, OpKind::plain(), None, true);
+        let after = git::head(&dir);
         let _ = std::fs::remove_dir_all(&dir);
-        // Without it, git does ask (or the test would prove nothing).
-        assert_eq!(asked_plain, Ok(true));
-        assert_eq!(asked_quiet, Ok(false));
-        Ok(())
-    }
-
-    #[test]
-    fn a_quiet_operation_keeps_its_expected_refs() {
-        let op = super::expect_ref("refs/stash");
-        assert_eq!(super::unattended(vec![op.clone()]), vec![op]);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(stopped, steps.len());
+        assert_ne!(after, before);
     }
 
     fn entry(kind: OpKind) -> Option<UndoEntry> {

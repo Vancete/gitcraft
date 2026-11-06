@@ -49,7 +49,9 @@ impl RepoTab {
         // Keep the pages already loaded.
         let count = self.history.len().clamp(git::LOG_PAGE, MAX_HISTORY);
         let mut visibility = Visibility::load(ctx, self.repo_key());
-        spawn(&self.tx, ctx, move || {
+        // Answered all the same if it panics: the tab reloads only once it is.
+        let failed = |e| Msg::Loaded(Err(e));
+        super::messages::spawn_or(&self.tx, ctx, failed, move || {
             Msg::Loaded((|| {
                 let refs = git::refs(&path)?;
                 visibility.prune(&refs);
@@ -176,7 +178,9 @@ impl RepoTab {
         let generation = self.history_gen;
         let from = self.log_from.clone();
         let stream = Arc::clone(&self.log_stream);
-        spawn(&self.tx, ctx, move || {
+        // Answered all the same if it panics: no more is read until it is.
+        let failed = move |e| Msg::More(generation, Err(e));
+        super::messages::spawn_or(&self.tx, ctx, failed, move || {
             let page = (|| {
                 let mut slot = stream
                     .lock()

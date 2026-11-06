@@ -68,18 +68,19 @@ fn body_line(line: &str, prefix: usize, old: &mut u32, new: &mut u32) -> DiffLin
         Kind::Context
     };
     let combined = prefix > 1;
+    // Saturating: a hunk header can claim to start anywhere (`@@ -4294967295 …`).
     let (o, n) = match kind {
         Kind::Add => {
-            *new += 1;
+            *new = new.saturating_add(1);
             (None, Some(*new))
         }
         Kind::Del => {
-            *old += 1;
+            *old = old.saturating_add(1);
             (Some(*old), None)
         }
         _ => {
-            *old += 1;
-            *new += 1;
+            *old = old.saturating_add(1);
+            *new = new.saturating_add(1);
             (Some(*old), Some(*new))
         }
     };
