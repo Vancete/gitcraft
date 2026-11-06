@@ -106,9 +106,10 @@ fn line_buttons(
             }
         }
     }
+    // While the text is being sent it is cleared once it has been: what's added now would go.
     if let Some(line) = current.filter(|_| threads.open)
         && ui
-            .button("Suggest a change")
+            .add_enabled(!draft.posting, egui::Button::new("Suggest a change"))
             .on_hover_text("Start from the line as it is, for them to apply with a click")
             .clicked()
     {

@@ -157,8 +157,10 @@ impl PrDraft {
         self.reveal_merge = false;
     }
 
-    /// New commits have come: a yes given for the old ones doesn't count for them.
+    /// New commits have come: a yes given for the old ones doesn't count for them, nor does a
+    /// line picked in their diff (its number may be another line's now). What's typed stays.
     pub(super) fn head_moved(&mut self) {
+        self.target = None;
         self.confirm_merge = false;
         self.reveal_merge = false;
     }
@@ -276,6 +278,24 @@ mod tests {
         };
         draft.head_moved();
         assert!(!draft.confirm_merge);
+    }
+
+    #[test]
+    fn new_commits_let_go_of_the_line_picked_in_the_old_diff() {
+        // Line 40 of the old diff is another line once commits add lines above it: a comment
+        // written for it mustn't go there.
+        let mut draft = PrDraft {
+            target: Some(LineTarget {
+                path: "a.rs".to_owned(),
+                line: 40,
+                side: DiffSide::Right,
+            }),
+            line_text: "Off by one".to_owned(),
+            ..PrDraft::default()
+        };
+        draft.head_moved();
+        assert!(draft.target.is_none());
+        assert_eq!(draft.line_text, "Off by one");
     }
 
     #[test]

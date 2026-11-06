@@ -46,7 +46,7 @@ pub(in crate::repo) fn review_box(
             .font(theme::semibold(10.5))
             .color(t.text_faint),
     );
-    pending_list(ui, extras, acts);
+    pending_list(ui, extras, draft.posting, acts);
     ui.add_enabled(
         !draft.posting,
         egui::TextEdit::multiline(&mut draft.review)
@@ -108,7 +108,10 @@ fn verdict_buttons(
     }
 }
 
-fn pending_list(ui: &mut Ui, extras: &PrExtras, acts: &mut Vec<Action>) {
+/// The comments of the pending review, each with a button that takes it out; not while
+/// something is sent, when the list may be about to change (the last one taken out throws the
+/// review away, which a list behind the times can't tell).
+fn pending_list(ui: &mut Ui, extras: &PrExtras, posting: bool, acts: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
     let waiting: Vec<_> = extras.pending_comments().collect();
     if waiting.is_empty() {
@@ -136,18 +139,19 @@ fn pending_list(ui: &mut Ui, extras: &PrExtras, acts: &mut Vec<Action>) {
             egui::FontId::proportional(11.5),
             t.text_dim,
         );
+        let sense = if posting {
+            Sense::hover()
+        } else {
+            Sense::click()
+        };
         let remove = ui
-            .interact(
-                x,
-                ui.id().with(("pending-remove", &comment.id)),
-                Sense::click(),
-            )
+            .interact(x, ui.id().with(("pending-remove", &comment.id)), sense)
             .on_hover_text("Remove from the review");
-        if remove.hovered() {
+        if remove.hovered() && !posting {
             ui.painter().rect_filled(x, t.radius_sm, t.pressed);
         }
         icons::paint(ui, x, "x", 11.0, t.text_faint);
-        if remove.clicked() {
+        if remove.clicked() && !posting {
             pr_acts(acts, PrAct::RemovePending(comment.id.clone()));
         }
     }

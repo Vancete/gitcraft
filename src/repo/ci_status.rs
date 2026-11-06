@@ -34,6 +34,46 @@ pub(super) struct CiStatuses {
     next: Option<Instant>,
     /// Why they couldn't be read (no tool, not logged in…).
     pub(super) error: Option<String>,
+    /// The answer on its way was asked of the project before this one: it is dropped.
+    superseded: bool,
+}
+
+impl CiStatuses {
+    /// The repository's builds are now read from `project` (its remotes changed): what was read
+    /// from the one before goes, along with the answer still on its way from there. That one
+    /// keeps the slot until it comes, so the two can't land in the wrong order.
+    fn moved_to(&mut self, project: Option<Project>) {
+        let in_flight = self.loading;
+        *self = CiStatuses {
+            project,
+            loading: in_flight,
+            superseded: in_flight,
+            ..CiStatuses::default()
+        };
+    }
+
+    fn arrived(&mut self, fresh: bool, result: Result<HashMap<String, Status>, String>) {
+        self.loading = false;
+        if std::mem::take(&mut self.superseded) {
+            // Of the project before: read them again, from this one, right away.
+            if self.project.is_some() {
+                self.next = Some(Instant::now());
+            }
+            return;
+        }
+        match result {
+            Ok(by_sha) => {
+                let running = by_sha.values().any(|s| s.state == CheckState::Running);
+                self.by_sha = by_sha;
+                self.error = None;
+                if running || fresh {
+                    self.next = Some(Instant::now() + RUNNING_POLL);
+                }
+            }
+            // What was read before still holds as well as anything.
+            Err(e) => self.error = Some(e),
+        }
+    }
 }
 
 impl RepoTab {
@@ -71,10 +111,7 @@ impl RepoTab {
     pub(super) fn refresh_ci(&mut self, ctx: &egui::Context) {
         let project = self.ci_project();
         if project != self.ci.project {
-            self.ci = CiStatuses {
-                project,
-                ..CiStatuses::default()
-            };
+            self.ci.moved_to(project);
         }
         if self.ci.project.is_none() {
             return;
@@ -114,19 +151,7 @@ impl RepoTab {
         fresh: bool,
         result: Result<HashMap<String, Status>, String>,
     ) {
-        self.ci.loading = false;
-        match result {
-            Ok(by_sha) => {
-                let running = by_sha.values().any(|s| s.state == CheckState::Running);
-                self.ci.by_sha = by_sha;
-                self.ci.error = None;
-                if running || fresh {
-                    self.ci.next = Some(Instant::now() + RUNNING_POLL);
-                }
-            }
-            // What was read before still holds as well as anything.
-            Err(e) => self.ci.error = Some(e),
-        }
+        self.ci.arrived(fresh, result);
     }
 
     /// Reads the statuses again when it's time to; called every frame.
@@ -241,6 +266,56 @@ mod tests {
             tooltip(&status),
             "CI: 1 failed, 1 running, 1 passed\nfailed  lint\nrunning  test\nClick for details"
         );
+    }
+
+    fn project(path: &str) -> Project {
+        Project {
+            forge: crate::forge::Forge::GitHub,
+            host: "github.com".to_owned(),
+            path: path.to_owned(),
+        }
+    }
+
+    fn passed() -> Status {
+        Status {
+            state: CheckState::Passed,
+            checks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn statuses_asked_of_the_project_before_are_dropped() {
+        let mut ci = CiStatuses {
+            project: Some(project("me/fork")),
+            loading: true,
+            ..CiStatuses::default()
+        };
+        // The remote is pointed elsewhere while the fork's statuses are being read.
+        ci.moved_to(Some(project("org/upstream")));
+        assert!(ci.loading, "no second read while the first is on its way");
+        let fork = HashMap::from([("abc".to_owned(), passed())]);
+        ci.arrived(false, Ok(fork));
+        assert!(ci.by_sha.is_empty(), "the fork's statuses aren't upstream's");
+        assert!(!ci.loading);
+        assert!(ci.next.is_some(), "read again from upstream");
+        // Upstream's own answer is taken.
+        let upstream = HashMap::from([("abc".to_owned(), passed())]);
+        ci.arrived(false, Ok(upstream));
+        assert_eq!(ci.by_sha.len(), 1);
+    }
+
+    #[test]
+    fn a_project_change_with_nothing_on_its_way_starts_afresh() {
+        let mut ci = CiStatuses {
+            project: Some(project("me/fork")),
+            by_sha: HashMap::from([("abc".to_owned(), passed())]),
+            ..CiStatuses::default()
+        };
+        ci.moved_to(Some(project("org/upstream")));
+        assert!(ci.by_sha.is_empty());
+        assert!(!ci.loading);
+        ci.arrived(false, Ok(HashMap::from([("abc".to_owned(), passed())])));
+        assert_eq!(ci.by_sha.len(), 1);
     }
 
     #[test]

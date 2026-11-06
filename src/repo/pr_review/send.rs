@@ -125,6 +125,10 @@ impl RepoTab {
         };
         let number = view.number;
         let draft = self.pr_drafts.entry(number).or_default();
+        // One thing at a time: what's shown may be about to change with the answer.
+        if draft.posting {
+            return;
+        }
         let Some((what, job)) = post_job(act, draft, details, &target) else {
             return;
         };
