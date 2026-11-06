@@ -14,6 +14,23 @@ pub use terminal_tabs::terminal_tabs;
 
 pub const ROW_H: f32 = 24.0;
 
+/// A clickable full-width row `h` tall, known by `key` (the branch, file, worktree… it shows)
+/// rather than by its place in the list. A reload (auto-fetch, the watcher, the terminal) can
+/// shift a list under an open menu, and the menu, hover and press must stay with their item
+/// instead of moving to whatever takes its row. `key` must tell the row apart from every other
+/// keyed row drawn in `ui`.
+pub fn keyed_row(ui: &mut Ui, h: f32, key: impl egui::AsIdSalt) -> (Rect, Response) {
+    let (_, rect) = ui.allocate_space(vec2(ui.available_width(), h));
+    let resp = ui.interact(rect, ui.id().with(key), Sense::click());
+    (rect, resp)
+}
+
+/// Whether the menu of the row [`keyed_row`] would give `key` is open: such a row has to be
+/// drawn even out of sight, as a menu not shown for a frame closes.
+pub fn keyed_row_menu_open(ui: &Ui, key: impl egui::AsIdSalt) -> bool {
+    egui::Popup::is_id_open(ui.ctx(), ui.id().with(key).with("popup"))
+}
+
 pub fn toolbar_separator(ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     ui.add_space(4.0);

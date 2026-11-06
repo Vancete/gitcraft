@@ -172,17 +172,20 @@ impl RepoTab {
     ) {
         let id = egui::Id::new(("file-folder", self.repo_key(), tree));
         let selected = |f: &&StatusFile| self.open_key() == Some(&DiffKey::Work((*f).clone()));
-        branch_tree::files(
-            ui,
-            (id, true),
-            files,
-            |f| &f.path,
-            &selected,
-            &mut |ui, indent, f| {
-                let click = self.work_row(ui, acts, f, indent, buttons);
-                on(acts, f, click);
-            },
-        );
+        // Rows are known by their path within the list: a file can be both staged and unstaged.
+        ui.push_id(("work-list", tree), |ui| {
+            branch_tree::files(
+                ui,
+                (id, true),
+                files,
+                |f| &f.path,
+                &selected,
+                &mut |ui, indent, f| {
+                    let click = self.work_row(ui, acts, f, indent, buttons);
+                    on(acts, f, click);
+                },
+            );
+        });
     }
 
     /// One working-tree file with hover buttons (hidden while an operation runs).
@@ -376,5 +379,69 @@ mod tests {
         assert!(merging, "the merge was ended");
         assert_eq!(staged.trim(), "");
         Ok(())
+    }
+
+    fn changed(path: &str, area: Area) -> StatusFile {
+        StatusFile {
+            path: path.to_owned(),
+            old_path: None,
+            code: 'M',
+            area,
+        }
+    }
+
+    /// A file's menu left open while the status reloads is that file's: once the file is gone
+    /// from the list (staged in the terminal), the menu closes rather than turning into the
+    /// menu of the file that took its row, whose Ignore runs at once. The same path staged too
+    /// is a row of its own.
+    #[test]
+    fn a_file_menu_does_not_move_to_the_file_that_takes_its_row() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut tab = RepoTab::new_deferred("/nonexistent/file-menu-test".into(), &ctx);
+        tab.work.unstaged = vec![
+            changed("a.txt", Area::Unstaged),
+            changed("b.txt", Area::Unstaged),
+        ];
+        tab.work.staged = vec![changed("b.txt", Area::Staged)];
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(320.0, 600.0));
+        // Under the list's header (30 px), the second row's middle, away from its buttons.
+        let second = pos2(100.0, 30.0 + widgets::ROW_H * 1.5);
+        let frame = |tab: &RepoTab, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        tab.unstaged_list(ui, &mut Vec::new());
+                        tab.staged_list(ui, &mut Vec::new());
+                    });
+            })
+            .drop_without_applying_deltas();
+        };
+        frame(&tab, vec![egui::Event::PointerMoved(second)]);
+        let click = |pressed| egui::Event::PointerButton {
+            pos: second,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&tab, vec![click(true), click(false)]);
+        frame(&tab, Vec::new());
+        let opened = egui::Popup::is_any_open(&ctx);
+        // b.txt staged whole: c.txt, changed meanwhile, is in its row now.
+        tab.work.unstaged = vec![
+            changed("a.txt", Area::Unstaged),
+            changed("c.txt", Area::Unstaged),
+        ];
+        frame(&tab, Vec::new());
+        frame(&tab, Vec::new());
+        assert!(opened, "the right-click opened no menu");
+        assert!(!egui::Popup::is_any_open(&ctx));
     }
 }

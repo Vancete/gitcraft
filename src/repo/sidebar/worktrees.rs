@@ -1,11 +1,11 @@
 //! The repository's worktrees.
 
-use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
+use egui::{Align2, Rect, Response, Ui, pos2, vec2};
 
 use crate::git::Worktree;
 use crate::icons;
 use crate::repo::pinned_sections::{Button, Header, Sections};
-use crate::repo::{Action, Dialog, Refresh, RepoTab, ops, worktree_tab};
+use crate::repo::{Action, Dialog, Refresh, RepoTab, ops, widgets, worktree_tab};
 use crate::settings::Settings;
 use crate::theme::{self, Tokens};
 
@@ -59,7 +59,9 @@ impl RepoTab {
 /// A worktree: its icon (a dot for uncommitted changes), name, branch and what is wrong with it.
 fn worktree_row(ui: &mut Ui, wt: &Worktree) -> Response {
     let t = Tokens::get(ui.ctx());
-    let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+    // Known by its folder, not its place: one added or removed in the terminal shifts the rows,
+    // and a menu left open (Lock, Prune…) must stay this worktree's.
+    let (rect, r) = widgets::keyed_row(ui, 36.0, ("worktree-row", &wt.path));
     let painter = ui.painter_at(rect);
     if wt.current {
         painter.rect_filled(rect, 0.0, t.accent.gamma_multiply(0.14));

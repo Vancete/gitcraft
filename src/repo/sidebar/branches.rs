@@ -1,6 +1,6 @@
 //! The local branches: their section, rows and menu.
 
-use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
+use egui::{Align2, Rect, Response, Ui, pos2, vec2};
 
 use super::{ROW_H, matches, remote_short, visibility};
 use crate::ci::Status;
@@ -13,6 +13,7 @@ use crate::repo::graph_view;
 use crate::repo::pinned_sections::{Button, Header, Sections};
 use crate::repo::{
     Action, Dialog, RepoTab, ci_status, fast_forward_action, merge_action, ops, rebase_action,
+    widgets,
 };
 use crate::settings::Settings;
 use crate::theme::{self, Tokens};
@@ -92,7 +93,7 @@ impl RepoTab {
             ci: ci.map(|status| (b.target.as_str(), status)),
             hidden: !shown,
         };
-        let (r, ci_act) = branch_row(ui, row, b.is_head, ahead, behind, marks);
+        let (r, ci_act) = branch_row(ui, &full, row, b.is_head, ahead, behind, marks);
         acts.extend(ci_act);
         if !b.is_head {
             acts.extend(visibility::eye(ui, &r, &full, shown));
@@ -401,10 +402,11 @@ struct Marks<'a> {
     hidden: bool,
 }
 
-/// A branch: icon (a check for the checked-out one), name, ahead/behind counts; and what
-/// clicking its build status asked for.
+/// A branch, `full` its whole ref: icon (a check for the checked-out one), name, ahead/behind
+/// counts; and what clicking its build status asked for.
 fn branch_row(
     ui: &mut Ui,
+    full: &str,
     row: LeafRow<'_>,
     is_head: bool,
     ahead: u32,
@@ -419,7 +421,9 @@ fn branch_row(
         hidden,
     } = marks;
     let t = Tokens::get(ui.ctx());
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+    // Known by the branch, not its place: a fetch or a branch made in the terminal shifts the
+    // rows, and a menu left open (Merge, Rebase, Check out…) must stay this branch's.
+    let (rect, resp) = widgets::keyed_row(ui, ROW_H, ("branch-row", full));
     let painter = ui.painter_at(rect);
     if is_head {
         painter.rect_filled(rect, 0.0, t.accent.gamma_multiply(0.14));
@@ -496,4 +500,77 @@ fn branch_row(
             if hidden { t.text_faint } else { t.text },
         );
     (resp, ci_act)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn branch(name: &str, target: char) -> Branch {
+        Branch {
+            name: name.to_owned(),
+            target: target.to_string().repeat(40),
+            is_head: false,
+            upstream: String::new(),
+            track: String::new(),
+        }
+    }
+
+    /// A branch's menu left open while a fetch, the watcher or the terminal changes the list is
+    /// that branch's: it stays open when the branch only moves down a row, and closes once the
+    /// branch is gone, rather than turning into the menu of the branch that took its row, whose
+    /// Merge or Rebase runs at once.
+    #[test]
+    fn a_branch_menu_does_not_move_to_the_branch_that_takes_its_row() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut tab = RepoTab::new_deferred("/nonexistent/branch-menu-test".into(), &ctx);
+        tab.refs.local = vec![branch("alpha", 'a'), branch("beta", 'b')];
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, vec2(320.0, 600.0));
+        // Under the section's header (26 px), the second row's middle.
+        let second = pos2(160.0, 26.0 + ROW_H * 1.5);
+        let frame = |tab: &RepoTab, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let mut sections = Sections::new(egui::Id::new("branch-menu-test"), None);
+                        tab.local_section(ui, &mut Vec::new(), true, "", &mut sections);
+                    });
+            })
+            .drop_without_applying_deltas();
+        };
+        frame(&tab, vec![egui::Event::PointerMoved(second)]);
+        let click = |pressed| egui::Event::PointerButton {
+            pos: second,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&tab, vec![click(true), click(false)]);
+        frame(&tab, Vec::new());
+        let opened = egui::Popup::is_any_open(&ctx);
+        // A branch made before it: "beta" moves a row down, its menu with it.
+        tab.refs.local = vec![
+            branch("alpha", 'a'),
+            branch("ann", 'c'),
+            branch("beta", 'b'),
+        ];
+        frame(&tab, Vec::new());
+        frame(&tab, Vec::new());
+        let followed = egui::Popup::is_any_open(&ctx);
+        // "beta" deleted (or pruned): "gamma" is in the row the menu was opened on.
+        tab.refs.local = vec![branch("alpha", 'a'), branch("gamma", 'd')];
+        frame(&tab, Vec::new());
+        frame(&tab, Vec::new());
+        assert!(opened, "the right-click opened no menu");
+        assert!(followed, "the menu closed when its branch moved down a row");
+        assert!(!egui::Popup::is_any_open(&ctx));
+    }
 }

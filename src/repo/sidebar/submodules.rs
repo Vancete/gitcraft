@@ -1,13 +1,13 @@
 //! The repository's submodules.
 
-use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
+use egui::{Align2, Rect, Response, Ui, pos2, vec2};
 
 use super::ROW_H;
 use crate::git::{Submodule, SubmoduleState};
 use crate::icons;
 use crate::repo::keep_submodules::{update_all, update_one};
 use crate::repo::pinned_sections::{Button, Header, Sections};
-use crate::repo::{Action, RepoTab, reveal_label, short};
+use crate::repo::{Action, RepoTab, reveal_label, short, widgets};
 use crate::theme::{self, Tokens};
 
 impl RepoTab {
@@ -92,7 +92,8 @@ impl RepoTab {
 /// A submodule: its path, its commit, and how it stands at the right.
 fn submodule_row(ui: &mut Ui, sub: &Submodule) -> Response {
     let t = Tokens::get(ui.ctx());
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+    // Known by its path, not its place: a menu left open (Update) must stay this submodule's.
+    let (rect, resp) = widgets::keyed_row(ui, ROW_H, ("submodule-row", &sub.path));
     if resp.hovered() {
         ui.painter().rect_filled(rect, 0.0, t.hover);
     }

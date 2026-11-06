@@ -7,7 +7,7 @@ use crate::forge::{Forge, PullRequest};
 use crate::git::Branch;
 use crate::icons;
 use crate::repo::pinned_sections::{Header, Sections};
-use crate::repo::{Action, RepoTab, ci_status};
+use crate::repo::{Action, RepoTab, ci_status, widgets};
 use crate::theme::Tokens;
 
 impl RepoTab {
@@ -65,7 +65,9 @@ impl RepoTab {
         idle: bool,
     ) {
         let t = Tokens::get(ui.ctx());
-        let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+        // Known by its number, not its place: the list reloads (and reorders) on its own, and a
+        // menu left open (Check out) must stay this one's.
+        let (rect, r) = widgets::keyed_row(ui, 36.0, ("pr-row", pr.number));
         let shown = self.pr_view.as_ref().is_some_and(|v| v.number == pr.number);
         if shown {
             ui.painter().rect_filled(rect, 0.0, t.row_selected);

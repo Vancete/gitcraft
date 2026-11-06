@@ -1,6 +1,6 @@
 //! The remotes and their branches.
 
-use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
+use egui::{Align2, Rect, Response, Ui, pos2, vec2};
 
 use super::{REMOTE_INDENT, ROW_H, matches, visibility};
 use crate::git::{Branch, Remote};
@@ -12,6 +12,7 @@ use crate::repo::graph_view;
 use crate::repo::pinned_sections::{Button, Header, Sections};
 use crate::repo::{
     Action, Dialog, Refresh, RepoTab, fast_forward_action, merge_action, ops, rebase_action,
+    widgets,
 };
 use crate::theme::{self, Tokens};
 
@@ -64,8 +65,8 @@ impl RepoTab {
             // A collapsible row per remote, open or closed in this repository only.
             let id = egui::Id::new(("remote-open", self.repo_key(), &remote.name));
             let mut expanded = ui.data_mut(|d| d.get_persisted::<bool>(id)).unwrap_or(true);
-            let (rect, r) =
-                ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+            // By the remote: its menu's Fetch must not move to another one.
+            let (rect, r) = widgets::keyed_row(ui, ROW_H, ("remote-row", &remote.name));
             if r.clicked() {
                 expanded = !expanded;
                 ui.data_mut(|d| d.insert_persisted(id, expanded));
@@ -112,7 +113,7 @@ impl RepoTab {
         let has_pr = self.prs.iter().any(|p| p.branch == short);
         let full = remote_ref(&b.name);
         let shown = self.branch_shown(&full, false);
-        let r = remote_row(ui, row, has_pr, !shown);
+        let r = remote_row(ui, &full, row, has_pr, !shown);
         acts.extend(visibility::eye(ui, &r, &full, shown));
         let r = r.on_hover_text(format!("{}\nDouble-click to check out", b.name));
         if r.double_clicked() && idle {
@@ -300,11 +301,12 @@ fn remote_menu_items(ui: &mut Ui, acts: &mut Vec<Action>, remote: &Remote, idle:
     }
 }
 
-/// A remote's branch: only the icon and the name, in from its remote; the name dimmed while
-/// the graph leaves the branch out.
-fn remote_row(ui: &mut Ui, row: LeafRow<'_>, has_pr: bool, hidden: bool) -> Response {
+/// A remote's branch, `full` its whole ref: only the icon and the name, in from its remote; the
+/// name dimmed while the graph leaves the branch out.
+fn remote_row(ui: &mut Ui, full: &str, row: LeafRow<'_>, has_pr: bool, hidden: bool) -> Response {
     let t = Tokens::get(ui.ctx());
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+    // Known by the branch, not its place: a fetch adds and prunes rows under an open menu.
+    let (rect, resp) = widgets::keyed_row(ui, ROW_H, ("branch-row", full));
     if resp.hovered() {
         ui.painter().rect_filled(rect, 0.0, t.hover);
     }

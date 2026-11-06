@@ -2,13 +2,13 @@
 
 use std::path::Path;
 
-use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
+use egui::{Align2, Rect, Response, Ui, pos2, vec2};
 
 use super::{ROW_H, matches};
 use crate::git::{self, Branch};
 use crate::icons;
 use crate::repo::pinned_sections::{Header, Sections};
-use crate::repo::{Action, Dialog, Refresh, RepoTab, Undo, branch_tree, ops};
+use crate::repo::{Action, Dialog, Refresh, RepoTab, Undo, branch_tree, ops, widgets};
 use crate::theme::Tokens;
 
 impl RepoTab {
@@ -43,11 +43,14 @@ impl RepoTab {
             return;
         }
         for tag in tags {
-            // Repositories can have thousands of tags: those out of sight are skipped over.
-            if branch_tree::skip_unseen(ui, ROW_H) {
+            // Known by the tag, not its place: a fetch adds tags under an open menu.
+            let key = ("tag-row", tag.name.as_str());
+            // Repositories can have thousands of tags: those out of sight are skipped over,
+            // but for one whose menu is open.
+            if !widgets::keyed_row_menu_open(ui, key) && branch_tree::skip_unseen(ui, ROW_H) {
                 continue;
             }
-            let r = plain_row(ui, "tag", &tag.name, "");
+            let r = plain_row(ui, key, "tag", &tag.name, "");
             if r.clicked() {
                 acts.push(Action::SelectHash(tag.target.clone()));
             }
@@ -135,10 +138,11 @@ fn delete_tag_undo(name: &str, object: &str) -> Undo {
     }
 }
 
-/// An icon, a name and optional faint text after it.
-fn plain_row(ui: &mut Ui, icon: &str, name: &str, sub: &str) -> Response {
+/// An icon, a name and optional faint text after it; known by `key` (see
+/// [`widgets::keyed_row`]).
+fn plain_row(ui: &mut Ui, key: impl egui::AsIdSalt, icon: &str, name: &str, sub: &str) -> Response {
     let t = Tokens::get(ui.ctx());
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+    let (rect, resp) = widgets::keyed_row(ui, ROW_H, key);
     if resp.hovered() {
         ui.painter().rect_filled(rect, 0.0, t.hover);
     }

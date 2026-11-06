@@ -100,29 +100,32 @@ impl RepoTab {
             })
         };
         let id = egui::Id::new(("file-folder", self.repo_key(), "all"));
-        branch_tree::files(
-            ui,
-            (id, false),
-            files,
-            |p| p.as_str(),
-            &|p: &&String| shown(p),
-            &mut |ui, indent, path| {
-                let change = changed.get(path.as_str());
-                let extra = match change {
-                    Some(f) => RowExtra::Stats(f.added, f.removed),
-                    None => RowExtra::Buttons(&[]),
-                };
-                let code = change.map_or(' ', |f| f.status);
-                let r = widgets::file_row(ui, code, path, None, indent, shown(path), extra);
-                widgets::file_menu(&r.row, path, Some(&detail.hash), false, acts);
-                if r.row.clicked() {
-                    acts.push(Action::FileView {
-                        path: path.clone(),
-                        rev: Some(detail.hash.clone()),
-                        tab: FileTab::File,
-                    });
-                }
-            },
-        );
+        // Rows are known by their path within this commit's files.
+        ui.push_id(("all-files", &detail.hash), |ui| {
+            branch_tree::files(
+                ui,
+                (id, false),
+                files,
+                |p| p.as_str(),
+                &|p: &&String| shown(p),
+                &mut |ui, indent, path| {
+                    let change = changed.get(path.as_str());
+                    let extra = match change {
+                        Some(f) => RowExtra::Stats(f.added, f.removed),
+                        None => RowExtra::Buttons(&[]),
+                    };
+                    let code = change.map_or(' ', |f| f.status);
+                    let r = widgets::file_row(ui, code, path, None, indent, shown(path), extra);
+                    widgets::file_menu(&r.row, path, Some(&detail.hash), false, acts);
+                    if r.row.clicked() {
+                        acts.push(Action::FileView {
+                            path: path.clone(),
+                            rev: Some(detail.hash.clone()),
+                            tab: FileTab::File,
+                        });
+                    }
+                },
+            );
+        });
     }
 }

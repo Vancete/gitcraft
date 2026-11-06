@@ -33,7 +33,10 @@ pub fn file_row(
 ) -> FileRowResponse {
     let shift = indent.unwrap_or(0.0);
     let t = Tokens::get(ui.ctx());
-    let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+    // By its path: a status reload shifts the list, and an open menu (Ignore…) or a pressed
+    // Stage must stay this file's. A list that can show a path another one shows too (staged
+    // and unstaged) is drawn under an id of its own.
+    let (rect, row) = super::keyed_row(ui, ROW_H, ("file-row", path));
     let hovered = ui.rect_contains_pointer(rect);
     let painter = ui.painter_at(rect);
     if selected {
