@@ -117,27 +117,6 @@ pub(in crate::repo) fn stash_menu(ui: &mut Ui, acts: &mut Vec<Action>, stash: &S
     menu(ui, acts, &stash.name, idle, |op| stash_ops(stash, op));
 }
 
-/// Apply / pop / drop for the stash `name` (`stash@{n}`), whichever stash has that number when
-/// it runs: `stash_menu` is the one that can't hit another stash.
-pub(in crate::repo) fn stash_menu_items(
-    ui: &mut Ui,
-    acts: &mut Vec<Action>,
-    name: &str,
-    idle: bool,
-) {
-    let by_name = Stash {
-        name: name.to_owned(),
-        hash: String::new(),
-        base: String::new(),
-        message: String::new(),
-        author: String::new(),
-        email: String::new(),
-        time: 0,
-        date: String::new(),
-    };
-    menu(ui, acts, name, idle, |op| stash_ops(&by_name, op));
-}
-
 fn menu(
     ui: &mut Ui,
     acts: &mut Vec<Action>,

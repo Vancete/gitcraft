@@ -7,7 +7,7 @@ use crate::ci::Status;
 use crate::git::{CommitDetail, Stash};
 use crate::icons;
 use crate::repo::{
-    Action, DiffKey, Refresh, RepoTab, Reword, branch_tree, ci_status, ops, sidebar, widgets,
+    Action, DiffKey, Refresh, RepoTab, Reword, branch_tree, ci_status, sidebar, widgets,
 };
 use crate::theme::{self, Tokens};
 
@@ -23,7 +23,7 @@ impl RepoTab {
                 egui::Popup::menu(&more)
                     .style(crate::theme::menu_style)
                     .show(|ui| {
-                        sidebar::stash_menu_items(ui, acts, &stash.name, idle);
+                        sidebar::stash_menu(ui, acts, stash, idle);
                     });
             }
             branch_tree::files_toggle(ui);
@@ -126,14 +126,14 @@ fn stash_banner(ui: &mut Ui, acts: &mut Vec<Action>, stash: &Stash, idle: bool) 
                 icons::inline(ui, "archive", 15.0, t.accent);
                 ui.label(RichText::new(&stash.name).font(theme::medium(12.5)));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    for (label, args) in [
-                        ("Pop", ["stash", "pop", "--index", stash.name.as_str()]),
-                        ("Apply", ["stash", "apply", "--index", stash.name.as_str()]),
+                    for (label, op) in [
+                        ("Pop", sidebar::StashOp::Pop),
+                        ("Apply", sidebar::StashOp::Apply),
                     ] {
                         if ui.add_enabled(idle, egui::Button::new(label)).clicked() {
                             acts.push(Action::Ops {
                                 label: format!("{label} {}", stash.name),
-                                ops: ops(&[&args]),
+                                ops: sidebar::stash_ops(stash, op),
                                 refresh: Refresh::All,
                             });
                         }

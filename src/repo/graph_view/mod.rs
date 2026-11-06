@@ -12,8 +12,9 @@ mod search;
 
 use egui::{Align2, FontId, Key, Response, Sense, Ui, vec2};
 
+use super::actions::{BranchRef, compare_branches_action};
 use super::columns::{Cols, MIN_COL_W, MIN_GRAPH_W, MIN_REFS_W};
-use super::{Action, Dialog, Refresh, RepoTab, WIP_HASH, compare_action, ops};
+use super::{Action, Dialog, Refresh, RepoTab, WIP_HASH, ops};
 use crate::git;
 use crate::settings::Settings;
 use crate::theme::Tokens;
@@ -159,7 +160,7 @@ impl RepoTab {
         if let Some(stash) = self.stash_at(i).and_then(|s| self.stashes.get(s)) {
             egui::Popup::context_menu(resp)
                 .style(crate::theme::menu_style)
-                .show(|ui| super::sidebar::stash_menu_items(ui, acts, &stash.name, idle));
+                .show(|ui| super::sidebar::stash_menu(ui, acts, stash, idle));
             return;
         }
         self.commit_menu(resp, i, idle, acts);
@@ -280,20 +281,27 @@ const APPLY_PATCH_TIP: &str = "A patch from git format-patch becomes commits (gi
 
 /// Menu entries comparing `branch` with `current`: what it would bring in (since they
 /// diverged, as a pull request shows it), and every difference.
-pub(super) fn compare_items(ui: &mut Ui, acts: &mut Vec<Action>, branch: &str, current: &str) {
+pub(super) fn compare_items(
+    ui: &mut Ui,
+    acts: &mut Vec<Action>,
+    branch: BranchRef<'_>,
+    current: &str,
+) {
+    let name = branch.name;
+    let current_ref = BranchRef::local(current);
     if ui
-        .button(format!("Changes {branch} adds to {current}"))
+        .button(format!("Changes {name} adds to {current}"))
         .on_hover_text("What it changed since the two diverged, as a pull request shows it")
         .clicked()
     {
-        acts.push(compare_action(current, branch, true));
+        acts.push(compare_branches_action(current_ref, branch, true));
     }
     if ui
-        .button(format!("Compare {current} with {branch}"))
+        .button(format!("Compare {current} with {name}"))
         .on_hover_text("Every difference between the two")
         .clicked()
     {
-        acts.push(compare_action(current, branch, false));
+        acts.push(compare_branches_action(current_ref, branch, false));
     }
 }
 

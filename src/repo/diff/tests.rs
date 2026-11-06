@@ -572,14 +572,18 @@ fn unstaging_a_file_does_not_treat_its_name_as_a_pattern() {
     }
     // Before the first commit (`rm --cached`), then after it (`restore --staged`).
     assert!(git(&["add", "-A"]).is_ok());
-    assert!(git(&unstage_args("", "[ab].txt")).is_ok());
+    let unstage = |head| {
+        let args = unstage_args(head, "[ab].txt");
+        git(&args.iter().map(String::as_str).collect::<Vec<_>>())
+    };
+    assert!(unstage("").is_ok());
     let before_commit = staged();
     assert!(git(&["commit", "-q", "-m", "base"]).is_ok());
     for name in ["a.txt", "[ab].txt"] {
         let _ = std::fs::write(dir.join(name), b"y\n");
     }
     assert!(git(&["add", "-A"]).is_ok());
-    assert!(git(&unstage_args("HEAD", "[ab].txt")).is_ok());
+    assert!(unstage("HEAD").is_ok());
     let after_commit = staged();
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(before_commit.as_deref().map(str::trim), Ok("a.txt"));

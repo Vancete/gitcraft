@@ -169,19 +169,8 @@ pub(crate) enum Action {
     SearchCode(bool),
 }
 
-/// Compares branch (or commit) `base` with `target`; `since_fork`: only what `target` changed
-/// since they diverged.
-pub(crate) fn compare_action(base: &str, target: &str, since_fork: bool) -> Action {
-    Action::Compare {
-        base: base.to_owned(),
-        base_label: base.to_owned(),
-        target: Some(target.to_owned()),
-        target_label: target.to_owned(),
-        since_fork,
-    }
-}
-
-/// [`compare_action`] for two branches, given to git by their full refs.
+/// Compares two branches, given to git by their full refs (a tag of the same name is not
+/// what is meant), with their names as labels.
 pub(crate) fn compare_branches_action(
     base: BranchRef<'_>,
     target: BranchRef<'_>,

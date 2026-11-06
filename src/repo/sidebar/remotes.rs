@@ -163,7 +163,7 @@ impl RepoTab {
                 acts.push(rebase_action(BranchRef::remote(&b.name), current));
             }
             ui.separator();
-            graph_view::compare_items(ui, acts, &b.name, current);
+            graph_view::compare_items(ui, acts, BranchRef::remote(&b.name), current);
             ui.separator();
         }
         if ui.button("Create branch here…").clicked() {
@@ -184,7 +184,14 @@ impl RepoTab {
                 "Delete remote branch",
                 format!("Delete “{short}” from {remote}? This changes the remote for everyone.",),
                 "Delete",
-                ops(&[&["push", remote, "--delete", &format!("refs/heads/{short}")]]),
+                // Only while it is where it was last fetched: commits pushed since are others'.
+                ops(&[&[
+                    "push",
+                    &format!("--force-with-lease=refs/heads/{short}:{}", b.target),
+                    remote,
+                    "--delete",
+                    &format!("refs/heads/{short}"),
+                ]]),
                 None,
             )));
         }

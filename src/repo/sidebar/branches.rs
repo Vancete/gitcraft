@@ -385,7 +385,7 @@ fn integrate_items(ui: &mut Ui, acts: &mut Vec<Action>, b: &Branch, current: &st
         acts.push(interactive_rebase_action(BranchRef::local(&b.name)));
     }
     ui.separator();
-    graph_view::compare_items(ui, acts, &b.name, current);
+    graph_view::compare_items(ui, acts, BranchRef::local(&b.name), current);
 }
 
 /// What a branch's row shows besides its name and how far ahead and behind it is.

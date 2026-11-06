@@ -240,10 +240,21 @@ fn highlight_sides(path: &str, lines: &[DiffLine], dark: bool) -> Vec<Option<Spa
 }
 
 /// `git restore --staged`, or `git rm --cached` before the first commit (no HEAD to restore from).
-pub(super) fn unstage_args<'a>(head: &str, path: &'a str) -> Vec<&'a str> {
-    if head.is_empty() {
-        vec!["--literal-pathspecs", "rm", "--cached", "-q", "--", path]
+/// The path is taken literally, with `:(literal)` rather than `--literal-pathspecs`, which
+/// `restore` would pass on to the post-checkout hook.
+pub(super) fn unstage_args(head: &str, path: &str) -> Vec<String> {
+    let path = literal_path(path);
+    let args: &[&str] = if head.is_empty() {
+        &["rm", "--cached", "-q", "--", &path]
     } else {
-        vec!["--literal-pathspecs", "restore", "--staged", "--", path]
-    }
+        &["restore", "--staged", "--", &path]
+    };
+    args.iter().map(|a| (*a).to_owned()).collect()
+}
+
+/// `path` as a pathspec that is only that file name, not a pattern (`[ab].txt`, `*`, `:x`).
+/// For commands that run hooks, which would inherit `--literal-pathspecs` (and with it change
+/// how the hook's own git commands read their patterns).
+pub(in crate::repo) fn literal_path(path: &str) -> String {
+    format!(":(literal){path}")
 }

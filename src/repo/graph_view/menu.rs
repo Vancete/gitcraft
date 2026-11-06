@@ -164,7 +164,7 @@ impl RepoTab {
             acts.push(interactive_rebase_action(git_ref));
         }
         ui.separator();
-        compare_items(ui, acts, branch, current);
+        compare_items(ui, acts, git_ref, current);
     }
 
     /// A submenu for each local branch pointing at the commit, creating a branch or tag there,

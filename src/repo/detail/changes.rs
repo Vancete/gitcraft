@@ -5,7 +5,7 @@ use egui::{Align2, RichText, Sense, Ui, pos2, vec2};
 
 use crate::git::{Area, InProgress, StatusFile};
 use crate::icons;
-use crate::repo::diff::unstage_args;
+use crate::repo::diff::{literal_path, unstage_args};
 use crate::repo::widgets::{self, RowExtra};
 use crate::repo::{Action, Dialog, DiffKey, Refresh, RepoTab, abort_action, branch_tree, ops};
 use crate::theme::{self, Tokens};
@@ -146,9 +146,11 @@ impl RepoTab {
             &buttons,
             |acts, f, click| match click {
                 RowClick::Open => acts.push(Action::OpenDiff(DiffKey::Work(f.clone()))),
-                RowClick::Button(_) => {
-                    acts.push(stage_action("Unstage", vec![unstage_args(head, &f.path)]))
-                }
+                RowClick::Button(_) => acts.push(Action::Ops {
+                    label: "Unstage".to_owned(),
+                    ops: vec![unstage_args(head, &f.path)],
+                    refresh: Refresh::Status,
+                }),
                 RowClick::None => {}
             },
         );
@@ -273,7 +275,8 @@ fn discard_dialog(f: &StatusFile) -> Dialog {
                 f.path
             ),
             "Discard",
-            ops(&[&["--literal-pathspecs", "restore", "--", &f.path]]),
+            // Not `--literal-pathspecs`: restore runs the post-checkout hook, which would get it.
+            ops(&[&["restore", "--", &literal_path(&f.path)]]),
             None,
         )
         .refresh(Refresh::Status)

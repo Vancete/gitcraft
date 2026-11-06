@@ -5,6 +5,7 @@ use egui::{RichText, Sense, Stroke, Ui, vec2};
 
 use super::{Choice, ConflictEditor, Segment, render};
 use crate::icons;
+use crate::repo::diff::literal_path;
 use crate::repo::{Action, Refresh, RepoTab, ops, widgets};
 use crate::theme::{self, Tokens};
 
@@ -99,7 +100,8 @@ impl ConflictEditor {
                 acts.push(Action::Ops {
                     label: format!("{label} for {}", self.path),
                     ops: ops(&[
-                        &["--literal-pathspecs", "checkout", side, "--", &self.path],
+                        // Not `--literal-pathspecs`: checkout runs the post-checkout hook.
+                        &["checkout", side, "--", &literal_path(&self.path)],
                         &["--literal-pathspecs", "add", "--", &self.path],
                     ]),
                     refresh: Refresh::Status,

@@ -142,7 +142,9 @@ impl RepoTab {
                         "push".to_owned(),
                         "-u".to_owned(),
                         remote,
-                        format!("refs/heads/{0}:refs/heads/{0}", b.name),
+                        // No `:dst`, which would bypass `remote.<name>.push` (Gerrit's
+                        // refs/for/*); the full source alone is not mistaken for a tag.
+                        format!("refs/heads/{}", b.name),
                     ],
                 )
             }
@@ -237,7 +239,8 @@ impl RepoTab {
                     "push",
                     "-u",
                     &remote,
-                    &format!("refs/heads/{current}:refs/heads/{current}"),
+                    // No `:dst`, which would bypass `remote.<name>.push`.
+                    &format!("refs/heads/{current}"),
                 ]]),
                 Refresh::All,
                 OpKind::plain(),
@@ -341,7 +344,8 @@ impl RepoTab {
         let creds = self.credentials.clone();
         spawn(&self.tx, ctx, move || {
             // Publish the branch first, so the forge can see it.
-            let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+            // No `:dst`, which would bypass `remote.<name>.push`.
+            let refspec = format!("refs/heads/{branch}");
             let pushed = git::run_with(
                 Some(&path),
                 &["push", "-u", &remote, &refspec],

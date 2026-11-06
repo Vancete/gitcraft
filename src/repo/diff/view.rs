@@ -170,21 +170,19 @@ impl RepoTab {
         acts: &mut Vec<Action>,
     ) -> bool {
         let idle = self.busy_op.is_none();
-        let (label, args): (&str, Vec<&str>) = match file.area {
-            Area::Staged => ("Unstage file", unstage_args(&self.refs.head, &file.path)),
-            Area::Conflicted => (
-                "Mark resolved",
-                vec!["--literal-pathspecs", "add", "--", &file.path],
+        let add = || ops(&[&["--literal-pathspecs", "add", "--", &file.path]]);
+        let (label, steps) = match file.area {
+            Area::Staged => (
+                "Unstage file",
+                vec![unstage_args(&self.refs.head, &file.path)],
             ),
-            _ => (
-                "Stage file",
-                vec!["--literal-pathspecs", "add", "--", &file.path],
-            ),
+            Area::Conflicted => ("Mark resolved", add()),
+            _ => ("Stage file", add()),
         };
         if ui.add_enabled(idle, egui::Button::new(label)).clicked() {
             acts.push(Action::Ops {
                 label: label.to_owned(),
-                ops: ops(&[&args]),
+                ops: steps,
                 refresh: Refresh::Status,
             });
         }

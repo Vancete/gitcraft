@@ -56,9 +56,7 @@ use crate::graph::Graph;
 use crate::terminal::Terminal;
 
 use actions::abort_action;
-pub(crate) use actions::{
-    Action, compare_action, fast_forward_action, merge_action, rebase_action,
-};
+pub(crate) use actions::{Action, fast_forward_action, merge_action, rebase_action};
 pub use dialogs::Dialog;
 use messages::{Msg, spawn};
 pub(crate) use state::{Compare, CompareData, DiffKey, DiffView, Refresh, Reword, Undo, UndoEntry};
