@@ -2,13 +2,15 @@
 
 use std::path::Path;
 
-use super::{END_OPTS, FS, NO_SIGNATURE, RS, not_an_option, run, run_bytes};
+use super::{END_OPTS, FS, LITERAL_PATHS, NO_SIGNATURE, RS, not_an_option, run, run_bytes};
 
 /// The contents of `path` at `rev` (`HEAD`, a hash, or `""` for the index), or from disk when
 /// `rev` is `None`.
 pub fn file_at(repo: &Path, rev: Option<&str>, path: &str) -> Result<Vec<u8>, String> {
     match rev {
         None => std::fs::read(repo.join(path)).map_err(|e| format!("{path}: {e}")),
+        // The index as `:0:path`: `:path` of a file named `1:x` would be stage 1 of `x`.
+        Some("") => run_bytes(Some(repo), &["show", END_OPTS, &format!(":0:{path}")]),
         Some(rev) => run_bytes(Some(repo), &["show", END_OPTS, &format!("{rev}:{path}")]),
     }
 }
@@ -73,7 +75,8 @@ fn gitignore_with(existing: &str, pattern: &str) -> Option<String> {
 
 /// Whether git tracks `path` (so ignoring it also needs `git rm --cached`).
 pub fn is_tracked(repo: &Path, path: &str) -> bool {
-    run(Some(repo), &["ls-files", "--error-unmatch", "--", path]).is_ok()
+    let args = [LITERAL_PATHS, "ls-files", "--error-unmatch", "--", path];
+    run(Some(repo), &args).is_ok()
 }
 
 /// One commit in a file's history, with the file's path at that commit (renames are followed).
@@ -93,6 +96,7 @@ pub fn file_history(repo: &Path, rev: Option<&str>, path: &str) -> Result<Vec<Fi
     let format = format!("--format={RS}%H{FS}%an{FS}%ae{FS}%at{FS}%s");
     // `-z`: names as they are, not quoted (`"a\"b.txt"`) when they have quotes or tabs in them.
     let mut args = vec![
+        LITERAL_PATHS,
         "log",
         NO_SIGNATURE,
         "--follow",
@@ -199,6 +203,29 @@ fn parse_blame(out: &str) -> Vec<BlameLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `1:x` in the index is that file, not stage 1 of `x`; `[ab].txt` isn't tracked because
+    /// `a.txt` is.
+    #[test]
+    fn odd_names_in_the_index() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("gitcraft-odd-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let git = |args: &[&str]| run(Some(&dir), args);
+        git(&["init", "-q"])?;
+        std::fs::write(dir.join("a.txt"), "a\n").map_err(|e| e.to_string())?;
+        git(&["add", "a.txt"])?;
+        // No such file on disk: `:` isn't allowed in Windows file names.
+        let oid = git(&["hash-object", "-w", "a.txt"])?;
+        let info = format!("100644,{},1:x", oid.trim());
+        git(&["update-index", "--add", "--cacheinfo", &info])?;
+        let staged = file_at(&dir, Some(""), "1:x");
+        let tracked = (is_tracked(&dir, "[ab].txt"), is_tracked(&dir, "a.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(staged?, b"a\n");
+        assert_eq!(tracked, (false, true));
+        Ok(())
+    }
 
     #[test]
     fn gitignore_lines() {

@@ -371,7 +371,10 @@ pub fn search(repo: &Path, from: Option<&[String]>, query: &str) -> Result<Vec<S
             &["rev-parse", "--verify", "-q", &format!("{q}^{{commit}}")],
         )
     {
-        hashes.insert(0, h.trim().to_owned());
+        // First, and once: a tag `2024` may be on a commit whose message has `2024` in it.
+        let h = h.trim();
+        hashes.retain(|x| x != h);
+        hashes.insert(0, h.to_owned());
     }
     Ok(hashes)
 }

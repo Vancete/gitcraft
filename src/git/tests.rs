@@ -45,6 +45,14 @@ fn hostile_config_and_option_like_refs() -> Result<(), String> {
     assert!(log(&dir, Some(&[]), 0, 10)?.is_empty());
     let tag_only = [format!("refs/tags/{tag}")];
     assert_eq!(search(&dir, None, "two")?, std::slice::from_ref(&head));
+    // A query that names a commit (here a tag `2024`) and is in its message: found once.
+    git(&["commit", "-q", "--allow-empty", "-m", "release 2024"])?;
+    git(&["tag", "2024"])?;
+    let found = search(&dir, None, "2024")?;
+    let release = git(&["rev-parse", "HEAD"])?;
+    git(&["tag", "-d", "2024"])?;
+    git(&["reset", "-q", "--soft", "HEAD~1"])?;
+    assert_eq!(found, [release.trim()]);
     assert!(search(&dir, Some(&tag_only), "two")?.is_empty());
     assert_eq!(search_code(&dir, Some(&tag_only), "a")?.len(), 1);
     let patch = file_diff(&dir, &head, name, DiffOptions::default())?;
@@ -111,6 +119,9 @@ fn clone_folder_names() {
     assert_eq!(clone_dir_name("git@github.com:a/b.git"), "b");
     assert_eq!(clone_dir_name("C:\\repos\\thing\\"), "thing");
     assert_eq!(clone_dir_name("git@host:proj"), "proj");
+    assert_eq!(clone_dir_name("/home/me/proj/.git"), "proj");
+    assert_eq!(clone_dir_name("C:\\src\\proj\\.git\\"), "proj");
+    assert_eq!(clone_dir_name("https://host/a/.git"), "a");
 }
 
 /// Older history read page after page from one running `git log` is what `log` gives at once.

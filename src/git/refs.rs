@@ -194,12 +194,18 @@ pub struct Remote {
 
 pub fn remotes(repo: &Path) -> Result<Vec<Remote>, String> {
     let out = run(Some(repo), &["remote", "-v"])?;
+    Ok(parse_remotes(&out))
+}
+
+/// `remote -v`: `name\turl (fetch)` and `name\turl (push)` lines. A URL can have spaces in it
+/// (a folder on disk: `C:\Users\Jane Doe\repo`).
+fn parse_remotes(out: &str) -> Vec<Remote> {
     let mut list: Vec<Remote> = Vec::new();
     for line in out.lines() {
-        let mut parts = line.split_whitespace();
-        let (Some(name), Some(url)) = (parts.next(), parts.next()) else {
+        let Some((name, rest)) = line.split_once('\t') else {
             continue;
         };
+        let url = rest.rsplit_once(" (").map_or(rest, |(url, _)| url);
         if !list.iter().any(|r| r.name == name) {
             list.push(Remote {
                 name: name.to_owned(),
@@ -207,12 +213,33 @@ pub fn remotes(repo: &Path) -> Result<Vec<Remote>, String> {
             });
         }
     }
-    Ok(list)
+    list
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_urls_with_spaces() {
+        let out = "origin\thttps://example.com/a.git (fetch)\n\
+                   origin\thttps://example.com/a.git (push)\n\
+                   disk\t/home/me/My Repos/b (x).git (fetch)\n\
+                   disk\t/home/me/My Repos/b (x).git (push)\n";
+        assert_eq!(
+            parse_remotes(out),
+            vec![
+                Remote {
+                    name: "origin".to_owned(),
+                    url: "https://example.com/a.git".to_owned()
+                },
+                Remote {
+                    name: "disk".to_owned(),
+                    url: "/home/me/My Repos/b (x).git".to_owned()
+                },
+            ]
+        );
+    }
 
     #[test]
     fn remote_with_a_slash() {

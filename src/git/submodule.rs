@@ -76,6 +76,7 @@ pub fn submodules(repo: &Path) -> Result<Vec<Submodule>, String> {
         .collect();
     if !ready.is_empty() {
         let mut args = vec![
+            super::LITERAL_PATHS,
             "status",
             "--porcelain=v2",
             "-z",

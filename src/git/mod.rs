@@ -38,6 +38,11 @@ const NO_SIGNATURE: &str = "--no-show-signature";
 /// `--output=x` fetched from a remote, a ref from a forge's answer…), not an option.
 const END_OPTS: &str = "--end-of-options";
 
+/// Before the subcommand: the paths after `--` are file names, not patterns (a file called
+/// `[ab].txt` would also match `a.txt`, one called `:x` would be `x`). Only for commands that
+/// run no hooks, which would inherit it.
+const LITERAL_PATHS: &str = "--literal-pathspecs";
+
 /// For commands that don't take [`END_OPTS`] (`rev-parse` before git 2.30, `blame`): a
 /// revision that would be read as an option is refused.
 fn not_an_option(rev: &str) -> Result<&str, String> {
@@ -57,6 +62,11 @@ pub fn clone(url: &str, dest: &Path, creds: Option<&Credentials>) -> Result<(), 
 /// The folder name `git clone` would pick for `url`.
 pub fn clone_dir_name(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches(['/', '\\']);
+    // A repository's `.git` folder clones under the name of the folder it is in.
+    let trimmed = trimmed
+        .strip_suffix(".git")
+        .filter(|rest| rest.ends_with(['/', '\\']))
+        .map_or(trimmed, |rest| rest.trim_end_matches(['/', '\\']));
     let last = trimmed.rsplit(['/', '\\', ':']).next().unwrap_or_default();
     last.strip_suffix(".git").unwrap_or(last).to_owned()
 }
@@ -70,7 +80,8 @@ pub fn version() -> Result<String, String> {
 pub fn toplevel(path: &Path) -> Result<PathBuf, String> {
     let out = run(Some(path), &["rev-parse", "--show-toplevel"])
         .map_err(|_| format!("{} is not inside a git repository", path.display()))?;
-    Ok(PathBuf::from(out.trim()))
+    // Only the line end: a folder's name can end with a space.
+    Ok(PathBuf::from(out.trim_end_matches(['\n', '\r'])))
 }
 
 pub fn init(path: &Path) -> Result<(), String> {

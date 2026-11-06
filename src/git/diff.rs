@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use super::status::{Area, StatusFile};
-use super::{END_OPTS, NO_SIGNATURE, now, run, run_ok_codes};
+use super::{END_OPTS, LITERAL_PATHS, NO_SIGNATURE, now, run, run_ok_codes};
 
 #[derive(Clone, Debug)]
 pub struct ChangedFile {
@@ -83,13 +83,15 @@ fn add_line_counts(files: &mut [ChangedFile], numstat: &str) {
 }
 
 /// `show` arguments that list the files `hash` changed (`kind` is `--name-status` or
-/// `--numstat`). Merges are shown against their first parent, like most GUIs do.
-fn commit_files_args<'a>(kind: &'a str, hash: &'a str) -> [&'a str; 9] {
+/// `--numstat`). Merges are shown against their first parent, like most GUIs do; the first
+/// commit as adding its files, whatever `log.showRoot` says.
+fn commit_files_args<'a>(kind: &'a str, hash: &'a str) -> [&'a str; 10] {
     [
         "show",
         NO_SIGNATURE,
         "--format=",
         "--diff-merges=first-parent",
+        "--root",
         "-M",
         kind,
         "-z",
@@ -142,10 +144,12 @@ impl DiffOptions {
 /// The patch of one file in a commit.
 pub fn file_diff(repo: &Path, hash: &str, path: &str, opts: DiffOptions) -> Result<String, String> {
     let mut args = vec![
+        LITERAL_PATHS,
         "show",
         NO_SIGNATURE,
         "--format=",
         "--diff-merges=first-parent",
+        "--root",
         "-M",
     ];
     opts.push_args(&mut args);
@@ -199,7 +203,7 @@ pub fn range_file_diff(
     path: &str,
     opts: DiffOptions,
 ) -> Result<String, String> {
-    let mut args = vec!["diff", "-M"];
+    let mut args = vec![LITERAL_PATHS, "diff", "-M"];
     opts.push_args(&mut args);
     args.extend([END_OPTS, from]);
     args.extend(to);
@@ -224,8 +228,8 @@ pub fn work_diff(repo: &Path, file: &StatusFile, opts: DiffOptions) -> Result<St
         return run_ok_codes(Some(repo), &args, &[0, 1]);
     }
     let mut args: Vec<&str> = match file.area {
-        Area::Staged => vec!["diff", "--cached", "-M"],
-        _ => vec!["diff"],
+        Area::Staged => vec![LITERAL_PATHS, "diff", "--cached", "-M"],
+        _ => vec![LITERAL_PATHS, "diff"],
     };
     opts.push_args(&mut args);
     args.extend(["--", path]);
@@ -339,6 +343,58 @@ mod tests {
         assert!(diff.contains("rename from old.txt"), "{diff}");
         assert!(diff.contains("+seven"), "{diff}");
         assert!(!diff.contains("+line 1\n"), "{diff}");
+        Ok(())
+    }
+
+    /// A file whose name is a pattern (`[ab].txt`) is shown alone, not with `a.txt`; the first
+    /// commit lists its files even with `log.showRoot` off.
+    #[test]
+    fn file_names_are_not_patterns_and_the_first_commit_has_files() -> Result<(), String> {
+        let text = |e: std::io::Error| e.to_string();
+        let dir = std::env::temp_dir().join(format!("gitcraft-pathspec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(text)?;
+        let git = |args: &[&str]| run(Some(&dir), args);
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["config", "commit.gpgSign", "false"],
+            &["config", "log.showRoot", "false"],
+        ] {
+            git(args)?;
+        }
+        let name = "[ab].txt";
+        for (file, body) in [("a.txt", "a\n"), (name, "x\n")] {
+            std::fs::write(dir.join(file), body).map_err(text)?;
+        }
+        git(&["add", "-A"])?;
+        git(&["commit", "-qm", "one"])?;
+        let root = git(&["rev-parse", "HEAD"])?;
+        let root = root.trim();
+        let root_files = commit_files(&dir, root)?;
+        let root_patch = file_diff(&dir, root, name, DiffOptions::default())?;
+        for (file, body) in [("a.txt", "b\n"), (name, "y\n")] {
+            std::fs::write(dir.join(file), body).map_err(text)?;
+        }
+        let file = StatusFile {
+            path: name.to_owned(),
+            old_path: None,
+            code: 'M',
+            area: Area::Unstaged,
+        };
+        let work = work_diff(&dir, &file, DiffOptions::default())?;
+        let range = range_file_diff(&dir, root, None, name, DiffOptions::default())?;
+        git(&["commit", "-qam", "two"])?;
+        let head = git(&["rev-parse", "HEAD"])?;
+        let patch = file_diff(&dir, head.trim(), name, DiffOptions::default())?;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(root_files.len(), 2, "{root_files:?}");
+        assert!(root_patch.contains("+x"), "{root_patch}");
+        for diff in [&work, &range, &patch] {
+            assert!(diff.contains("+y"), "{diff}");
+            assert!(!diff.contains("a.txt"), "{diff}");
+        }
         Ok(())
     }
 
