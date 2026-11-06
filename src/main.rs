@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use gitcraft::app;
 
 fn main() -> eframe::Result {
+    app::warm_up();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("GitCraft")

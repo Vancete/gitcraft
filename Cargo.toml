@@ -10,8 +10,9 @@ repository = "https://github.com/Vancete/gitcraft"
 readme = "README.md"
 
 [dependencies]
-eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "persistence"] }
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "persistence", "links"] }
 egui = "0.36"
+egui_commonmark = { version = "0.25", default-features = false, features = ["pulldown_cmark", "fetch"] }
 egui_extras = { version = "0.36", default-features = false, features = ["svg", "image"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 md5 = "0.7"
@@ -19,11 +20,15 @@ notify = "8"
 notify-rust = "4"
 open = "5"
 portable-pty = "0.9"
+pulldown-cmark = { version = "0.13", default-features = false }
 rfd = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+# bat's syntax set: TypeScript, Vue, TOML, Dockerfile, PowerShell… beyond syntect's own.
+two-face = { version = "0.5.2", default-features = false, features = ["syntect-default-fancy"] }
 ureq = "2"
+base64 = "0.22"
 vt100 = "0.18"
 
 [lints.rust]
@@ -73,3 +78,9 @@ winresource = "0.1"
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }
+
+# winit 0.30.13 with two Windows fixes for moving the window between monitors of different
+# scales: the fix of rust-windowing/winit#4341 (released only in 0.31) and a minimum size that
+# follows the scale. Branch `gitcraft/v0.30.13` of the fork; drop this once on winit 0.31.
+[patch.crates-io]
+winit = { git = "https://github.com/JKamsker/winit", rev = "12fdcb03ef036f0fcb7fa26d19dd7395b1feb141" }

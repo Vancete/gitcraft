@@ -64,10 +64,15 @@ pub(crate) struct RebaseEditor {
     pub onto_label: String,
     /// Oldest first, as git lists them.
     pub entries: Vec<Entry>,
+    /// HEAD when the commits were read: the todo list replaces the branch's commits with
+    /// these, so one made since (a commit, a pull) would be dropped.
+    pub head: String,
 }
 
 impl RebaseEditor {
     pub fn new(onto: String, onto_label: String, commits: Vec<RebaseCommit>) -> Self {
+        // `git log --reverse onto..HEAD`: HEAD comes last.
+        let head = commits.last().map(|c| c.hash.clone()).unwrap_or_default();
         let entries = commits
             .into_iter()
             .map(|c| Entry {
@@ -80,7 +85,16 @@ impl RebaseEditor {
             onto,
             onto_label,
             entries,
+            head,
         }
+    }
+
+    /// Why the commits listed are no longer the branch's, when HEAD is at `head` now.
+    pub fn moved(&self, head: &str) -> Option<String> {
+        (!self.head.is_empty() && self.head != head).then(|| {
+            "The branch has moved since these commits were read: rebasing would drop the new ones. Cancel and start again."
+                .to_owned()
+        })
     }
 
     /// Why the rebase can't start as set up, if it can't.
@@ -122,12 +136,8 @@ impl RebaseEditor {
     /// Writes the todo list and the new messages to a fresh temporary folder and returns the
     /// git command that runs the rebase with them.
     pub fn command(&self) -> Result<Vec<String>, String> {
-        let dir = std::env::temp_dir().join(format!(
-            "gitcraft-rebase-{}-{}",
-            std::process::id(),
-            crate::git::now()
-        ));
-        std::fs::create_dir_all(&dir).map_err(|e| format!("could not prepare the rebase: {e}"))?;
+        let dir = private_dir(&std::env::temp_dir())
+            .map_err(|e| format!("could not prepare the rebase: {e}"))?;
         let write = |name: &str, text: &str| -> Result<PathBuf, String> {
             let path = dir.join(name);
             std::fs::write(&path, text)
@@ -152,8 +162,37 @@ impl RebaseEditor {
             "rebase".to_owned(),
             "-i".to_owned(),
             "--autostash".to_owned(),
+            "--end-of-options".to_owned(),
             self.onto.clone(),
         ])
+    }
+}
+
+/// A new folder under `parent` that only this user can enter. Never one that already exists:
+/// in a shared temporary folder, another user could have made it to swap the todo list (whose
+/// `exec` lines git runs) for their own.
+fn private_dir(parent: &Path) -> std::io::Result<PathBuf> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    let base = format!(
+        "gitcraft-rebase-{}-{}",
+        std::process::id(),
+        crate::git::now()
+    );
+    let mut n = 0u32;
+    loop {
+        let dir = parent.join(if n == 0 {
+            base.clone()
+        } else {
+            format!("{base}-{n}")
+        });
+        match builder.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 100 => n += 1,
+            Err(e) => return Err(e),
+        }
     }
 }
 
@@ -171,7 +210,7 @@ fn todo(entries: &[Entry], message_file: impl Fn(usize) -> Option<String>) -> St
         out.push_str(&format!("{verb} {} {}\n", e.commit.hash, e.commit.summary));
         if let Some(file) = message_file(i) {
             out.push_str(&format!(
-                "exec git commit --amend --allow-empty --cleanup=strip -F {file}\n"
+                "exec git commit --amend --allow-empty --cleanup=whitespace -F {file}\n"
             ));
         }
     }
@@ -197,6 +236,7 @@ impl RepoTab {
             .current
             .clone()
             .unwrap_or_else(|| "HEAD".to_owned());
+        let head = self.refs.head.clone();
         let Some(editor) = &mut self.rebase else {
             return;
         };
@@ -223,7 +263,7 @@ impl RepoTab {
                 });
             });
 
-        let problem = editor.problem();
+        let problem = editor.problem().or_else(|| editor.moved(&head));
         egui::Panel::bottom("rebase_footer")
             .frame(
                 egui::Frame::new()
@@ -385,7 +425,7 @@ mod tests {
         let todo = todo(&entries, |i| (i == 1).then(|| "'/tmp/m 1.txt'".to_owned()));
         assert_eq!(
             todo,
-            "pick a1 summary a1\npick b2 summary b2\nexec git commit --amend --allow-empty --cleanup=strip -F '/tmp/m 1.txt'\nsquash c3 summary c3\ndrop d4 summary d4\n"
+            "pick a1 summary a1\npick b2 summary b2\nexec git commit --amend --allow-empty --cleanup=whitespace -F '/tmp/m 1.txt'\nsquash c3 summary c3\ndrop d4 summary d4\n"
         );
     }
 
@@ -401,6 +441,37 @@ mod tests {
         ed.entries[1].step = Step::Reword;
         ed.entries[1].message = "  ".into();
         assert!(ed.problem().is_some());
+    }
+
+    #[test]
+    fn a_branch_moved_since_the_read_is_not_rebased() {
+        let commits = ["a1", "b2"].map(|h| entry(h, Step::Pick).commit).to_vec();
+        let mut ed = RebaseEditor::new("x".into(), "x".into(), commits);
+        assert_eq!(ed.moved("b2"), None);
+        // Reordering doesn't change which commit was HEAD.
+        ed.entries.swap(0, 1);
+        assert_eq!(ed.moved("b2"), None);
+        // A commit made since: its todo list would drop it.
+        assert!(ed.moved("c3").is_some());
+    }
+
+    #[test]
+    fn private_dirs_are_new() {
+        let parent = std::env::temp_dir().join(format!("gitcraft-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&parent);
+        let a = private_dir(&parent);
+        let b = private_dir(&parent);
+        assert!(a.is_ok() && b.is_ok());
+        if let (Ok(a), Ok(b)) = (&a, &b) {
+            assert_ne!(a, b);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(a).map(|m| m.permissions().mode() & 0o777);
+                assert_eq!(mode.ok(), Some(0o700));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     #[test]

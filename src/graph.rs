@@ -5,6 +5,8 @@
 //! opens or joins lanes for its other parents. Lanes keep their column for their whole life, so
 //! lines that pass through a row are always vertical.
 
+use std::borrow::Borrow;
+
 use crate::git::Commit;
 
 #[derive(Clone, Debug, Default)]
@@ -25,12 +27,13 @@ pub struct Graph {
     pub width: usize,
 }
 
-pub fn layout(commits: &[Commit]) -> Graph {
+pub fn layout<C: Borrow<Commit>>(commits: &[C]) -> Graph {
     let mut lanes: Vec<Option<&str>> = Vec::new();
     let mut rows = Vec::with_capacity(commits.len());
     let mut width = 0;
 
     for commit in commits {
+        let commit: &Commit = commit.borrow();
         let hash = commit.hash.as_str();
         let incoming: Vec<usize> = (0..lanes.len())
             .filter(|&i| lanes[i] == Some(hash))

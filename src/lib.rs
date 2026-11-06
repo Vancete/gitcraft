@@ -2,12 +2,18 @@
 
 pub mod app;
 mod avatars;
+mod ci;
 mod desktop_entry;
 mod forge;
 mod git;
 mod graph;
 mod icons;
+mod image_fit;
 mod manual;
+mod mergiraf;
+mod pr_post;
+mod pr_threads;
+mod pull_request;
 mod repo;
 mod settings;
 mod shell_path;

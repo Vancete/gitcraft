@@ -15,8 +15,8 @@ so your config, credentials and hooks apply as usual.
 
 - Start page: checks that `git` is installed; open, create (`git init`) or clone a repository;
   recent repositories.
-- Browser-like tabs, one per repository (Ctrl+T, Ctrl+W, middle-click). Open tabs, recents,
-  theme and settings are remembered.
+- Browser-like tabs, one per repository (Ctrl+T, Ctrl+W, middle-click; Ctrl+Shift+T reopens a
+  closed one). Open tabs, recents, theme and settings are remembered.
 - Changes made elsewhere (editor, terminal) show up by themselves: the folder is watched.
 
 **Graph**
@@ -27,6 +27,9 @@ so your config, credentials and hooks apply as usual.
   it at that commit (`x` and `origin/x` make one pill), a pull-request icon when one is open,
   `+N` when more refs share the commit, the author's avatar and how long ago it was ("2 hours
   ago"). Author, date and hash columns are optional (Settings).
+- Drag the column borders in the header to resize. Right-click the header to pick the columns,
+  make the graph column compact (lanes closer together), or _Reset columns_ to their first
+  widths.
 - The checked-out branch's pill is solid, the others a darker shade. Double-click a pill to
   check that branch (or tag) out; hover `+N` to list every pill of the commit and double-click
   the one you want.
@@ -35,7 +38,8 @@ so your config, credentials and hooks apply as usual.
 - Search (Ctrl+F) through messages, authors and hashes of all history, or switch to _Code_ to
   find the commits that added or removed a piece of text in a file (`git log -S`); Enter /
   Shift+Enter jump between results, loading older history when needed.
-- Right-click a commit: create a branch or a tag, check it out, interactive rebase onto it,
+- Right-click a commit: create a branch, a tag or a worktree on a new branch there, check it
+  out, interactive rebase onto it,
   cherry-pick, revert, reset the current branch to it (soft / mixed / hard, confirmed), the menu
   of each branch on it, copy the hash, message or branch name. Right-click a branch's pill to get
   check out, fast-forward, merge, rebase and interactive rebase for that branch on top.
@@ -44,18 +48,35 @@ so your config, credentials and hooks apply as usual.
   diff. On a branch, _Changes x adds to main_ shows only what it changed since the two diverged,
   as a pull request shows it, and _Compare main with x_ every difference; a checkbox switches
   between the two. The right pane says how many commits each side has that the other hasn't.
+- Patches: _Create patch from commit…_ saves a commit as a file (`git format-patch`). _Apply
+  patch…_ (the latest commit's menu, the changes row's menu or the palette) turns one from
+  `git format-patch` into commits (`git am`) and puts any other diff on the working tree
+  (`git apply`). Ctrl+Z undoes either.
 - Interactive rebase: the commits to rewrite, newest on top; pick, reword (edit the message in
   place), squash, fix up or drop each one, move them up and down, then _Start rebase_. Ctrl+Z
   undoes it.
+- Quick edits from a commit's menu, for commits of the checked-out branch: _Edit commit
+  message_, _Drop commit_, _Move commit up_ / _down_, each a rebase without the editor and undone
+  with Ctrl+Z. What can't be done (a merge, merges after the commit) is greyed out with why.
 
 **Branches, remotes, worktrees, stashes, tags** (left)
 
 - Local branches with ahead/behind; right-click: check out (or in a new worktree), fast-forward,
   merge into / (interactively) rebase onto the current branch, push, create a pull request,
-  rename, delete…
+  rename, delete (here, or here and on the remote in one go)…
+- Hide a branch from the graph with the eye on its row (on hover), or _Solo_ some from their
+  menu to see only those; the graph then has just the commits of the branches it shows and the
+  checked-out one. _Viewing 12 of 55_ at the top says how many it shows, with _Show all_. Kept
+  per repository.
 - Remotes: add, edit (name and URL), fetch one, remove; their branches below each.
-- Worktrees: add (existing or new branch), open in a tab, open a terminal there, lock, remove,
+- Worktrees: a yellow dot in place of the folder icon marks the others with uncommitted changes,
+  here and in the switcher. Add (existing or new branch), open in the same tab (the tab then shows the branch, a searchable switcher and a button to close the worktree, and what you left keeps running; can be turned off in Settings) or a new one, open a terminal there, lock, remove,
   prune.
+- Submodules (shown when the repository has any): each with its commit and whether it is
+  modified, not initialised or out of date. Update one or all (`git submodule update --init
+  --recursive`), open one in a new tab (or double-click it), show it in its folder. _Keep
+  submodules up to date_ in Settings → Git updates them after every checkout, pull, merge and
+  rebase.
 - Stashes: stash (with a message, untracked files included), see what a stash holds, apply, pop,
   drop.
 - Pull / merge requests of GitHub (through `gh`) or GitLab (through `glab`): list, open in the
@@ -68,6 +89,9 @@ so your config, credentials and hooks apply as usual.
   _Stage all_ / _Unstage all_; right-click a file to open it, open it in your editor, show it in
   its folder, see its history or blame, or ignore it (the file, its extension or its folder go
   into `.gitignore`; a tracked file stops being tracked).
+- _Path_ / _Tree_ at the top of the pane lists the files of the changes, a commit, a comparison
+  or a pull request flat with their paths, or as a tree of their folders; a folder folds with a
+  click and says how many files it holds. The choice is remembered.
 - Part of a file: _Stage hunk_, _Discard hunk_ and _Unstage hunk_ on each hunk of its diff, or
   click the changed lines you want (Shift+click for a range) and stage, unstage or discard only
   those. Discarding can be undone with Ctrl+Z.
@@ -81,20 +105,39 @@ so your config, credentials and hooks apply as usual.
 
 - Unified or side by side, syntax colours, the changed part of each line marked, whitespace
   changes optional, images shown before / after. Esc closes.
+- A file kept in Git LFS shows as its LFS objects before and after, with their sizes, rather
+  than the text of the pointer git stores. With git-lfs installed, the palette (Ctrl+P) of a
+  repository that uses LFS has _LFS: Fetch_ and _LFS: Pull_.
+- The arrows in a diff's header (F7 / Shift+F7, or Alt+↓ / Alt+↑) jump to the next and previous
+  change. The strip beside the scrollbar marks where the changes are, removals red and additions
+  green; click a mark to jump to its change, or anywhere else on the strip to scroll there.
+- The _Diff_ / _File_ switch shows the whole file as it is after the change instead (before it,
+  for a deleted file), coloured and with line numbers.
 - Code takes the colours of the theme VS Code (or Insiders, VSCodium) is using, read from its
   settings and extensions, when it is dark or light like gitcraft's; a setting turns it off.
 - Conflicts open in a three-pane editor: each conflict's two sides with _Ours_, _Theirs_ and
   _Both_ buttons, and the result below (editable). _Use mine_ / _Use theirs_ for a whole file.
-- A merge, rebase, cherry-pick or revert stopped on conflicts shows a banner with _Abort_; the
-  commit box finishes it (_Continue rebase_ during a rebase).
-- File history (every commit that changed the file, following renames; click one for its diff)
-  and blame (who last changed each line, newer changes marked brighter; click to go to the
-  commit).
+- With [Mergiraf](https://mergiraf.org) installed, _Solve with Mergiraf_ lets it solve the
+  conflicts it can from the syntax of the code; the rest stay to choose, and nothing is saved
+  before you check the result. Settings → Git installs it in one click and can have git merge
+  with it everywhere ([docs/mergiraf.md](docs/mergiraf.md)). gitcraft only runs the `mergiraf`
+  program: it neither bundles nor links Mergiraf (GPL-3.0), so gitcraft's licence is unchanged.
+- A merge, rebase, cherry-pick, revert or patch stopped on conflicts shows a banner with
+  _Abort_; the commit box finishes it (_Continue rebase_ during a rebase, _Continue patch_ while
+  `git am` applies one).
+- File history (every commit that changed the file, following renames; click one for its diff
+  or the file as it was, beside the list), blame (who last changed each line, newer changes
+  marked brighter; click to go to the commit) and the whole file at a commit (_View file_ in a
+  file's menu).
+- _View all files_ under a commit's files lists every file of the commit, not only those it
+  changed; click one to read it as it was in that commit.
 
 **Toolbar, terminal, app**
 
 - Undo, redo, Fetch, Pull and Push (with incoming / outgoing counts), new branch, stash, terminal,
   search, open the folder (Explorer / Finder, your editor), refresh (F5).
+- Pull's arrow (or a right-click on it) sets what it does: fast-forward, merging when the branch
+  has diverged; fast-forward only; or rebase. Also in Settings, and the menu has _Fetch all_.
 - Background fetch every few minutes (Settings; 0 turns it off).
 - HTTPS sign-in: when a remote wants a username and password (or token) and no credential helper
   provides them, a dialog asks and the operation runs again. They stay in memory for the tab;
@@ -108,7 +151,13 @@ so your config, credentials and hooks apply as usual.
   GitHub's API); on GitLab, the host's avatar API; elsewhere Gravatar (a hash of the email).
   Cached on disk; can be turned off.
 - Settings: zoom, branch column width, graph columns, avatars, notifications, update check,
-  background fetch, editor command, default shell and terminal font size, saved identities.
+  background fetch, keeping submodules up to date, editor command, default shell and terminal
+  font size, saved identities.
+- Commit signing in Settings: the format (OpenPGP, SSH or X.509), signing key and program, and
+  whether commits and tags are signed by default. These are your global git config's
+  `gpg.format`, `user.signingkey`, `gpg.program` (`gpg.ssh.program`, `gpg.x509.program`),
+  `commit.gpgSign` and `tag.gpgSign`, shown as they are set and written back there; git does
+  the signing as usual.
 - Checks GitHub every 12 hours for a newer release and shows a pill to download it (can be turned
   off).
 - Toasts, and a desktop notification when a long operation ends while the window is in the
@@ -174,6 +223,9 @@ was made this way, on a demo repository.
 | `src/git.rs`             | `git` CLI wrapper and output parsing (refs, log, status, stashes, remotes, search) |
 | `src/graph.rs`           | lane layout for the commit graph                                                   |
 | `src/forge.rs`           | pull / merge requests through `gh` and `glab`                                      |
+| `src/pull_request.rs` | one pull request in full through `gh`: details, checks, comments, changes |
+| `src/pr_post.rs` | what goes out through `gh`: comments, reviews, replies, suggestions, merges |
+| `src/pr_threads.rs` | review threads, the pending review and permissions, from GitHub's GraphQL API |
 | `src/avatars.rs`         | avatars from GitHub, GitLab or Gravatar, cached on disk                            |
 | `src/update.rs`          | new-release check                                                                  |
 | `src/desktop_entry.rs`   | applications menu entry for the AppImage                                           |
@@ -185,14 +237,23 @@ was made this way, on a demo repository.
 | `src/terminal.rs`        | integrated terminal: pty, VT parsing (`vt100`), painting, keys, selection          |
 | `src/repo/mod.rs`        | one repository tab: state, background git work, undo / redo, toolbar               |
 | `src/repo/sidebar.rs`    | branches, remotes, worktrees, stashes, pull requests, tags                         |
+| `src/repo/pr_view.rs` | a pull request in the big area, its changed files on the right |
+| `src/repo/pr_review.rs` | comments and reviews being written, and the threads on lines of a diff |
+| `src/repo/pr_merge.rs` | the box that merges a pull request |
+| `src/repo/pinned_sections.rs` | sidebar section headers that stay in view and jump to their section |
+| `src/repo/branch_tree.rs` | branch names and file paths as a tree of folders, and its rows |
+| `src/repo/columns.rs` | widths of the graph's columns: what a drag changes and what gets squeezed |
+| `src/repo/worktree_tab.rs` | worktrees in the same tab: parked views, the tab's chip and switcher |
 | `src/repo/graph_view.rs` | commit graph, pills, search bar, commit menu                                       |
 | `src/repo/detail.rs`     | commit / stash detail, changes and commit box                                      |
 | `src/repo/diff.rs`       | diff loading, pairing and the diff view (unified, split, images)                   |
 | `src/repo/highlight.rs`  | syntax colours (syntect)                                                           |
 | `src/vscode_theme.rs`    | VS Code's current colour theme as a syntect theme                                  |
 | `src/repo/conflict.rs`   | three-pane conflict editor                                                         |
+| `src/mergiraf.rs` | Mergiraf, run as the user's own command when it is installed |
 | `src/repo/rebase.rs`     | interactive rebase editor and its todo list                                        |
-| `src/repo/file_view.rs`  | a file's history and blame                                                         |
+| `src/repo/file_view.rs`  | a file's history, blame and contents at a commit                                   |
+| `src/repo/file_text.rs`  | a whole file at a commit, coloured, for the file view and diffs                    |
 | `src/repo/dialogs.rs`    | branch, tag, stash, remote, worktree, pull request and confirm dialogs             |
 | `src/repo/widgets.rs`    | shared painted widgets (panel headers, file rows, avatars, tabs)                   |
 | `src/app.rs`             | window shell: tabs, start page, cloning, palette, settings, toasts                 |
