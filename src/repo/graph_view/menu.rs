@@ -5,6 +5,7 @@ use egui::{Response, Ui};
 use super::badge::{BadgeKind, badges};
 use super::compare_items;
 use crate::git;
+use crate::repo::actions::{BranchRef, interactive_rebase_action};
 use crate::repo::{
     Action, Dialog, Refresh, RepoTab, Undo, WIP_HASH, fast_forward_action, merge_action, ops,
     rebase_action,
@@ -107,11 +108,16 @@ impl RepoTab {
     /// Actions on the right-clicked `branch`: check it out, or bring it into the checked-out
     /// branch.
     fn pill_items(&self, ui: &mut Ui, branch: &str, idle: bool, acts: &mut Vec<Action>) {
+        // A pill names the local branch when there is one, else `remote/branch`.
+        let local = self.refs.local.iter().any(|b| b.name == branch);
+        let git_ref = BranchRef {
+            name: branch,
+            remote: !local,
+        };
         if ui
             .add_enabled(idle, egui::Button::new(format!("Check out {branch}")))
             .clicked()
         {
-            let local = self.refs.local.iter().any(|b| b.name == branch);
             acts.push(if local {
                 Action::Checkout(branch.to_owned())
             } else {
@@ -128,7 +134,7 @@ impl RepoTab {
             )
             .clicked()
         {
-            acts.push(fast_forward_action(branch, current));
+            acts.push(fast_forward_action(git_ref, current));
         }
         if ui
             .add_enabled(
@@ -137,7 +143,7 @@ impl RepoTab {
             )
             .clicked()
         {
-            acts.push(merge_action(branch, current));
+            acts.push(merge_action(git_ref, current));
         }
         if ui
             .add_enabled(
@@ -146,7 +152,7 @@ impl RepoTab {
             )
             .clicked()
         {
-            acts.push(rebase_action(branch, current));
+            acts.push(rebase_action(git_ref, current));
         }
         if ui
             .add_enabled(
@@ -155,10 +161,7 @@ impl RepoTab {
             )
             .clicked()
         {
-            acts.push(Action::InteractiveRebase {
-                onto: branch.to_owned(),
-                label: branch.to_owned(),
-            });
+            acts.push(interactive_rebase_action(git_ref));
         }
         ui.separator();
         compare_items(ui, acts, branch, current);

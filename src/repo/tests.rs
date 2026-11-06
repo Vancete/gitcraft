@@ -371,3 +371,110 @@ error: failed to push some refs";
     );
     assert_eq!(headline("Fetch: done"), "Fetch: done");
 }
+
+#[test]
+fn merging_and_rebasing_onto_a_branch_ignores_a_tag_of_the_same_name() {
+    use super::actions::{
+        Action, BranchRef, fast_forward_action, merge_action, merge_message, rebase_action,
+    };
+    let dir = repo("tag-named-like-branch");
+    let run = |args: &[&str]| git::run(Some(&dir), args);
+    let rev = |r: &str| git::run(Some(&dir), &["rev-parse", r]).map(|s| s.trim().to_owned());
+    // The tags `x` and `origin/x` are at the branch `x`'s older commit: `x` and `origin/x`
+    // alone mean the tags to git.
+    for args in [
+        &["checkout", "-q", "-b", "x"][..],
+        &["commit", "-q", "--allow-empty", "-m", "x1"],
+        &["tag", "x"],
+        &["commit", "-q", "--allow-empty", "-m", "x2"],
+        &["checkout", "-q", "-b", "work", "HEAD~2"],
+        &["update-ref", "refs/remotes/origin/x", "refs/heads/x"],
+        &["tag", "origin/x", "x"],
+    ] {
+        assert!(run(args).is_ok(), "{args:?}");
+    }
+    let branch_tip = rev("refs/heads/x");
+    let start = rev("HEAD");
+    let steps = |action: Action| match action {
+        Action::UndoableOps { ops, .. } => ops,
+        _ => Vec::new(),
+    };
+    let go = |action: Action| run_steps(&dir, &steps(action), OpKind::plain(), None).0;
+    let ff = go(fast_forward_action(BranchRef::local("x"), "work"));
+    let ff_head = rev("HEAD");
+    let back = run(&["reset", "-q", "--hard", "HEAD@{1}"]);
+    assert!(run(&["commit", "-q", "--allow-empty", "-m", "w1"]).is_ok());
+    let merged = go(merge_action(BranchRef::local("x"), "work"));
+    let merged_from = rev("HEAD^2");
+    let message = run(&["log", "-1", "--format=%s"]);
+    assert!(run(&["reset", "-q", "--hard", "HEAD~1"]).is_ok());
+    let rebased = go(rebase_action(BranchRef::remote("origin/x"), "work"));
+    let rebased_onto = rev("HEAD~1");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ff.is_ok(), "{ff:?}");
+    assert_eq!(ff_head, branch_tip);
+    assert!(back.is_ok());
+    assert_ne!(start, branch_tip);
+    assert!(merged.is_ok(), "{merged:?}");
+    assert_eq!(merged_from, branch_tip);
+    assert_eq!(
+        message.map(|m| m.trim().to_owned()).as_deref(),
+        Ok("Merge branch 'x' into work")
+    );
+    assert!(rebased.is_ok(), "{rebased:?}");
+    assert_eq!(rebased_onto, branch_tip);
+    assert_eq!(
+        merge_message(BranchRef::local("x"), "main"),
+        "Merge branch 'x'"
+    );
+    assert_eq!(
+        merge_message(BranchRef::remote("origin/x"), "feat"),
+        "Merge remote-tracking branch 'origin/x' into feat"
+    );
+}
+
+#[test]
+fn a_pull_request_that_cannot_open_leaves_the_builds_shown() {
+    use super::{Action, RepoTab, rebase::RebaseEditor};
+    let dir = repo("pr-refused");
+    let ctx = egui::Context::default();
+    let mut tab = RepoTab::new_deferred(dir.clone(), &ctx);
+    // No forge remote: the builds view opens without asking anything.
+    tab.apply(
+        Action::OpenCi {
+            sha: "a".repeat(40),
+            run: None,
+        },
+        &ctx,
+    );
+    let shown = tab.ci_view.is_some();
+    tab.rebase = Some(RebaseEditor::new("x".into(), "x".into(), Vec::new()));
+    tab.apply(Action::OpenPr(7), &ctx);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(shown);
+    assert!(tab.pr_view.is_none());
+    assert!(tab.ci_view.is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_editor_command_with_arguments_is_run_with_the_path_as_one_argument() {
+    use super::apply::open_in_editor;
+    let dir = std::env::temp_dir().join(format!("gitcraft-editor-args-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join("a b $(x).txt");
+    // `cp /dev/null <path>`: the editor's arguments, then the path, which makes the file.
+    let ran = open_in_editor("cp /dev/null", &file);
+    let mut made = false;
+    for _ in 0..100 {
+        made = file.exists();
+        if made {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ran.is_ok(), "{ran:?}");
+    assert!(made);
+}

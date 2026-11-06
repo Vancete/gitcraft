@@ -31,8 +31,12 @@ impl RepoTab {
             }
             Action::OpenDiff(key) => self.open_diff(key, ctx),
             Action::OpenPr(number) => {
-                self.ci_view = None;
+                // It refuses while an editor takes the big area: the builds shown stay then.
+                let requests = self.pr_requests;
                 self.open_pr(number, ctx);
+                if self.pr_requests != requests {
+                    self.ci_view = None;
+                }
             }
             Action::ClosePr => {
                 self.close_pr();
@@ -396,7 +400,16 @@ pub(crate) fn open_in_editor(editor: &str, path: &Path) -> Result<(), String> {
     };
     #[cfg(not(windows))]
     let mut cmd = {
-        let mut c = std::process::Command::new(editor);
+        // A command with arguments (`code -n`, `flatpak run …`), as `cmd` reads it on Windows:
+        // through the shell, the path still one argument (`$1`) it does not read. A program
+        // whose own path has a space in it is run as it is.
+        let mut c = if editor.contains(char::is_whitespace) && !Path::new(editor).exists() {
+            let mut c = std::process::Command::new("sh");
+            c.arg("-c").arg(format!("{editor} \"$1\"")).arg("sh");
+            c
+        } else {
+            std::process::Command::new(editor)
+        };
         c.arg(path);
         crate::shell_path::apply(&mut c);
         c

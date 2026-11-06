@@ -181,31 +181,103 @@ pub(crate) fn compare_action(base: &str, target: &str, since_fork: bool) -> Acti
     }
 }
 
-pub(crate) fn merge_action(branch: &str, current: &str) -> Action {
+/// [`compare_action`] for two branches, given to git by their full refs.
+pub(crate) fn compare_branches_action(
+    base: BranchRef<'_>,
+    target: BranchRef<'_>,
+    since_fork: bool,
+) -> Action {
+    Action::Compare {
+        base: base.full(),
+        base_label: base.name.to_owned(),
+        target: Some(target.full()),
+        target_label: target.name.to_owned(),
+        since_fork,
+    }
+}
+
+/// A branch an action brings in or goes onto: git is given its full ref, as a tag (or the
+/// other kind of branch) of the same short name would be what `x` means to it; people see the
+/// name.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BranchRef<'a> {
+    /// `main`, or `origin/main` for a remote-tracking branch.
+    pub name: &'a str,
+    pub remote: bool,
+}
+
+impl<'a> BranchRef<'a> {
+    pub(crate) fn local(name: &'a str) -> Self {
+        Self {
+            name,
+            remote: false,
+        }
+    }
+
+    pub(crate) fn remote(name: &'a str) -> Self {
+        Self { name, remote: true }
+    }
+
+    /// `refs/heads/main`, `refs/remotes/origin/main`.
+    pub(crate) fn full(&self) -> String {
+        if self.remote {
+            branch_visibility::remote_ref(self.name)
+        } else {
+            branch_visibility::local_ref(self.name)
+        }
+    }
+}
+
+/// The message git gives merging `branch` into `current` by its short name; given the full
+/// ref, it would say `Merge branch 'refs/heads/x'`. Like git, without `into` for `main` and
+/// `master`.
+pub(crate) fn merge_message(branch: BranchRef<'_>, current: &str) -> String {
+    let kind = if branch.remote {
+        "remote-tracking branch"
+    } else {
+        "branch"
+    };
+    let mut message = format!("Merge {kind} '{}'", branch.name);
+    if !matches!(current, "main" | "master") {
+        message.push_str(&format!(" into {current}"));
+    }
+    message
+}
+
+pub(crate) fn merge_action(branch: BranchRef<'_>, current: &str) -> Action {
+    let message = merge_message(branch, current);
     Action::UndoableOps {
-        label: format!("Merge {branch} into {current}"),
-        ops: ops(&[&["merge", "--no-edit", branch]]),
+        label: format!("Merge {} into {current}", branch.name),
+        ops: ops(&[&["merge", "--no-edit", "-m", &message, &branch.full()]]),
         refresh: Refresh::All,
         undo: Undo::HeadMove { mode: "--keep" },
     }
 }
 
 /// Moves the current branch forward to `branch`; fails (and says so) if they have diverged.
-pub(crate) fn fast_forward_action(branch: &str, current: &str) -> Action {
+pub(crate) fn fast_forward_action(branch: BranchRef<'_>, current: &str) -> Action {
     Action::UndoableOps {
-        label: format!("Fast-forward {current} to {branch}"),
-        ops: ops(&[&["merge", "--ff-only", branch]]),
+        label: format!("Fast-forward {current} to {}", branch.name),
+        ops: ops(&[&["merge", "--ff-only", &branch.full()]]),
         refresh: Refresh::All,
         undo: Undo::HeadMove { mode: "--keep" },
     }
 }
 
-pub(crate) fn rebase_action(onto: &str, current: &str) -> Action {
+pub(crate) fn rebase_action(onto: BranchRef<'_>, current: &str) -> Action {
     Action::UndoableOps {
-        label: format!("Rebase {current} onto {onto}"),
-        ops: ops(&[&["rebase", onto]]),
+        label: format!("Rebase {current} onto {}", onto.name),
+        ops: ops(&[&["rebase", &onto.full()]]),
         refresh: Refresh::All,
         undo: Undo::HeadMove { mode: "--keep" },
+    }
+}
+
+/// Opens the interactive rebase editor for the checked-out branch onto `onto`.
+pub(crate) fn interactive_rebase_action(onto: BranchRef<'_>) -> Action {
+    Action::InteractiveRebase {
+        onto: onto.full(),
+        label: onto.name.to_owned(),
     }
 }
 
@@ -343,22 +415,30 @@ impl RepoTab {
                     items.push((
                         format!("Changes {} adds to {current}", b.name),
                         "compare".into(),
-                        compare_action(current, &b.name, true),
+                        compare_branches_action(
+                            BranchRef::local(current),
+                            BranchRef::local(&b.name),
+                            true,
+                        ),
                     ));
                     items.push((
                         format!("Compare {current} with {}", b.name),
                         "compare".into(),
-                        compare_action(current, &b.name, false),
+                        compare_branches_action(
+                            BranchRef::local(current),
+                            BranchRef::local(&b.name),
+                            false,
+                        ),
                     ));
                     items.push((
                         format!("Merge {} into {current}", b.name),
                         "merge".into(),
-                        merge_action(&b.name, current),
+                        merge_action(BranchRef::local(&b.name), current),
                     ));
                     items.push((
                         format!("Rebase {current} onto {}", b.name),
                         "rebase".into(),
-                        rebase_action(&b.name, current),
+                        rebase_action(BranchRef::local(&b.name), current),
                     ));
                 }
             }

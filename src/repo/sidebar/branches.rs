@@ -6,13 +6,13 @@ use super::{ROW_H, matches, remote_short, visibility};
 use crate::ci::Status;
 use crate::git::Branch;
 use crate::icons;
+use crate::repo::actions::{BranchRef, compare_branches_action, interactive_rebase_action};
 use crate::repo::branch_tree::{self, LeafRow, TreeView};
 use crate::repo::branch_visibility::local_ref;
 use crate::repo::graph_view;
 use crate::repo::pinned_sections::{Button, Header, Sections};
 use crate::repo::{
-    Action, Dialog, RepoTab, ci_status, compare_action, fast_forward_action, merge_action, ops,
-    rebase_action,
+    Action, Dialog, RepoTab, ci_status, fast_forward_action, merge_action, ops, rebase_action,
 };
 use crate::settings::Settings;
 use crate::theme::{self, Tokens};
@@ -145,15 +145,19 @@ impl RepoTab {
         // The checked-out branch against the one pull requests usually go to.
         if b.is_head
             && let Some(base) = self.base_ref()
-            && base != b.name
+            && base.name != b.name
         {
             ui.separator();
             if ui
-                .button(format!("Changes {} adds to {base}", b.name))
+                .button(format!("Changes {} adds to {}", b.name, base.name))
                 .on_hover_text("What it changed since the two diverged, as a pull request shows it")
                 .clicked()
             {
-                acts.push(compare_action(&base, &b.name, true));
+                acts.push(compare_branches_action(
+                    base.as_ref(),
+                    BranchRef::local(&b.name),
+                    true,
+                ));
             }
         }
         ui.separator();
@@ -289,12 +293,14 @@ impl RepoTab {
         }
     }
 
-    /// The branch pull requests go into by default: the remote's HEAD, else main / master.
     /// The branch to compare the current one with: the local default base, or its remote one.
-    fn base_ref(&self) -> Option<String> {
+    fn base_ref(&self) -> Option<OwnedBranch> {
         let base = self.default_base();
         if self.refs.local.iter().any(|b| b.name == base) {
-            return Some(base);
+            return Some(OwnedBranch {
+                name: base,
+                remote: false,
+            });
         }
         let remote = format!("{}/{base}", self.default_remote()?);
         self.refs
@@ -302,9 +308,14 @@ impl RepoTab {
             .iter()
             .flat_map(|(_, list)| list)
             .any(|b| b.name == remote)
-            .then_some(remote)
+            .then_some(OwnedBranch {
+                name: remote,
+                remote: true,
+            })
     }
 
+    /// The branch pull requests go into by default: main, master or develop on the default
+    /// remote, else main.
     fn default_base(&self) -> String {
         let remote = self.default_remote().unwrap_or_else(|| "origin".to_owned());
         let names: Vec<&str> = self
@@ -320,6 +331,21 @@ impl RepoTab {
     }
 }
 
+/// A local or remote-tracking branch found by name.
+struct OwnedBranch {
+    name: String,
+    remote: bool,
+}
+
+impl OwnedBranch {
+    fn as_ref(&self) -> BranchRef<'_> {
+        BranchRef {
+            name: &self.name,
+            remote: self.remote,
+        }
+    }
+}
+
 /// Fast-forward, merge, rebase and compare `current` with `b`.
 fn integrate_items(ui: &mut Ui, acts: &mut Vec<Action>, b: &Branch, current: &str, idle: bool) {
     if ui
@@ -329,7 +355,7 @@ fn integrate_items(ui: &mut Ui, acts: &mut Vec<Action>, b: &Branch, current: &st
         )
         .clicked()
     {
-        acts.push(fast_forward_action(&b.name, current));
+        acts.push(fast_forward_action(BranchRef::local(&b.name), current));
     }
     if ui
         .add_enabled(
@@ -338,7 +364,7 @@ fn integrate_items(ui: &mut Ui, acts: &mut Vec<Action>, b: &Branch, current: &st
         )
         .clicked()
     {
-        acts.push(merge_action(&b.name, current));
+        acts.push(merge_action(BranchRef::local(&b.name), current));
     }
     if ui
         .add_enabled(
@@ -347,7 +373,7 @@ fn integrate_items(ui: &mut Ui, acts: &mut Vec<Action>, b: &Branch, current: &st
         )
         .clicked()
     {
-        acts.push(rebase_action(&b.name, current));
+        acts.push(rebase_action(BranchRef::local(&b.name), current));
     }
     if ui
         .add_enabled(
@@ -356,10 +382,7 @@ fn integrate_items(ui: &mut Ui, acts: &mut Vec<Action>, b: &Branch, current: &st
         )
         .clicked()
     {
-        acts.push(Action::InteractiveRebase {
-            onto: b.name.clone(),
-            label: b.name.clone(),
-        });
+        acts.push(interactive_rebase_action(BranchRef::local(&b.name)));
     }
     ui.separator();
     graph_view::compare_items(ui, acts, &b.name, current);

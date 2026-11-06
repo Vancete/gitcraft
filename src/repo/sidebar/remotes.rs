@@ -5,6 +5,7 @@ use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
 use super::{REMOTE_INDENT, ROW_H, matches, visibility};
 use crate::git::{Branch, Remote};
 use crate::icons;
+use crate::repo::actions::BranchRef;
 use crate::repo::branch_tree::{self, LeafRow, TreeView};
 use crate::repo::branch_visibility::remote_ref;
 use crate::repo::graph_view;
@@ -147,19 +148,19 @@ impl RepoTab {
                 )
                 .clicked()
             {
-                acts.push(fast_forward_action(&b.name, current));
+                acts.push(fast_forward_action(BranchRef::remote(&b.name), current));
             }
             if ui
                 .add_enabled(idle, egui::Button::new(format!("Merge into {current}")))
                 .clicked()
             {
-                acts.push(merge_action(&b.name, current));
+                acts.push(merge_action(BranchRef::remote(&b.name), current));
             }
             if ui
                 .add_enabled(idle, egui::Button::new(format!("Rebase {current} onto it")))
                 .clicked()
             {
-                acts.push(rebase_action(&b.name, current));
+                acts.push(rebase_action(BranchRef::remote(&b.name), current));
             }
             ui.separator();
             graph_view::compare_items(ui, acts, &b.name, current);
