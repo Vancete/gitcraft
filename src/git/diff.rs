@@ -283,6 +283,9 @@ pub fn save_patch(patch: &str) -> Result<PathBuf, String> {
         }
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(not_ours)?;
     }
+    // This run's own patches stay, however old: undoing a discard of lines applies its patch
+    // again, the only copy of those lines.
+    let ours = format!("{}-", std::process::id());
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
             let old = e
@@ -291,13 +294,13 @@ pub fn save_patch(patch: &str) -> Result<PathBuf, String> {
                 .ok()
                 .and_then(|t| t.elapsed().ok())
                 .is_some_and(|age| age.as_secs() > 24 * 3600);
-            if old {
+            if old && !e.file_name().to_string_lossy().starts_with(&ours) {
                 let _ = std::fs::remove_file(e.path());
             }
         }
     }
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("{}-{}-{n}.patch", std::process::id(), now()));
+    let path = dir.join(format!("{ours}{}-{n}.patch", now()));
     // A new file, never one already there (or a link someone left in its place).
     let write = || -> std::io::Result<()> {
         use std::io::Write;
@@ -316,6 +319,37 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+
+    /// Old patches are cleaned up, but not this run's: undoing a discard of lines a day ago
+    /// applies its patch, the only copy of those lines.
+    #[test]
+    fn old_patches_of_this_run_are_kept() -> Result<(), String> {
+        let text = |e: std::io::Error| e.to_string();
+        let first = save_patch("x\n")?;
+        let dir = first.parent().map(Path::to_path_buf).unwrap_or_default();
+        let ours = dir.join(format!("{}-old-test.patch", std::process::id()));
+        let theirs = dir.join(format!("{}-old-test.patch", u32::MAX));
+        let day_and_more = std::time::Duration::from_secs(25 * 3600);
+        let then = std::time::SystemTime::now()
+            .checked_sub(day_and_more)
+            .ok_or("no time")?;
+        for file in [&ours, &theirs] {
+            std::fs::write(file, "x\n").map_err(text)?;
+            std::fs::File::options()
+                .write(true)
+                .open(file)
+                .and_then(|f| f.set_modified(then))
+                .map_err(text)?;
+        }
+        let second = save_patch("y\n")?;
+        let (kept, cleaned) = (ours.exists(), !theirs.exists());
+        for file in [&first, &second, &ours, &theirs] {
+            let _ = std::fs::remove_file(file);
+        }
+        assert!(kept);
+        assert!(cleaned);
+        Ok(())
+    }
 
     #[test]
     fn a_renamed_file_shows_what_changed_rather_than_all_of_it() -> Result<(), String> {

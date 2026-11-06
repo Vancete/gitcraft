@@ -49,7 +49,8 @@ pub(super) enum Msg {
     Search(String, bool, Result<Vec<String>, String>),
     /// A comparison's files, for the request numbered so.
     Compare(u64, Result<CompareData, String>),
-    Prs(Result<Vec<PullRequest>, String>),
+    /// The open pull requests, as asked for at that moment (see `RepoTab::prs_loaded`).
+    Prs(Instant, Result<Vec<PullRequest>, String>),
     /// Build statuses by commit; `true` when new commits were asked about.
     CiStatuses(bool, Result<HashMap<String, crate::ci::Status>, String>),
     /// The runs of the commit the pipeline view shows, for the read numbered so.
@@ -88,6 +89,8 @@ pub(super) enum Msg {
         refresh: Refresh,
         kind: OpKind,
         quiet: bool,
+        /// The step it stopped at: those before it ran.
+        stopped: usize,
     },
     /// Mergiraf's take on a conflicted file.
     Mergiraf(String, Result<String, String>),
@@ -308,7 +311,10 @@ impl RepoTab {
             }
             Msg::Mergiraf(path, result) => self.mergiraf_done(path, result),
             Msg::Search(query, code, result) => self.search_done(query, code, result, ctx),
-            Msg::Prs(result) => match result {
+            // Asked before the list asked for last (one read before a merge answering after
+            // the one read since), or of the forge the remotes no longer point to.
+            Msg::Prs(asked, _) if self.prs_loaded != Some(asked) => {}
+            Msg::Prs(_, result) => match result {
                 Ok(prs) => {
                     self.prs = prs;
                     self.pr_error = None;
@@ -327,7 +333,13 @@ impl RepoTab {
                 refresh,
                 kind,
                 quiet,
-            } => self.op_done(label, result, refresh, kind, quiet, ctx),
+                stopped,
+            } => {
+                if result.is_err() && !quiet {
+                    self.keep_unfinished(stopped);
+                }
+                self.op_done(label, result, refresh, kind, quiet, ctx)
+            }
         }
     }
 }

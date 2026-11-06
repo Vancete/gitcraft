@@ -50,6 +50,11 @@ fn lane_x(gx: f32, lane: usize, lane_w: f32) -> f32 {
     gx + 6.0 + lane as f32 * lane_w + lane_w / 2.0
 }
 
+/// The id of the graph row of the commit (or stash, or changes row) `hash`.
+pub(super) fn row_id(ui: &Ui, hash: &str) -> egui::Id {
+    ui.id().with(("commit-row", hash))
+}
+
 impl RepoTab {
     pub(super) fn commit_row(
         &self,
@@ -61,11 +66,13 @@ impl RepoTab {
         acts: &mut Vec<Action>,
     ) -> Response {
         let t = Tokens::get(ui.ctx());
-        let (rect, resp) =
-            ui.allocate_exact_size(vec2(ui.available_width(), ROW_PITCH), Sense::click());
+        let (auto_id, rect) = ui.allocate_space(vec2(ui.available_width(), ROW_PITCH));
         let Some(commit) = self.commits.get(i) else {
-            return resp;
+            return ui.interact(rect, auto_id, Sense::click());
         };
+        // Known by its commit, not its place: rows shift when a reload adds commits or the
+        // changes row above them, and a menu opened on one must stay that commit's.
+        let resp = ui.interact(rect, row_id(ui, &commit.hash), Sense::click());
         let painter = ui.painter_at(rect);
         let is_wip = commit.hash == WIP_HASH;
         let is_match = self.search.matches.contains(&commit.hash);

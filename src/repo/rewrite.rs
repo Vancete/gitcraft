@@ -1,5 +1,6 @@
 //! Rewriting history: editing a commit's message, and the interactive rebase.
 
+use super::operations::expect_ref_at;
 use super::{Msg, Refresh, RepoTab, Undo, ops, rebase, short, spawn};
 use crate::git;
 
@@ -24,9 +25,15 @@ impl RepoTab {
             if !body.is_empty() {
                 amend.extend(["-m", body]);
             }
+            // HEAD as the last read saw it: a commit made since (in the terminal) is not the
+            // one whose message this is, and must not get it.
+            let guarded = [expect_ref_at("HEAD", &hash)]
+                .into_iter()
+                .chain(ops(&[&amend]))
+                .collect();
             self.run_undoable(
                 &format!("Edit the message of {}", short(&hash)),
-                ops(&[&amend]),
+                guarded,
                 Refresh::All,
                 Undo::HeadMove { mode: "--keep" },
                 ctx,
@@ -65,7 +72,7 @@ impl RepoTab {
             if let Some(problem) = editor.problem() {
                 return Err(problem);
             }
-            editor.command()
+            Ok((editor.command()?, editor.head))
         });
         match result {
             // Started while something else ran: say so rather than drop it.
@@ -78,9 +85,10 @@ impl RepoTab {
                     true,
                 ));
             }
-            Ok(command) => self.run_undoable(
+            // The todo list replaces the commits read: not one made since.
+            Ok((command, head)) => self.run_undoable(
                 &format!("Edit the message of {}", short(&hash)),
-                vec![command],
+                vec![expect_ref_at("HEAD", &head), command],
                 Refresh::All,
                 Undo::HeadMove { mode: "--keep" },
                 ctx,
@@ -134,7 +142,9 @@ impl RepoTab {
         if editor.problem().is_some() || self.busy_op.is_some() {
             return;
         }
-        // Committed or pulled while the editor was open: its todo list would drop that.
+        // Committed or pulled while the editor was open: its todo list would drop that. Checked
+        // here against the last read, and again on disk right before it runs (that read can
+        // lag a commit just made in the terminal by as long as a reload takes).
         if let Some(why) = editor.moved(&self.refs.head) {
             self.status = Some((why, true));
             return;
@@ -142,10 +152,11 @@ impl RepoTab {
         match editor.command() {
             Ok(command) => {
                 let label = format!("Interactive rebase onto {}", editor.onto_label);
+                let guard = expect_ref_at("HEAD", &editor.head);
                 self.rebase = None;
                 self.run_undoable(
                     &label,
-                    vec![command],
+                    vec![guard, command],
                     Refresh::All,
                     Undo::HeadMove { mode: "--keep" },
                     ctx,
@@ -153,5 +164,124 @@ impl RepoTab {
             }
             Err(e) => self.status = Some((e, true)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    use super::super::{Msg, RepoTab, rebase};
+    use crate::git;
+
+    fn repo(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("gitcraft-rewrite-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["commit", "-q", "--allow-empty", "-m", "root"],
+            &["commit", "-q", "--allow-empty", "-m", "base"],
+            &["commit", "-q", "--allow-empty", "-m", "read"],
+        ] {
+            assert!(git::run(Some(&dir), args).is_ok());
+        }
+        dir
+    }
+
+    /// Waits for the operation the tab started, and says how it ended.
+    fn op_result(tab: &RepoTab) -> Option<Result<String, String>> {
+        // Past the watcher, which comes on the same channel.
+        loop {
+            match tab.rx.recv_timeout(Duration::from_secs(30)) {
+                Ok(Msg::OpDone { result, .. }) => return Some(result),
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
+    }
+
+    fn subject(dir: &Path) -> String {
+        git::head_message(dir)
+            .map(|m| m.trim().to_owned())
+            .unwrap_or_default()
+    }
+
+    /// A commit made in the terminal after the editor read the branch, and before a reload
+    /// told the tab: the rebase refuses rather than drop it.
+    #[test]
+    fn a_rebase_does_not_drop_a_commit_the_tab_has_not_seen_yet() {
+        let dir = repo("rebase-unseen");
+        let ctx = egui::Context::default();
+        let mut tab = RepoTab::new_deferred(dir.clone(), &ctx);
+        let read = git::head(&dir);
+        tab.refs.head = read.clone();
+        let commits = git::rebase_commits(&dir, "HEAD~1").unwrap_or_default();
+        tab.rebase = Some(rebase::RebaseEditor::new(
+            "HEAD~1".to_owned(),
+            "HEAD~1".to_owned(),
+            commits,
+        ));
+        let made = git::run(
+            Some(&dir),
+            &["commit", "-q", "--allow-empty", "-m", "unseen"],
+        );
+        let unseen = git::head(&dir);
+        tab.run_rebase(&ctx);
+        let result = op_result(&tab);
+        let head = git::head(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(made.is_ok());
+        assert!(matches!(result, Some(Err(_))), "{result:?}");
+        assert_eq!(head, unseen);
+    }
+
+    /// Editing the message of what the tab thinks is the latest commit, after another was made
+    /// on top: that one keeps its own message.
+    #[test]
+    fn rewording_the_last_commit_seen_leaves_a_newer_one_alone() {
+        let dir = repo("reword-unseen");
+        let ctx = egui::Context::default();
+        let mut tab = RepoTab::new_deferred(dir.clone(), &ctx);
+        let read = git::head(&dir);
+        tab.refs.head = read.clone();
+        let made = git::run(
+            Some(&dir),
+            &["commit", "-q", "--allow-empty", "-m", "unseen"],
+        );
+        tab.reword_commit(read, "reworded".to_owned(), &ctx);
+        let result = op_result(&tab);
+        let now = subject(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(made.is_ok());
+        assert!(matches!(result, Some(Err(_))), "{result:?}");
+        assert_eq!(now, "unseen");
+    }
+
+    /// An older commit's message: the commits are read right before, and the rebase replays
+    /// them only if HEAD is still where that read saw it.
+    #[test]
+    fn rewording_an_older_commit_refuses_once_head_moved() {
+        let dir = repo("reword-older");
+        let ctx = egui::Context::default();
+        let mut tab = RepoTab::new_deferred(dir.clone(), &ctx);
+        let base = git::resolve(&dir, "HEAD~1").unwrap_or_default();
+        let commits = git::rebase_commits(&dir, &format!("{base}^"));
+        let made = git::run(
+            Some(&dir),
+            &["commit", "-q", "--allow-empty", "-m", "unseen"],
+        );
+        let unseen = git::head(&dir);
+        tab.reword_older(base, "reworded".to_owned(), commits, &ctx);
+        let result = op_result(&tab);
+        let head = git::head(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(made.is_ok());
+        assert!(matches!(result, Some(Err(_))), "{result:?}");
+        assert_eq!(head, unseen);
     }
 }

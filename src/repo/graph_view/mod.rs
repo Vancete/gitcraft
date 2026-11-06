@@ -70,8 +70,9 @@ impl RepoTab {
             return;
         }
 
-        // Keyboard navigation (only when no text field has focus).
-        if !ui.ctx().egui_wants_keyboard_input() && self.dialog.is_none() {
+        // Keyboard navigation (only when no text field has focus, nor a window of the app's
+        // is over the tab: the manual, the palette, the clone form).
+        if !ui.ctx().egui_wants_keyboard_input() && self.dialog.is_none() && !self.keys_blocked {
             self.arrow_keys(ui, acts);
         }
 
@@ -325,5 +326,77 @@ mod tests {
             ..compact
         };
         assert_eq!(graph(&dragged), 150.0);
+    }
+
+    /// The graph of `tab` showing the commits `hashes` (newest first, each on the next).
+    fn show_commits(tab: &mut RepoTab, hashes: &[&str]) {
+        tab.commits = hashes
+            .iter()
+            .enumerate()
+            .map(|(i, h)| {
+                std::sync::Arc::new(git::Commit {
+                    hash: (*h).to_owned(),
+                    parents: hashes
+                        .get(i + 1)
+                        .map(|p| (*p).to_owned())
+                        .into_iter()
+                        .collect(),
+                    summary: format!("commit {h}"),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        tab.graph = crate::graph::layout(&tab.commits);
+        tab.index = hashes
+            .iter()
+            .enumerate()
+            .map(|(i, h)| ((*h).to_owned(), i))
+            .collect();
+    }
+
+    /// A commit's menu left open while a reload replaces the rows is that commit's: when the
+    /// commit is gone (amended, or reset away in the terminal) it closes, rather than turning
+    /// into the menu of the commit that took its row, whose Revert or Cherry-pick runs at once.
+    #[test]
+    fn a_commit_menu_does_not_move_to_the_commit_that_takes_its_row() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut tab = RepoTab::new_deferred("/nonexistent/row-menu-test".into(), &ctx);
+        show_commits(
+            &mut tab,
+            &["c".repeat(40).as_str(), &"b".repeat(40), &"a".repeat(40)],
+        );
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1200.0, 800.0));
+        // The header, then the rows: the second row's middle, away from its pills.
+        let second = egui::pos2(600.0, 26.0 + ROW_PITCH * 1.5);
+        let frame = |tab: &mut RepoTab, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ui, |ui| tab.graph_view(ui, &mut Vec::new()));
+            })
+            .drop_without_applying_deltas();
+        };
+        frame(&mut tab, vec![egui::Event::PointerMoved(second)]);
+        let click = |pressed| egui::Event::PointerButton {
+            pos: second,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut tab, vec![click(true), click(false)]);
+        frame(&mut tab, Vec::new());
+        let opened = egui::Popup::is_any_open(&ctx);
+        // The right-clicked commit is gone: another one is in its row now.
+        show_commits(&mut tab, &["d".repeat(40).as_str(), &"a".repeat(40)]);
+        frame(&mut tab, Vec::new());
+        frame(&mut tab, Vec::new());
+        assert!(opened, "the right-click opened no menu");
+        assert!(!egui::Popup::is_any_open(&ctx));
     }
 }

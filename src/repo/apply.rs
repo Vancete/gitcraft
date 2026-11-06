@@ -414,7 +414,13 @@ pub(crate) fn open_in_editor(editor: &str, path: &Path) -> Result<(), String> {
         crate::shell_path::apply(&mut c);
         c
     };
-    cmd.spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Could not run {editor}: {e}"))
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Could not run {editor}: {e}"))?;
+    // Reaped once it ends (most editor commands hand the file over and exit at once), or each
+    // file opened would leave a zombie process for as long as the app runs.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }

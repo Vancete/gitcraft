@@ -38,8 +38,14 @@ impl RepoTab {
         }
         let now = git::now();
         for (i, stash) in self.stashes.iter().enumerate() {
-            let (rect, r) =
-                ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+            let (_, rect) = ui.allocate_space(vec2(ui.available_width(), 36.0));
+            // Known by the stash, not its number: one pushed or dropped meanwhile (in the
+            // terminal…) shifts the list, and a menu left open must stay this stash's.
+            let r = ui.interact(
+                rect,
+                ui.id().with(("stash-row", &stash.hash)),
+                Sense::click(),
+            );
             if self.stash_view == Some(i) {
                 ui.painter().rect_filled(rect, 0.0, t.row_selected);
             } else if r.hovered() {

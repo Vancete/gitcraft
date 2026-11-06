@@ -386,7 +386,7 @@ fn reword_editor(ui: &mut Ui, reword: &mut Reword) -> Option<bool> {
         reword.focus = false;
     }
     ui.add_space(4.0);
-    ui.add(
+    let body = ui.add(
         egui::TextEdit::multiline(&mut reword.body)
             .hint_text("Description (optional)")
             .desired_rows(4)
@@ -394,10 +394,17 @@ fn reword_editor(ui: &mut Ui, reword: &mut Reword) -> Option<bool> {
     );
     ui.add_space(6.0);
     let can_save = !reword.subject.trim().is_empty();
+    // The keys are the editor's from its own fields, or when nothing else has them: Escape in
+    // the terminal or another field, or one closing a dialog, doesn't throw the message away.
+    let keys_here = summary.has_focus()
+        || body.has_focus()
+        || ui
+            .ctx()
+            .memory(|m| m.focused().is_none() && m.top_modal_layer().is_none());
     let (save_keys, cancel_keys) = ui.input(|i| {
         (
-            i.modifiers.command && i.key_pressed(Key::Enter),
-            i.key_pressed(Key::Escape),
+            keys_here && i.modifiers.command && i.key_pressed(Key::Enter),
+            keys_here && i.key_pressed(Key::Escape),
         )
     });
     let mut out = None;
@@ -444,4 +451,61 @@ fn clamped(ui: &Ui, text: RichText, rows: usize) -> egui::text::LayoutJob {
     let mut job = std::sync::Arc::unwrap_or_clone(job);
     job.wrap.max_rows = rows;
     job
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the editor answers to Escape pressed while a terminal drawn after it has the
+    /// keyboard (keeping Escape for the shell), or while nothing has.
+    fn escape(terminal_focused: bool) -> Option<bool> {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut reword = Reword {
+            hash: "a".repeat(40),
+            subject: "Fix the login".to_owned(),
+            body: "A long explanation being typed".to_owned(),
+            focus: false,
+            fill: false,
+        };
+        let terminal_id = egui::Id::new("terminal");
+        let escape = egui::Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut out = None;
+        for events in [Vec::new(), Vec::new(), vec![escape]] {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                out = reword_editor(ui, &mut reword);
+                let (_, rect) = ui.allocate_space(vec2(200.0, 100.0));
+                let terminal = ui.interact(rect, terminal_id, Sense::click());
+                if terminal_focused {
+                    terminal.request_focus();
+                    let keep = egui::EventFilter {
+                        escape: true,
+                        ..Default::default()
+                    };
+                    ui.memory_mut(|m| m.set_focus_lock_filter(terminal_id, keep));
+                }
+            })
+            .drop_without_applying_deltas();
+        }
+        out
+    }
+
+    /// Escape in the terminal (vim, the shell) or in another field is theirs: the message being
+    /// reworded isn't thrown away. With nothing else holding the keyboard it cancels.
+    #[test]
+    fn escape_elsewhere_does_not_cancel_a_reword() {
+        assert_eq!(escape(true), None);
+        assert_eq!(escape(false), Some(false));
+    }
 }

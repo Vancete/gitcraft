@@ -52,19 +52,33 @@ impl RepoTab {
                 quiet,
             });
         }
+        // Nor does a credential helper on its behalf: Git Credential Manager would otherwise
+        // open its sign-in window every few minutes while a token has expired.
+        let ops = if quiet { unattended(ops) } else { ops };
         let path = self.path.clone();
         let label = label.to_owned();
         let creds = self.credentials.clone();
         spawn(&self.tx, ctx, move || {
-            let (result, kind) = run_steps(&path, &ops, kind, creds.as_ref());
+            let (result, kind, stopped) = run_steps_counted(&path, &ops, kind, creds.as_ref());
             Msg::OpDone {
                 label,
                 result,
                 refresh,
                 kind,
                 quiet,
+                stopped,
             }
         });
+    }
+
+    /// Leaves out of the operation kept to run again after signing in the steps that ran
+    /// before step `stopped` failed: they are done, and most would fail a second time (a tag or
+    /// remote added again, a branch deleted again), so that the step that needed signing in
+    /// would never run.
+    pub(super) fn keep_unfinished(&mut self, stopped: usize) {
+        if let Some(op) = &mut self.last_op {
+            op.ops.drain(..stopped.min(op.ops.len()));
+        }
     }
 
     /// Runs `ops` as an undoable step.
@@ -224,14 +238,28 @@ impl RepoTab {
     }
 }
 
-/// Runs git commands one after another, stopping at the first failure; `kind` comes back with
-/// what undoing needs, as found on disk.
+/// [`run_steps_counted`] without where it stopped.
+#[cfg(test)]
 pub(super) fn run_steps(
     path: &Path,
     ops: &[Vec<String>],
     kind: OpKind,
     creds: Option<&git::Credentials>,
 ) -> (Result<String, String>, OpKind) {
+    let (result, kind, _) = run_steps_counted(path, ops, kind, creds);
+    (result, kind)
+}
+
+/// Runs git commands one after another, stopping at the first failure; `kind` comes back with
+/// what undoing needs, as found on disk. Also says which step it stopped at (`ops.len()` when
+/// all ran): the steps before it are done, and running the operation again (after signing in)
+/// starts there.
+pub(super) fn run_steps_counted(
+    path: &Path,
+    ops: &[Vec<String>],
+    kind: OpKind,
+    creds: Option<&git::Credentials>,
+) -> (Result<String, String>, OpKind, usize) {
     // Undoing a HEAD move resets the branch checked out now: after a checkout or a commit made
     // elsewhere since, that would throw away commits that aren't the operation's.
     let expected = match &kind {
@@ -250,6 +278,7 @@ pub(super) fn run_steps(
                     super::short(expected)
                 )),
                 kind,
+                0,
             );
         }
     }
@@ -264,16 +293,18 @@ pub(super) fn run_steps(
     let stash_before = pushes_stash.then(|| git::resolve(path, "refs/stash").ok());
     // Checked before anything runs, so a refused undo changes nothing.
     if let Err(e) = check_expected(path, ops) {
-        return (Err(e), kind);
+        return (Err(e), kind, 0);
     }
     let mut result = Ok(String::new());
-    for op in ops {
+    let mut stopped = ops.len();
+    for (i, op) in ops.iter().enumerate() {
         if expected_ref(op).is_some() {
             continue;
         }
         let args: Vec<&str> = op.iter().map(String::as_str).collect();
         result = git::run_with(Some(path), &args, creds);
         if result.is_err() {
+            stopped = i;
             break;
         }
     }
@@ -308,7 +339,7 @@ pub(super) fn run_steps(
         }
         other => other,
     };
-    (result, kind)
+    (result, kind, stopped)
 }
 
 /// Marks a step that runs no git (no argument can hold a NUL).
@@ -371,6 +402,25 @@ pub(super) fn stash_push_args() -> [&'static str; 3] {
     ["stash", "push", "--include-untracked"]
 }
 
+/// `ops` set to ask nobody for credentials: no credential helper window (Git Credential Manager
+/// and git ≥ 2.46 heed `credential.interactive`), nor git's own askpass program (an empty
+/// `core.askPass` also keeps it from falling back to `SSH_ASKPASS`). Helpers that answer from
+/// what they stored still do, as do credentials typed into the tab.
+fn unattended(ops: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    ops.into_iter()
+        .map(|op| {
+            if expected_ref(&op).is_some() {
+                return op;
+            }
+            ["-c", "credential.interactive=false", "-c", "core.askPass="]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(op)
+                .collect()
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -393,6 +443,62 @@ mod tests {
             assert!(git::run(Some(&dir), args).is_ok());
         }
         dir
+    }
+
+    /// Whether git, asked for a credential with `op`'s settings, ran the askpass program
+    /// (an `SSH_ASKPASS` like KDE's, which would open a window).
+    #[cfg(unix)]
+    fn askpass_asked(dir: &Path, op: &[String]) -> Result<bool, String> {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("askpass.sh");
+        let marker = dir.join("asked");
+        let _ = std::fs::remove_file(&marker);
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\necho x\n", marker.display()),
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+        let mut child = std::process::Command::new("git")
+            .args(op)
+            .env("SSH_ASKPASS", &script)
+            .env_remove("GIT_ASKPASS")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(b"protocol=https\nhost=example.invalid\n\n");
+        }
+        child.wait().map_err(|e| e.to_string())?;
+        Ok(marker.exists())
+    }
+
+    /// The background fetch asks nobody to sign in, every few minutes, through a window.
+    #[cfg(unix)]
+    #[test]
+    fn a_quiet_operation_opens_no_sign_in_window() -> Result<(), String> {
+        let dir = repo("unattended");
+        let fill = ops(&[&["-c", "credential.helper=", "credential", "fill"]]);
+        let plain = fill.first().cloned().unwrap_or_default();
+        let quiet = super::unattended(fill).first().cloned().unwrap_or_default();
+        let asked_plain = askpass_asked(&dir, &plain);
+        let asked_quiet = askpass_asked(&dir, &quiet);
+        let _ = std::fs::remove_dir_all(&dir);
+        // Without it, git does ask (or the test would prove nothing).
+        assert_eq!(asked_plain, Ok(true));
+        assert_eq!(asked_quiet, Ok(false));
+        Ok(())
+    }
+
+    #[test]
+    fn a_quiet_operation_keeps_its_expected_refs() {
+        let op = super::expect_ref("refs/stash");
+        assert_eq!(super::unattended(vec![op.clone()]), vec![op]);
     }
 
     fn entry(kind: OpKind) -> Option<UndoEntry> {

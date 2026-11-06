@@ -478,3 +478,66 @@ fn an_editor_command_with_arguments_is_run_with_the_path_as_one_argument() {
     assert!(ran.is_ok(), "{ran:?}");
     assert!(made);
 }
+
+/// Waits for the operation the tab runs to end, and takes in how it ended.
+fn finish(tab: &mut super::RepoTab, ctx: &egui::Context) {
+    for _ in 0..400 {
+        tab.poll(ctx);
+        if tab.busy_op.is_none() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// An operation whose later step needed signing in runs again from that step: the ones before
+/// it are done, and running them again (the tag made again) would fail before the step that
+/// needed signing in.
+#[test]
+fn signing_in_runs_again_only_the_steps_that_had_not_run() {
+    use super::{Action, Refresh, RepoTab};
+    let dir = repo("sign-in-retry");
+    let ctx = egui::Context::default();
+    let mut tab = RepoTab::new_deferred(dir.clone(), &ctx);
+    // A push git answers like one that needs signing in.
+    let push = ops(&[&["push", "terminal prompts disabled", "refs/tags/v1"]]);
+    let steps: Vec<Vec<String>> = ops(&[&["tag", "v1"]])
+        .into_iter()
+        .chain(push.clone())
+        .collect();
+    tab.apply(
+        Action::Ops {
+            label: "Create tag v1".to_owned(),
+            ops: steps,
+            refresh: Refresh::All,
+        },
+        &ctx,
+    );
+    finish(&mut tab, &ctx);
+    let asked = matches!(tab.dialog, Some(super::Dialog::Credentials { .. }));
+    let kept = tab.last_op.as_ref().map(|op| op.ops.clone());
+    let creds = git::Credentials {
+        username: "u".to_owned(),
+        password: "p".to_owned(),
+    };
+    tab.sign_in(creds, &ctx);
+    finish(&mut tab, &ctx);
+    let status = tab.status.clone().map(|(s, _)| s).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(asked);
+    assert_eq!(kept, Some(push));
+    // The push ran again (and needs signing in again), not the tag.
+    assert!(status.contains("sign-in needed"), "{status}");
+}
+
+/// Aborting a merge or rebase throws away the conflicts resolved so far, with no undo: it asks
+/// first.
+#[test]
+fn aborting_asks_first() {
+    use super::{Action, Dialog, abort_action};
+    let asks = match abort_action(git::InProgress::Merge) {
+        Action::Dialog(Dialog::Confirm { ops: steps, .. }) => Some(steps),
+        _ => None,
+    };
+    assert_eq!(asks, Some(ops(&[&["merge", "--abort"]])));
+}

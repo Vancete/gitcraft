@@ -270,12 +270,20 @@ pub(crate) fn interactive_rebase_action(onto: BranchRef<'_>) -> Action {
     }
 }
 
+/// Asks before aborting: the conflicts resolved so far (in the index only) are thrown away, with
+/// nothing to undo it.
 pub(super) fn abort_action(state: InProgress) -> Action {
-    Action::Ops {
-        label: format!("Abort {}", state.label().to_lowercase()),
-        ops: ops(&[&[state.command(), "--abort"]]),
-        refresh: Refresh::All,
-    }
+    let what = state.label().to_lowercase();
+    Action::Dialog(Dialog::confirm(
+        &format!("Abort {what}"),
+        format!(
+            "Stop the {what} and go back to where it started? Conflicts resolved so far are \
+             lost, and can't be brought back."
+        ),
+        "Abort",
+        ops(&[&[state.command(), "--abort"]]),
+        None,
+    ))
 }
 
 impl RepoTab {

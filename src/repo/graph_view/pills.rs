@@ -188,7 +188,10 @@ impl RepoTab {
         acts: &mut Vec<Action>,
     ) -> bool {
         let t = Tokens::get(ui.ctx());
-        let id = ui.id().with(("ref_stack", i));
+        let hash = self.commits.get(i).map_or("", |c| c.hash.as_str());
+        // By the commit, as its row: a list (or a pill's menu) left open stays on its commit
+        // when rows shift.
+        let id = ui.id().with(("ref_stack", hash));
         let last: Option<Rect> = ui.data(|d| d.get_temp(id));
         let slot_id = |n: usize| id.with(("slot", n));
         // A pill's menu keeps the list up while the pointer is on the menu.
@@ -203,7 +206,6 @@ impl RepoTab {
             return false;
         }
         let slot_w = (cols.refs - 16.0).max(160.0);
-        let hash = self.commits.get(i).map_or("", |c| c.hash.as_str());
         let shown = egui::Area::new(id)
             .order(egui::Order::Foreground)
             .fixed_pos(at)

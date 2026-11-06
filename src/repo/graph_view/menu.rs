@@ -6,6 +6,7 @@ use super::badge::{BadgeKind, badges};
 use super::compare_items;
 use crate::git;
 use crate::repo::actions::{BranchRef, interactive_rebase_action};
+use crate::repo::operations::expect_ref_at;
 use crate::repo::{
     Action, Dialog, Refresh, RepoTab, Undo, WIP_HASH, fast_forward_action, merge_action, ops,
     rebase_action,
@@ -79,7 +80,14 @@ impl RepoTab {
         ui.separator();
         self.quick_edit_items(ui, &hash, idle, acts);
         ui.separator();
-        rewrite_items(ui, &hash, &short, &summary, &target, idle, is_head, acts);
+        let rewrite = Rewrite {
+            hash: &hash,
+            short: &short,
+            summary: &summary,
+            target: &target,
+            head: &self.refs.head,
+        };
+        rewrite_items(ui, &rewrite, idle, is_head, acts);
         ui.separator();
         let merge = commit.parents.len() > 1;
         if ui
@@ -266,19 +274,26 @@ impl RepoTab {
     }
 }
 
+/// The commit a menu rewrites the checked-out branch from.
+struct Rewrite<'a> {
+    hash: &'a str,
+    short: &'a str,
+    summary: &'a str,
+    /// The checked-out branch, or `HEAD` when detached.
+    target: &'a str,
+    /// HEAD's commit, as the menu saw it.
+    head: &'a str,
+}
+
 /// Entries that rewrite `target` (the checked-out branch) from the commit: interactive rebase,
 /// cherry-pick, revert and reset.
-#[allow(clippy::too_many_arguments)]
-fn rewrite_items(
-    ui: &mut Ui,
-    hash: &str,
-    short: &str,
-    summary: &str,
-    target: &str,
-    idle: bool,
-    is_head: bool,
-    acts: &mut Vec<Action>,
-) {
+fn rewrite_items(ui: &mut Ui, r: &Rewrite<'_>, idle: bool, is_head: bool, acts: &mut Vec<Action>) {
+    let Rewrite {
+        hash,
+        short,
+        target,
+        ..
+    } = *r;
     if ui
         .add_enabled(
             idle && !is_head,
@@ -319,20 +334,20 @@ fn rewrite_items(
     }
     ui.add_enabled_ui(idle && !is_head, |ui| {
         ui.menu_button(format!("Reset {target} to here"), |ui| {
-            reset_items(ui, hash, short, summary, target, acts);
+            reset_items(ui, r, acts);
         });
     });
 }
 
 /// The reset modes, each asking before it moves `target` to the commit.
-fn reset_items(
-    ui: &mut Ui,
-    hash: &str,
-    short: &str,
-    summary: &str,
-    target: &str,
-    acts: &mut Vec<Action>,
-) {
+fn reset_items(ui: &mut Ui, r: &Rewrite<'_>, acts: &mut Vec<Action>) {
+    let Rewrite {
+        hash,
+        short,
+        summary,
+        target,
+        head,
+    } = *r;
     for (mode, undo_mode, label, explain) in [
         ("--soft", "--soft", "Soft", "Keeps every change, staged."),
         (
@@ -356,13 +371,26 @@ fn reset_items(
                     &format!("{label} reset"),
                     format!("Move {target} to {short} ({summary})? {explain}"),
                     &format!("Reset {}", label.to_lowercase()),
-                    ops(&[&["reset", mode, hash]]),
+                    reset_steps(mode, hash, target, head),
                     None,
                 )
                 .undo(Undo::HeadMove { mode: undo_mode }),
             ));
         }
     }
+}
+
+/// `git reset <mode> <hash>` of the branch `target` (or of a detached `HEAD`), which the dialog
+/// asking first named, at `head`: it resets whatever is checked out when it runs, so it refuses
+/// once that has moved (another branch checked out, a commit made, in the terminal, while the
+/// dialog was open). A hard reset would throw away that branch's uncommitted work.
+fn reset_steps(mode: &str, hash: &str, target: &str, head: &str) -> Vec<Vec<String>> {
+    let mut steps = vec![expect_ref_at("HEAD", head)];
+    if target != "HEAD" {
+        steps.push(expect_ref_at(&format!("refs/heads/{target}"), head));
+    }
+    steps.extend(ops(&[&["reset", mode, hash]]));
+    steps
 }
 
 /// Copying the commit's hash, message, and `branch` when there is one.
@@ -377,5 +405,57 @@ fn copy_items(ui: &mut Ui, hash: &str, summary: &str, branch: Option<&str>) {
         && ui.button(format!("Copy branch name ({name})")).clicked()
     {
         ui.ctx().copy_text(name.to_owned());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reset_steps;
+    use crate::git;
+    use crate::repo::OpKind;
+    use crate::repo::operations::run_steps;
+
+    /// A hard reset asked for on `main` does nothing once another branch is checked out (in the
+    /// terminal, while the dialog was open): it would throw away that one's uncommitted work.
+    #[test]
+    fn a_reset_refuses_once_another_branch_is_checked_out() {
+        let dir = std::env::temp_dir().join(format!("gitcraft-reset-moved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let git = |args: &[&str]| git::run(Some(&dir), args);
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["commit", "-q", "--allow-empty", "-m", "base"],
+        ] {
+            assert!(git(args).is_ok(), "{args:?}");
+        }
+        let base = git::head(&dir);
+        assert!(git(&["commit", "-q", "--allow-empty", "-m", "two"]).is_ok());
+        let seen = git::head(&dir);
+        let steps = reset_steps("--hard", &base, "main", &seen);
+        // Then, elsewhere: another branch, with a commit and work not committed.
+        for args in [
+            &["switch", "-q", "-c", "other"][..],
+            &["commit", "-q", "--allow-empty", "-m", "other work"],
+        ] {
+            assert!(git(args).is_ok(), "{args:?}");
+        }
+        let other = git::head(&dir);
+        let _ = std::fs::write(dir.join("wip.txt"), "unsaved\n");
+        assert!(git(&["add", "wip.txt"]).is_ok());
+        let (refused, _) = run_steps(&dir, &steps, OpKind::plain(), None);
+        let kept = (git::head(&dir), dir.join("wip.txt").exists());
+        // Back on main as the dialog saw it, the reset goes through.
+        let _ = git(&["reset", "-q", "--hard"]);
+        let back = git(&["switch", "-q", "main"]);
+        let (reset, _) = run_steps(&dir, &steps, OpKind::plain(), None);
+        let now = git::head(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(refused.is_err());
+        assert_eq!(kept, (other, true));
+        assert!(back.is_ok() && reset.is_ok());
+        assert_eq!(now, base);
     }
 }
