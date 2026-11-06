@@ -21,6 +21,10 @@ use crate::theme::Tokens;
 
 pub(super) use remotes::{remote_of, remote_short};
 pub(super) use stashes::stash_menu_items;
+// For the stash menu of the graph and the detail pane, and the banner's Pop and Apply: by the
+// stash itself, not its number, which moves.
+#[allow(unused_imports)]
+pub(super) use stashes::{StashOp, stash_menu, stash_ops};
 
 /// The pane's rows: a little taller than the file lists', 2 px more above and below.
 pub(super) const ROW_H: f32 = widgets::ROW_H + 4.0;

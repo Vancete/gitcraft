@@ -34,21 +34,39 @@ pub(super) fn create_branch(
         } else {
             vec!["branch".into(), name.clone(), at.to_owned()]
         };
-        let mut undo = Vec::new();
-        if *checkout && !previous.is_empty() {
-            undo.push(vec!["checkout".to_owned(), previous.to_owned()]);
-        }
-        undo.push(vec!["branch".to_owned(), "-D".to_owned(), name.clone()]);
         Action::UndoableOps {
             label: format!("Create branch {name}"),
             ops: vec![args.clone()],
             refresh: Refresh::All,
             undo: Undo::Custom {
-                undo,
+                undo: create_branch_undo(&name, at, *checkout, previous),
                 redo: vec![args],
             },
         }
     })
+}
+
+/// How creating the branch `name` at the commit `at` (and checking it out, from `previous`) is
+/// undone: back to `previous`, and the branch deleted while it is still at `at`. Commits made on
+/// it since (in the terminal: undoing one made here comes first) are on no other branch, and
+/// `branch -D` would throw them away.
+fn create_branch_undo(name: &str, at: &str, checkout: bool, previous: &str) -> Vec<Vec<String>> {
+    let mut undo = Vec::new();
+    if checkout && !previous.is_empty() {
+        // `--`: `previous` is a branch or a commit, never a file of that name to check out.
+        undo.push(vec![
+            "checkout".to_owned(),
+            previous.to_owned(),
+            "--".to_owned(),
+        ]);
+    }
+    undo.push(vec![
+        "update-ref".to_owned(),
+        "-d".to_owned(),
+        format!("refs/heads/{name}"),
+        at.to_owned(),
+    ]);
+    undo
 }
 
 pub(super) fn stash(ui: &mut Ui, enter: bool, message: &mut String, focus: &mut bool) -> Outcome {
@@ -160,4 +178,48 @@ pub(super) fn rename_branch(
             },
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git;
+
+    /// Undoing a branch's creation deletes it while it is where it was made, and not once
+    /// commits were made on it since.
+    #[test]
+    fn undoing_a_branch_keeps_commits_made_on_it() {
+        let dir = std::env::temp_dir().join(format!("gitcraft-branch-undo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let git = |args: &[&str]| git::run(Some(&dir), args);
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["commit", "-q", "--allow-empty", "-m", "base"],
+        ] {
+            assert!(git(args).is_ok());
+        }
+        let at = git::head(&dir);
+        let undo_all = |undo: &[Vec<String>]| {
+            undo.iter().all(|op| {
+                let args: Vec<&str> = op.iter().map(String::as_str).collect();
+                git(&args).is_ok()
+            })
+        };
+        let exists = || git(&["rev-parse", "--verify", "-q", "refs/heads/feat"]).is_ok();
+        // Untouched since: undone.
+        assert!(git(&["switch", "-q", "-c", "feat", &at]).is_ok());
+        let undone = undo_all(&create_branch_undo("feat", &at, true, "main"));
+        let gone = !exists();
+        // A commit on it since (in the terminal): it stays, with the commit.
+        assert!(git(&["switch", "-q", "-c", "feat", &at]).is_ok());
+        assert!(git(&["commit", "-q", "--allow-empty", "-m", "work"]).is_ok());
+        let refused = !undo_all(&create_branch_undo("feat", &at, true, "main"));
+        let kept = exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(undone && gone);
+        assert!(refused && kept);
+    }
 }

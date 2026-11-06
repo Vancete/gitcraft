@@ -81,9 +81,11 @@ pub(super) fn set_upstream(
     buttons(ui, button, valid, enter, || {
         let upstream = format!("{remote}/{target}");
         if exists {
+            // The full name: a local branch or tag also called `{remote}/{target}` makes the
+            // short one ambiguous, which git refuses.
             let set = vec![
                 "branch".to_owned(),
-                format!("--set-upstream-to={upstream}"),
+                format!("--set-upstream-to=refs/remotes/{upstream}"),
                 branch.to_owned(),
             ];
             Action::UndoableOps {
