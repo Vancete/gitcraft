@@ -161,6 +161,11 @@ impl RepoTab {
             view.run = keep.or_else(|| runs.first().map(|run| run.id));
         }
         let load_jobs = result.as_ref().is_ok_and(|runs| !runs.is_empty());
+        // A read that failed while the run was going (the network blinked) is tried again,
+        // rather than the view never being read again.
+        if result.is_err() && view.was_running {
+            view.next = Some(Instant::now() + POLL);
+        }
         view.runs = Some(result);
         if load_jobs {
             self.load_ci_jobs(ctx);
@@ -188,8 +193,9 @@ impl RepoTab {
             let failed = jobs.iter().find(|job| job.state == CheckState::Failed);
             view.job = keep.or(failed.or(jobs.first()).map(|job| job.id));
         }
+        let failed = result.is_err();
         view.jobs = Some((run, result));
-        if view.running() {
+        if view.running() || (failed && view.was_running) {
             view.next = Some(Instant::now() + POLL);
             view.was_running = true;
         } else if std::mem::take(&mut view.was_running) {
@@ -290,5 +296,39 @@ impl RepoTab {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A poll of a running build that fails (the network blinked) is tried again: the view
+    /// does not stop following the build.
+    #[test]
+    fn a_failed_poll_of_a_running_build_is_tried_again() {
+        let ctx = egui::Context::default();
+        let mut tab = RepoTab::new_deferred("/nonexistent/ci-poll-test".into(), &ctx);
+        tab.ci_view = Some(CiView {
+            sha: "abc".to_owned(),
+            request: 7,
+            loading: true,
+            runs: None,
+            run: Some(1),
+            jobs: None,
+            job: None,
+            log: None,
+            log_request: 0,
+            next: None,
+            was_running: true,
+            acting: false,
+        });
+        tab.ci_runs_arrived(7, Err("timed out".to_owned()), &ctx);
+        assert!(tab.ci_view.as_ref().is_some_and(|v| v.next.is_some()));
+        if let Some(view) = &mut tab.ci_view {
+            view.next = None;
+        }
+        tab.ci_jobs_arrived(7, 1, Err("timed out".to_owned()), &ctx);
+        assert!(tab.ci_view.as_ref().is_some_and(|v| v.next.is_some()));
     }
 }

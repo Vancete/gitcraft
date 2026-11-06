@@ -262,14 +262,23 @@ pub(super) fn run_steps(
         op.len() >= stash.len() && op.iter().zip(stash).all(|(a, b)| a == b)
     });
     let stash_before = pushes_stash.then(|| git::resolve(path, "refs/stash").ok());
+    // Checked before anything runs, so a refused undo changes nothing.
+    if let Err(e) = check_expected(path, ops) {
+        return (Err(e), kind);
+    }
     let mut result = Ok(String::new());
     for op in ops {
+        if expected_ref(op).is_some() {
+            continue;
+        }
         let args: Vec<&str> = op.iter().map(String::as_str).collect();
         result = git::run_with(Some(path), &args, creds);
         if result.is_err() {
             break;
         }
     }
+    // "No local changes to save" makes no stash: undoing would pop an older one.
+    let no_stash = stash_before.is_some_and(|b| b == git::resolve(path, "refs/stash").ok());
     let kind = match kind {
         // For HEAD moves, the new HEAD is what redo goes back to.
         OpKind::Normal(Undo::HeadMove { mode }, before) if result.is_ok() => {
@@ -279,18 +288,277 @@ pub(super) fn run_steps(
                 format!("{before}\u{0}{}", git::head(path)),
             )
         }
-        // "No local changes to save" makes no stash: undoing would pop an older one.
-        OpKind::Normal(Undo::Custom { .. }, before)
-            if stash_before.is_some_and(|b| b == git::resolve(path, "refs/stash").ok()) =>
-        {
+        OpKind::Normal(Undo::Custom { .. }, before) if no_stash => {
             OpKind::Normal(Undo::None, before)
+        }
+        // The way back expects the refs where this left them.
+        OpKind::Normal(Undo::Custom { mut undo, redo }, before) if result.is_ok() => {
+            fill_expected(path, &mut undo);
+            OpKind::Normal(Undo::Custom { undo, redo }, before)
+        }
+        OpKind::Undo(mut entry) if result.is_ok() => {
+            fill_expected(path, &mut entry.redo);
+            OpKind::Undo(entry)
+        }
+        // Redone with nothing to stash, the undo keeps expecting the stash it popped, and so
+        // refuses rather than pop an older one.
+        OpKind::Redo(mut entry) if result.is_ok() && !no_stash => {
+            fill_expected(path, &mut entry.undo);
+            OpKind::Redo(entry)
         }
         other => other,
     };
     (result, kind)
 }
 
+/// Marks a step that runs no git (no argument can hold a NUL).
+const EXPECT: &str = "\u{0}expect";
+
+/// A step of an undo (or redo) that runs nothing, but refuses the whole of it unless the ref
+/// `name` is still where the operation it undoes left it (it learns where when that runs): so
+/// that undoing a stash pops that stash and not one pushed since, and undoing a pull does not
+/// put back a branch that got commits since.
+pub(super) fn expect_ref(name: &str) -> Vec<String> {
+    vec![EXPECT.to_owned(), name.to_owned(), String::new()]
+}
+
+/// A step that runs nothing, but refuses the whole operation unless `name` is at `commit`.
+pub(super) fn expect_ref_at(name: &str, commit: &str) -> Vec<String> {
+    vec![EXPECT.to_owned(), name.to_owned(), commit.to_owned()]
+}
+
+/// The ref and the commit an `expect_ref` step expects.
+fn expected_ref(op: &[String]) -> Option<(&str, &str)> {
+    match op {
+        [mark, name, value] if mark == EXPECT => Some((name, value)),
+        _ => None,
+    }
+}
+
+fn check_expected(path: &Path, ops: &[Vec<String>]) -> Result<(), String> {
+    for (name, value) in ops.iter().filter_map(|op| expected_ref(op)) {
+        let now = git::resolve(path, name).unwrap_or_default();
+        if now != value {
+            let what = name.strip_prefix("refs/heads/").unwrap_or(name);
+            return Err(if name == "refs/stash" {
+                "The newest stash is not the one this made any more".to_owned()
+            } else {
+                format!(
+                    "{what} has moved since (it is at {}, not {}): going ahead would lose \
+                     what was done after",
+                    super::short(&now),
+                    super::short(value)
+                )
+            });
+        }
+    }
+    Ok(())
+}
+
+fn fill_expected(path: &Path, ops: &mut [Vec<String>]) {
+    for op in ops {
+        if let Some((name, _)) = expected_ref(op) {
+            let now = git::resolve(path, name).unwrap_or_default();
+            if let Some(value) = op.get_mut(2) {
+                *value = now;
+            }
+        }
+    }
+}
+
 /// How the app stashes (and how `run_ops_ex` knows an operation for one).
 pub(super) fn stash_push_args() -> [&'static str; 3] {
     ["stash", "push", "--include-untracked"]
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::super::commands::checkout_pull_undo;
+    use super::super::{OpKind, Undo, UndoEntry, ops};
+    use super::{run_steps, stash_push_args};
+    use crate::git;
+
+    fn repo(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gitcraft-ops-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["commit", "-q", "--allow-empty", "-m", "base"],
+        ] {
+            assert!(git::run(Some(&dir), args).is_ok());
+        }
+        dir
+    }
+
+    fn entry(kind: OpKind) -> Option<UndoEntry> {
+        match kind {
+            OpKind::Normal(Undo::Custom { undo, redo }, _) => Some(UndoEntry {
+                label: "op".to_owned(),
+                undo,
+                redo,
+                heads: None,
+            }),
+            _ => None,
+        }
+    }
+
+    fn stash(dir: &Path, file: &str) -> Option<UndoEntry> {
+        let _ = std::fs::write(dir.join(file), "x\n");
+        let push = ops(&[&stash_push_args()]);
+        let undo = Undo::Custom {
+            undo: [super::expect_ref("refs/stash")]
+                .into_iter()
+                .chain(ops(&[&["stash", "pop", "--index"]]))
+                .collect(),
+            redo: push.clone(),
+        };
+        let (result, kind) = run_steps(dir, &push, OpKind::Normal(undo, String::new()), None);
+        assert!(result.is_ok());
+        entry(kind)
+    }
+
+    /// Undoing a stash pops that stash, not one pushed since (in the terminal).
+    #[test]
+    fn undoing_a_stash_refuses_once_another_was_pushed() {
+        let dir = repo("stash-newer");
+        let first = stash(&dir, "a.txt");
+        let _ = std::fs::write(dir.join("b.txt"), "y\n");
+        let other = git::run(Some(&dir), &["stash", "push", "-u"]);
+        let refused = first
+            .as_ref()
+            .map(|e| run_steps(&dir, &e.undo, OpKind::Undo(e.clone()), None).0);
+        let count = git::run(Some(&dir), &["stash", "list"]).map(|s| s.lines().count());
+        // Popped by hand: now the newest is this one again, and undoing goes through.
+        let popped = git::run(Some(&dir), &["stash", "pop"]);
+        let _ = std::fs::remove_file(dir.join("b.txt"));
+        let undone = first
+            .as_ref()
+            .map(|e| run_steps(&dir, &e.undo, OpKind::Undo(e.clone()), None));
+        let restored = dir.join("a.txt").exists();
+        // Redone, the undo expects the new stash.
+        let redone = undone.and_then(|(r, kind)| match kind {
+            OpKind::Undo(e) if r.is_ok() => {
+                Some(run_steps(&dir, &e.redo.clone(), OpKind::Redo(e), None))
+            }
+            _ => None,
+        });
+        let again = redone.and_then(|(r, kind)| match kind {
+            OpKind::Redo(e) if r.is_ok() => {
+                Some(run_steps(&dir, &e.undo.clone(), OpKind::Undo(e), None).0)
+            }
+            _ => None,
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(other.is_ok());
+        assert!(matches!(refused, Some(Err(_))));
+        assert_eq!(count, Ok(2));
+        assert!(popped.is_ok());
+        assert!(restored);
+        assert!(matches!(again, Some(Ok(_))));
+    }
+
+    /// Redoing a stash with nothing left to stash: undoing it then pops no older stash.
+    #[test]
+    fn a_redone_stash_that_saved_nothing_is_not_popped() {
+        let dir = repo("stash-redo-nothing");
+        let _ = std::fs::write(dir.join("old.txt"), "o\n");
+        let older = git::run(Some(&dir), &["stash", "push", "-u"]);
+        let first = stash(&dir, "a.txt");
+        let undone = first
+            .map(|e| run_steps(&dir, &e.undo.clone(), OpKind::Undo(e), None))
+            .and_then(|(r, kind)| r.ok().and(Some(kind)));
+        // The changes popped back go elsewhere: redoing stashes nothing.
+        let _ = std::fs::remove_file(dir.join("a.txt"));
+        let redone = undone.and_then(|kind| match kind {
+            OpKind::Undo(e) => Some(run_steps(&dir, &e.redo.clone(), OpKind::Redo(e), None)),
+            _ => None,
+        });
+        let again = redone.and_then(|(r, kind)| match kind {
+            OpKind::Redo(e) if r.is_ok() => {
+                Some(run_steps(&dir, &e.undo.clone(), OpKind::Undo(e), None).0)
+            }
+            _ => None,
+        });
+        let count = git::run(Some(&dir), &["stash", "list"]).map(|s| s.lines().count());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(older.is_ok());
+        assert!(matches!(again, Some(Err(_))));
+        assert_eq!(count, Ok(1));
+    }
+
+    /// A quick edit's rebase does not start once HEAD moved past the commits it read.
+    #[test]
+    fn an_expected_head_that_moved_stops_the_operation() {
+        let dir = repo("expect-head");
+        let read = git::head(&dir);
+        let made = git::run(
+            Some(&dir),
+            &["commit", "-q", "--allow-empty", "-m", "since"],
+        );
+        let since = git::head(&dir);
+        let step = ops(&[&["commit", "-q", "--allow-empty", "-m", "op"]]);
+        let guarded = |at: &str| {
+            [super::expect_ref_at("HEAD", at)]
+                .into_iter()
+                .chain(step.clone())
+                .collect::<Vec<_>>()
+        };
+        let (refused, _) = run_steps(&dir, &guarded(&read), OpKind::plain(), None);
+        let still = git::head(&dir);
+        let (ran, _) = run_steps(&dir, &guarded(&since), OpKind::plain(), None);
+        let after = git::head(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(made.is_ok());
+        assert!(refused.is_err());
+        assert_eq!(still, since);
+        assert!(ran.is_ok());
+        assert_ne!(after, since);
+    }
+
+    /// Undoing "Checkout and pull" does not put the branch back over commits made on it since.
+    #[test]
+    fn undoing_checkout_and_pull_keeps_commits_made_since() {
+        let dir = repo("pull-since");
+        let was = git::head(&dir);
+        let steps = [
+            &["checkout", "-q", "-b", "side"][..],
+            &["commit", "-q", "--allow-empty", "-m", "pulled"],
+        ];
+        for args in steps {
+            assert!(git::run(Some(&dir), args).is_ok());
+        }
+        // As if `main` had been checked out and pulled to `pulled` from `side`.
+        let pulled = git::head(&dir);
+        let reset = git::run(Some(&dir), &["branch", "-f", "main", &pulled]);
+        let checkout = ops(&[&["checkout", "main", "--"]]);
+        let undo = checkout_pull_undo("side", "main", &was, &checkout);
+        let (result, kind) = run_steps(&dir, &checkout, OpKind::Normal(undo, String::new()), None);
+        let entry = entry(kind);
+        // Then a commit on main.
+        let more = git::run(Some(&dir), &["commit", "-q", "--allow-empty", "-m", "mine"]);
+        let mine = git::head(&dir);
+        let refused = entry
+            .as_ref()
+            .map(|e| run_steps(&dir, &e.undo, OpKind::Undo(e.clone()), None).0);
+        let main_now = git::resolve(&dir, "refs/heads/main");
+        let head_now = git::head(&dir);
+        // Without it, undoing goes through.
+        let back = git::run(Some(&dir), &["reset", "-q", "--hard", &pulled]);
+        let undone = entry
+            .as_ref()
+            .map(|e| run_steps(&dir, &e.undo, OpKind::Undo(e.clone()), None).0);
+        let main_after = git::resolve(&dir, "refs/heads/main");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(reset.is_ok() && result.is_ok() && more.is_ok() && back.is_ok());
+        assert!(matches!(refused, Some(Err(_))));
+        assert_eq!(main_now, Ok(mine.clone()));
+        assert_eq!(head_now, mine);
+        assert!(matches!(undone, Some(Ok(_))));
+        assert_eq!(main_after, Ok(was));
+    }
 }

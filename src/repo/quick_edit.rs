@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use egui::Ui;
 
+use super::operations::expect_ref_at;
 use super::rebase::{RebaseEditor, Step};
 use super::{Action, Msg, Refresh, RepoTab, Undo, short, spawn};
 use crate::git::{self, Commit, RebaseCommit};
@@ -229,7 +230,7 @@ impl RepoTab {
         let label = format!("{} {}", edit.label(), short(&hash));
         let command = result
             .and_then(|commits| plan(edit, &hash, commits))
-            .and_then(|editor| editor.command());
+            .and_then(|editor| Ok((editor.command()?, editor.head)));
         match command {
             // Started while something else ran: say so rather than drop it.
             Ok(_) if self.busy_op.is_some() => {
@@ -241,9 +242,10 @@ impl RepoTab {
                     true,
                 ));
             }
-            Ok(command) => self.run_undoable(
+            // The todo list replaces the commits read: not one made since (in the terminal).
+            Ok((command, head)) => self.run_undoable(
                 &label,
-                vec![command],
+                vec![expect_ref_at("HEAD", &head), command],
                 Refresh::All,
                 Undo::HeadMove { mode: "--keep" },
                 ctx,

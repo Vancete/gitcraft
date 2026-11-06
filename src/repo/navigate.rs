@@ -319,6 +319,8 @@ impl RepoTab {
         let query = self.search.query.trim().to_owned();
         self.search.edited = None;
         if query.is_empty() {
+            // One still being read answers a query that is gone.
+            self.search.running = false;
             self.search.results.clear();
             self.search.matches.clear();
             self.search.searched.clear();
@@ -348,7 +350,8 @@ impl RepoTab {
         result: Result<Vec<String>, String>,
         ctx: &egui::Context,
     ) {
-        if query != self.search.query.trim() || code != self.search.code {
+        // Closed since, the search shows nothing (nor jumps to its first find).
+        if !self.search.open || query != self.search.query.trim() || code != self.search.code {
             return;
         }
         self.search.running = false;
@@ -382,9 +385,51 @@ impl RepoTab {
         self.search.open = !self.search.open;
         self.search.focus = self.search.open;
         if !self.search.open {
+            self.search.running = false;
             self.search.matches.clear();
             self.search.results.clear();
             self.search.searched.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RepoTab;
+
+    fn tab() -> RepoTab {
+        let ctx = egui::Context::default();
+        let mut tab = RepoTab::new_deferred("/nonexistent/search-test".into(), &ctx);
+        tab.search.open = true;
+        tab
+    }
+
+    /// Clearing the query while a search runs: its answer is for a query that is gone, and
+    /// "searching…" does not stay up.
+    #[test]
+    fn clearing_the_query_ends_the_search_running() {
+        let ctx = egui::Context::default();
+        let mut tab = tab();
+        tab.search.query = "foo".to_owned();
+        tab.search.running = true;
+        tab.search.query.clear();
+        tab.run_search(&ctx);
+        tab.search_done("foo".to_owned(), false, Ok(vec!["a".to_owned()]), &ctx);
+        assert!(!tab.search.running);
+        assert!(tab.search.results.is_empty());
+    }
+
+    /// A search closed before it answered shows no finds.
+    #[test]
+    fn a_closed_search_takes_no_answer() {
+        let ctx = egui::Context::default();
+        let mut tab = tab();
+        tab.search.query = "foo".to_owned();
+        tab.search.running = true;
+        tab.toggle_search();
+        tab.search_done("foo".to_owned(), false, Ok(vec!["a".to_owned()]), &ctx);
+        assert!(!tab.search.running);
+        assert!(tab.search.matches.is_empty());
+        assert!(tab.pending_goto.is_none());
     }
 }

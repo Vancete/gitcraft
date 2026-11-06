@@ -468,15 +468,16 @@ impl RepoTab {
             return;
         }
         let Some(forge) = self.forge else { return };
-        let Some((host, path)) = self
+        let Some((remote, (host, path))) = self
             .remotes
             .iter()
             .find(|r| r.name == "origin")
             .or_else(|| self.remotes.first())
-            .and_then(|r| forge::location(&r.url))
+            .and_then(|r| Some((r.url.clone(), forge::location(&r.url)?)))
         else {
             return;
         };
+        let gitlab = gitlab_authority(&remote).unwrap_or_else(|| host.clone());
         self.avatars_hinted = true;
         let repo = self.path.clone();
         let mut emails: Vec<String> = self.history.iter().map(|c| c.email.clone()).collect();
@@ -492,11 +493,39 @@ impl RepoTab {
                 }
                 Forge::GitLab => {
                     for email in emails {
-                        crate::avatars::hint(&email, crate::avatars::Hint::GitLab(host.clone()));
+                        crate::avatars::hint(&email, crate::avatars::Hint::GitLab(gitlab.clone()));
                     }
                 }
             }
             ctx.request_repaint();
         });
+    }
+}
+
+/// Where a self-hosted GitLab's API is, from the remote `url`: its host, with the port of an
+/// `https://host:8443/…` remote (its web pages and API are on that port too).
+fn gitlab_authority(url: &str) -> Option<String> {
+    let web = forge::web_url(url)?;
+    let (_, rest) = web.split_once("://")?;
+    rest.split('/').next().map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gitlab_authority;
+
+    #[test]
+    fn gitlab_avatars_are_asked_on_the_remotes_port() {
+        let at = |url: &str| gitlab_authority(url);
+        assert_eq!(
+            at("https://gitlab.example.com:8443/g/p.git").as_deref(),
+            Some("gitlab.example.com:8443")
+        );
+        assert_eq!(at("git@gitlab.com:g/p.git").as_deref(), Some("gitlab.com"));
+        // An SSH port says nothing about the web pages'.
+        assert_eq!(
+            at("ssh://git@gitlab.example.com:2222/g/p.git").as_deref(),
+            Some("gitlab.example.com")
+        );
     }
 }
