@@ -3,6 +3,7 @@
 use egui::Ui;
 
 use crate::repo::{Action, Refresh, Undo};
+use crate::repo::operations::expect_ref_at;
 use crate::theme::Tokens;
 
 use super::{Outcome, buttons, dash_spaces, field, title, usable};
@@ -51,7 +52,8 @@ pub(super) fn create_branch(
 /// it since (in the terminal: undoing one made here comes first) are on no other branch, and
 /// `branch -D` would throw them away.
 fn create_branch_undo(name: &str, at: &str, checkout: bool, previous: &str) -> Vec<Vec<String>> {
-    let mut undo = Vec::new();
+    // Checked first, so that a refused undo hasn't switched the checkout already.
+    let mut undo = vec![expect_ref_at(&format!("refs/heads/{name}"), at)];
     if checkout && !previous.is_empty() {
         // `--`: `previous` is a branch or a commit, never a file of that name to check out.
         undo.push(vec![
@@ -203,10 +205,9 @@ mod tests {
         }
         let at = git::head(&dir);
         let undo_all = |undo: &[Vec<String>]| {
-            undo.iter().all(|op| {
-                let args: Vec<&str> = op.iter().map(String::as_str).collect();
-                git(&args).is_ok()
-            })
+            crate::repo::operations::run_steps(&dir, undo, crate::repo::OpKind::plain(), None)
+                .0
+                .is_ok()
         };
         let exists = || git(&["rev-parse", "--verify", "-q", "refs/heads/feat"]).is_ok();
         // Untouched since: undone.
@@ -218,8 +219,11 @@ mod tests {
         assert!(git(&["commit", "-q", "--allow-empty", "-m", "work"]).is_ok());
         let refused = !undo_all(&create_branch_undo("feat", &at, true, "main"));
         let kept = exists();
+        // Refused before anything ran: still on the branch.
+        let on_feat = git(&["symbolic-ref", "--short", "HEAD"]).map(|h| h.trim().to_owned());
         let _ = std::fs::remove_dir_all(&dir);
         assert!(undone && gone);
         assert!(refused && kept);
+        assert_eq!(on_feat.as_deref(), Ok("feat"));
     }
 }

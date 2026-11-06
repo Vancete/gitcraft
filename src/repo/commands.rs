@@ -139,6 +139,10 @@ impl RepoTab {
                 (
                     remote.clone(),
                     vec![
+                        // `simple`: with push.default=upstream, a source alone goes to the
+                        // branch it tracks (`main` for one made from origin/main).
+                        "-c".to_owned(),
+                        "push.default=simple".to_owned(),
                         "push".to_owned(),
                         "-u".to_owned(),
                         remote,
@@ -236,6 +240,9 @@ impl RepoTab {
                 &format!("Push {current} to {remote}"),
                 // Full refs: a tag of the same name must not be what is pushed.
                 ops(&[&[
+                    // push.default=upstream would push it to the branch it tracks.
+                    "-c",
+                    "push.default=simple",
                     "push",
                     "-u",
                     &remote,
@@ -348,7 +355,8 @@ impl RepoTab {
             let refspec = format!("refs/heads/{branch}");
             let pushed = git::run_with(
                 Some(&path),
-                &["push", "-u", &remote, &refspec],
+                // push.default=upstream would push it to the branch it tracks.
+                &["-c", "push.default=simple", "push", "-u", &remote, &refspec],
                 creds.as_ref(),
             );
             let result = pushed
@@ -359,6 +367,7 @@ impl RepoTab {
                 refresh: Refresh::All,
                 kind: OpKind::plain(),
                 quiet: false,
+                stopped: 0,
             }
         });
     }
