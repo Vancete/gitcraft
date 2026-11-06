@@ -2,7 +2,7 @@
 
 use egui::{Color32, Key, Modifiers};
 
-use super::keys::{clipboard_control, key_bytes, paste_bytes};
+use super::keys::{alt_prefixes_text, clipboard_control, key_bytes, paste_bytes};
 use super::palette::Palette;
 use crate::theme::Tokens;
 
@@ -22,6 +22,45 @@ fn keys_to_bytes() {
     );
     assert_eq!(key_bytes(Key::D, Modifiers::CTRL, false), Some(vec![4]));
     assert_eq!(key_bytes(Key::A, Modifiers::NONE, false), None);
+}
+
+/// Modified cursor and editing keys, function keys past F4, and Alt and Ctrl with the keys
+/// that send one character, as xterm sends them.
+#[test]
+fn modified_and_function_keys() {
+    let key = |k, m| key_bytes(k, m, true);
+    // Ctrl+Left moves a word left in readline; plain arrows keep SS3 in application mode.
+    assert_eq!(
+        key(Key::ArrowLeft, Modifiers::CTRL),
+        Some(b"\x1b[1;5D".to_vec())
+    );
+    assert_eq!(
+        key(Key::ArrowRight, Modifiers::SHIFT),
+        Some(b"\x1b[1;2C".to_vec())
+    );
+    assert_eq!(key(Key::End, Modifiers::NONE), Some(b"\x1bOF".to_vec()));
+    assert_eq!(
+        key(Key::Delete, Modifiers::CTRL),
+        Some(b"\x1b[3;5~".to_vec())
+    );
+    assert_eq!(key(Key::F1, Modifiers::SHIFT), Some(b"\x1b[1;2P".to_vec()));
+    assert_eq!(key(Key::F5, Modifiers::NONE), Some(b"\x1b[15~".to_vec()));
+    assert_eq!(key(Key::F10, Modifiers::NONE), Some(b"\x1b[21~".to_vec()));
+    assert_eq!(key(Key::F12, Modifiers::NONE), Some(b"\x1b[24~".to_vec()));
+    assert_eq!(key(Key::Space, Modifiers::CTRL), Some(vec![0]));
+    assert_eq!(key(Key::Backspace, Modifiers::CTRL), Some(vec![8]));
+    if cfg!(target_os = "macos") {
+        assert!(!alt_prefixes_text(Modifiers::ALT));
+    } else {
+        assert_eq!(
+            key(Key::Backspace, Modifiers::ALT),
+            Some(b"\x1b\x7f".to_vec())
+        );
+        assert!(alt_prefixes_text(Modifiers::ALT));
+    }
+    // AltGr on Windows is Ctrl+Alt: it types characters of its own.
+    assert!(!alt_prefixes_text(Modifiers::CTRL | Modifiers::ALT));
+    assert!(!alt_prefixes_text(Modifiers::NONE));
 }
 
 #[test]

@@ -9,7 +9,7 @@ use egui::{
 };
 use portable_pty::PtySize;
 
-use super::keys::{clipboard_control, key_bytes, paste_bytes};
+use super::keys::{alt_prefixes_text, clipboard_control, key_bytes, paste_bytes};
 use super::palette::Palette;
 use super::{Terminal, lock, nz};
 use crate::theme::{self, Tokens};
@@ -146,8 +146,11 @@ impl Terminal {
                 screen.bracketed_paste(),
             )
         };
+        // Whether the key the text comes from was pressed with Alt (egui sends the key first).
+        let mut alt = false;
         for event in events {
             match event {
+                Event::Text(text) if alt => self.send(format!("\x1b{text}").as_bytes()),
                 Event::Text(text) => self.send(text.as_bytes()),
                 Event::Paste(text) => self.send(&paste_bytes(&text, bracketed)),
                 // egui turns Ctrl+C / Ctrl+X (Cmd on macOS, Ctrl+Shift+C…) into clipboard
@@ -170,6 +173,7 @@ impl Terminal {
                     modifiers,
                     ..
                 } => {
+                    alt = alt_prefixes_text(modifiers);
                     if key == Key::C && modifiers.ctrl && modifiers.shift {
                         self.copy_selection(ui.ctx());
                     } else if let Some(bytes) = key_bytes(key, modifiers, app_cursor) {
