@@ -36,6 +36,10 @@ pub(crate) struct UndoEntry {
     pub(super) label: String,
     pub(super) undo: Vec<Vec<String>>,
     pub(super) redo: Vec<Vec<String>>,
+    /// HEAD before and after an operation that moved it: undoing resets whatever branch is
+    /// checked out, so it only runs while HEAD is still where the operation left it (and redo
+    /// while it is back where it was), not after a checkout or commit made elsewhere since.
+    pub(super) heads: Option<(String, String)>,
 }
 
 /// An operation as `run_ops_ex` got it, kept to retry it with credentials.

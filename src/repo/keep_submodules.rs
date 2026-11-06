@@ -54,7 +54,8 @@ impl RepoTab {
 }
 
 /// Whether one of `ops` checks out another commit: a checkout (not of files), switch, pull,
-/// merge or rebase, also when continued or aborted.
+/// merge or rebase, also when continued or aborted, and a reset that moves the files (what
+/// undoing a pull, merge or rebase runs).
 pub(super) fn moves_checkout(ops: &[Vec<String>]) -> bool {
     ops.iter().any(|op| {
         let mut args = op.iter().map(String::as_str);
@@ -69,6 +70,8 @@ pub(super) fn moves_checkout(ops: &[Vec<String>]) -> bool {
         };
         match command {
             Some("switch" | "pull" | "merge" | "rebase") => true,
+            // Undoing one of those (or a reset from the menu) that moves the files too.
+            Some("reset") => args.any(|a| a == "--keep" || a == "--hard"),
             // `checkout <ref> --` moves; `checkout <side> -- <file>` only writes the file.
             Some("checkout") => args.skip_while(|a| *a != "--").nth(1).is_none(),
             _ => false,
@@ -92,6 +95,8 @@ mod tests {
             ops(&[&["merge", "--no-edit", "feature"]]),
             ops(&[&["merge", "--continue"]]),
             ops(&[&["-c", "sequence.editor=cp todo", "rebase", "-i", "main"]]),
+            ops(&[&["reset", "--keep", "abc123"]]),
+            ops(&[&["reset", "--hard", "abc123"]]),
         ] {
             assert!(moves_checkout(&moves), "{moves:?}");
         }
@@ -101,6 +106,8 @@ mod tests {
             ops(&[&["commit", "-m", "merge"]]),
             ops(&[&["-c", "core.editor=true", "commit"]]),
             ops(&[&["submodule", "update", "--init", "--recursive"]]),
+            ops(&[&["reset", "--soft", "abc123"]]),
+            ops(&[&["reset", "--mixed", "abc123"]]),
         ] {
             assert!(!moves_checkout(&stays), "{stays:?}");
         }

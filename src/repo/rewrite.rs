@@ -134,6 +134,11 @@ impl RepoTab {
         if editor.problem().is_some() || self.busy_op.is_some() {
             return;
         }
+        // Committed or pulled while the editor was open: its todo list would drop that.
+        if let Some(why) = editor.moved(&self.refs.head) {
+            self.status = Some((why, true));
+            return;
+        }
         match editor.command() {
             Ok(command) => {
                 let label = format!("Interactive rebase onto {}", editor.onto_label);

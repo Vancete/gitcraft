@@ -64,10 +64,15 @@ pub(crate) struct RebaseEditor {
     pub onto_label: String,
     /// Oldest first, as git lists them.
     pub entries: Vec<Entry>,
+    /// HEAD when the commits were read: the todo list replaces the branch's commits with
+    /// these, so one made since (a commit, a pull) would be dropped.
+    pub head: String,
 }
 
 impl RebaseEditor {
     pub fn new(onto: String, onto_label: String, commits: Vec<RebaseCommit>) -> Self {
+        // `git log --reverse onto..HEAD`: HEAD comes last.
+        let head = commits.last().map(|c| c.hash.clone()).unwrap_or_default();
         let entries = commits
             .into_iter()
             .map(|c| Entry {
@@ -80,7 +85,16 @@ impl RebaseEditor {
             onto,
             onto_label,
             entries,
+            head,
         }
+    }
+
+    /// Why the commits listed are no longer the branch's, when HEAD is at `head` now.
+    pub fn moved(&self, head: &str) -> Option<String> {
+        (!self.head.is_empty() && self.head != head).then(|| {
+            "The branch has moved since these commits were read: rebasing would drop the new ones. Cancel and start again."
+                .to_owned()
+        })
     }
 
     /// Why the rebase can't start as set up, if it can't.
@@ -222,6 +236,7 @@ impl RepoTab {
             .current
             .clone()
             .unwrap_or_else(|| "HEAD".to_owned());
+        let head = self.refs.head.clone();
         let Some(editor) = &mut self.rebase else {
             return;
         };
@@ -248,7 +263,7 @@ impl RepoTab {
                 });
             });
 
-        let problem = editor.problem();
+        let problem = editor.problem().or_else(|| editor.moved(&head));
         egui::Panel::bottom("rebase_footer")
             .frame(
                 egui::Frame::new()
@@ -426,6 +441,18 @@ mod tests {
         ed.entries[1].step = Step::Reword;
         ed.entries[1].message = "  ".into();
         assert!(ed.problem().is_some());
+    }
+
+    #[test]
+    fn a_branch_moved_since_the_read_is_not_rebased() {
+        let commits = ["a1", "b2"].map(|h| entry(h, Step::Pick).commit).to_vec();
+        let mut ed = RebaseEditor::new("x".into(), "x".into(), commits);
+        assert_eq!(ed.moved("b2"), None);
+        // Reordering doesn't change which commit was HEAD.
+        ed.entries.swap(0, 1);
+        assert_eq!(ed.moved("b2"), None);
+        // A commit made since: its todo list would drop it.
+        assert!(ed.moved("c3").is_some());
     }
 
     #[test]

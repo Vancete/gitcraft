@@ -91,15 +91,7 @@ impl RepoTab {
             self.checkout(&local, ctx);
             return;
         }
-        let previous = self.checked_out();
-        let undo = if previous.is_empty() {
-            Undo::None
-        } else {
-            Undo::Custom {
-                undo: ops(&[&["checkout", &previous, "--"], &["branch", "-D", &local]]),
-                redo: ops(&[&["checkout", "-b", &local, "--track", remote_branch, "--"]]),
-            }
-        };
+        let undo = checkout_remote_undo(&self.checked_out(), &local, remote_branch);
         // Named here, so that it is the branch undo deletes, whatever git would make of it.
         self.run_undoable(
             &format!("Checkout {local}"),
@@ -242,7 +234,13 @@ impl RepoTab {
         match self.default_remote() {
             Some(remote) => self.run_ops(
                 &format!("Push {current} to {remote}"),
-                ops(&[&["push", "-u", &remote, &current]]),
+                // Full refs: a tag of the same name must not be what is pushed.
+                ops(&[&[
+                    "push",
+                    "-u",
+                    &remote,
+                    &format!("refs/heads/{current}:refs/heads/{current}"),
+                ]]),
                 Refresh::All,
                 OpKind::plain(),
                 ctx,
@@ -341,9 +339,10 @@ impl RepoTab {
         let creds = self.credentials.clone();
         spawn(&self.tx, ctx, move || {
             // Publish the branch first, so the forge can see it.
+            let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
             let pushed = git::run_with(
                 Some(&path),
-                &["push", "-u", &remote, &branch],
+                &["push", "-u", &remote, &refspec],
                 creds.as_ref(),
             );
             let result = pushed
@@ -367,6 +366,19 @@ pub(super) fn local_name_of(name: &str, remotes: &[&str]) -> String {
         .or_else(|| name.split_once('/').map(|(_, b)| b))
         .unwrap_or(name)
         .to_owned()
+}
+
+/// How checking out `remote_branch` as the new branch `local` from `previous` is undone: back to
+/// `previous`, and the branch deleted. With `-d`, which keeps it if commits were made on it since
+/// (elsewhere: undoing a commit made here comes first), as they are on no other branch.
+pub(super) fn checkout_remote_undo(previous: &str, local: &str, remote_branch: &str) -> Undo {
+    if previous.is_empty() {
+        return Undo::None;
+    }
+    Undo::Custom {
+        undo: ops(&[&["checkout", previous, "--"], &["branch", "-d", local]]),
+        redo: ops(&[&["checkout", "-b", local, "--track", remote_branch, "--"]]),
+    }
 }
 
 /// Refuses (saying so in `status`) a branch or commit name git would read as an option: one

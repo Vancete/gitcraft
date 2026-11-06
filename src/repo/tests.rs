@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::commands::{local_name_of, refuse_option_like};
+use super::commands::{checkout_remote_undo, local_name_of, refuse_option_like};
 use super::operations::{run_steps, stash_push_args};
 use super::toolbar::headline;
 use super::watch::{FsChange, Reread, fs_change, linked_git_dirs};
@@ -70,6 +70,103 @@ fn undoing_a_head_move_goes_back_to_where_head_really_was() {
         kind,
         OpKind::Normal(Undo::HeadMove { .. }, heads) if heads == format!("{before}\u{0}{after}")
     ));
+}
+
+#[test]
+fn undoing_a_head_move_refuses_once_head_moved_elsewhere() {
+    use super::UndoEntry;
+    let dir = repo("undo-moved");
+    let before = git::head(&dir);
+    assert!(git::run(Some(&dir), &["commit", "-q", "--allow-empty", "-m", "two"]).is_ok());
+    let after = git::head(&dir);
+    let entry = UndoEntry {
+        label: "Commit".to_owned(),
+        undo: ops(&[&["reset", "--soft", &before]]),
+        redo: ops(&[&["reset", "--soft", &after]]),
+        heads: Some((before.clone(), after.clone())),
+    };
+    // Then a checkout of another branch, elsewhere: undoing must not reset that one.
+    let side = [
+        &["checkout", "-q", "-b", "side"][..],
+        &["commit", "-q", "--allow-empty", "-m", "side work"],
+    ];
+    for args in side {
+        assert!(git::run(Some(&dir), args).is_ok());
+    }
+    let side_head = git::head(&dir);
+    let (refused, _) = run_steps(&dir, &entry.undo, OpKind::Undo(entry.clone()), None);
+    let still = git::head(&dir);
+    // Back where the commit left it, undoing goes through.
+    let back = git::run(Some(&dir), &["checkout", "-q", "-"]);
+    let (undone, kind) = run_steps(&dir, &entry.undo, OpKind::Undo(entry.clone()), None);
+    let undone_head = git::head(&dir);
+    // Redo only from where undo left it.
+    let (redone, _) = run_steps(&dir, &entry.redo, OpKind::Redo(entry.clone()), None);
+    let redone_head = git::head(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(refused.is_err());
+    assert_eq!(still, side_head);
+    assert!(back.is_ok());
+    assert!(undone.is_ok());
+    assert!(matches!(kind, OpKind::Undo(_)));
+    assert_eq!(undone_head, before);
+    assert!(redone.is_ok());
+    assert_eq!(redone_head, after);
+}
+
+#[test]
+fn an_interactive_rebase_does_not_start_once_the_branch_moved() {
+    use super::{RepoTab, rebase::RebaseEditor};
+    let dir = repo("rebase-moved");
+    let ctx = egui::Context::default();
+    let mut tab = RepoTab::new_deferred(dir.clone(), &ctx);
+    let read = git::RebaseCommit {
+        hash: "a".repeat(40),
+        ..Default::default()
+    };
+    tab.rebase = Some(RebaseEditor::new("x".into(), "x".into(), vec![read]));
+    // A commit made while the editor was open.
+    tab.refs.head = "b".repeat(40);
+    tab.run_rebase(&ctx);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(tab.busy_op.is_none());
+    assert!(tab.rebase.is_some());
+    assert!(tab.status.as_ref().is_some_and(|(_, err)| *err));
+}
+
+#[test]
+fn undoing_a_remote_checkout_keeps_commits_made_on_the_branch_since() {
+    let dir = repo("remote-checkout");
+    let base = git::head(&dir);
+    let setup = [
+        &["remote", "add", "origin", "/nonexistent"][..],
+        &["update-ref", "refs/remotes/origin/feat", &base],
+        &["checkout", "-q", "-b", "main"],
+    ];
+    for args in setup {
+        assert!(git::run(Some(&dir), args).is_ok());
+    }
+    let (undo, redo) = match checkout_remote_undo("main", "feat", "origin/feat") {
+        Undo::Custom { undo, redo } => (undo, redo),
+        _ => (Vec::new(), Vec::new()),
+    };
+    assert!(!undo.is_empty());
+    let run = |steps: &[Vec<String>]| run_steps(&dir, steps, OpKind::plain(), None).0;
+    // Nothing done on it: undoing deletes it.
+    let checked_out = run(&redo);
+    let undone = run(&undo);
+    let gone = git::resolve(&dir, "refs/heads/feat").is_err();
+    // A commit on it, made in the terminal: undoing must not delete the only branch it is on.
+    let again = run(&redo);
+    let work = git::run(Some(&dir), &["commit", "-q", "--allow-empty", "-m", "mine"]);
+    let mine = git::head(&dir);
+    let refused = run(&undo);
+    let kept = git::resolve(&dir, "refs/heads/feat").ok();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(checked_out.is_ok() && undone.is_ok() && gone);
+    assert!(again.is_ok() && work.is_ok());
+    assert!(refused.is_err());
+    assert_eq!(kept, Some(mine));
 }
 
 #[test]

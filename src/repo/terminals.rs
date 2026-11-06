@@ -43,6 +43,10 @@ impl RepoTab {
     pub(super) fn close_terminal(&mut self, i: usize) {
         if i < self.terminals.len() {
             self.terminals.remove(i);
+            // The one shown stays shown when one before it closes.
+            if i < self.active_terminal {
+                self.active_terminal -= 1;
+            }
         }
         self.active_terminal = self
             .active_terminal

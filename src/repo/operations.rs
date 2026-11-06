@@ -201,6 +201,7 @@ impl RepoTab {
                     label: label.to_owned(),
                     undo: ops(&[&["reset", mode, before]]),
                     redo: ops(&[&["reset", mode, after]]),
+                    heads: Some((before.to_owned(), after.to_owned())),
                 });
                 self.redo_stack.clear();
             }
@@ -209,6 +210,7 @@ impl RepoTab {
                     label: label.to_owned(),
                     undo,
                     redo,
+                    heads: None,
                 });
                 self.redo_stack.clear();
             }
@@ -230,6 +232,27 @@ pub(super) fn run_steps(
     kind: OpKind,
     creds: Option<&git::Credentials>,
 ) -> (Result<String, String>, OpKind) {
+    // Undoing a HEAD move resets the branch checked out now: after a checkout or a commit made
+    // elsewhere since, that would throw away commits that aren't the operation's.
+    let expected = match &kind {
+        OpKind::Undo(entry) => entry.heads.as_ref().map(|(_, after)| after),
+        OpKind::Redo(entry) => entry.heads.as_ref().map(|(before, _)| before),
+        OpKind::Normal(..) => None,
+    };
+    if let Some(expected) = expected {
+        let now = git::head(path);
+        if &now != expected {
+            return (
+                Err(format!(
+                    "HEAD has moved since (it is at {}, not {}): resetting it would lose what \
+                     was done after",
+                    super::short(&now),
+                    super::short(expected)
+                )),
+                kind,
+            );
+        }
+    }
     // Where HEAD really is now, not where the last reload saw it: a commit made in the
     // terminal since must not be undone along with this.
     let head_before =
