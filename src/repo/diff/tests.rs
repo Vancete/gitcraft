@@ -283,6 +283,44 @@ fn no_newline_note_follows_its_line() {
     assert!(patch.ends_with("@@ -1,2 +1,1 @@\n a\n-b\n\\ No newline at end of file\n"));
 }
 
+/// A line without a final newline that a partial patch puts others after: the side that goes
+/// on gets the newline, or `git apply` would join the two lines ("bc", "a0d1").
+#[test]
+fn no_newline_note_only_ends_its_side() {
+    let hunks_of = |text: &str, chosen: &[usize], pick| {
+        let header = "diff --git a/f b/f\n--- a/f\n+++ b/f\n";
+        let lines = parse(&format!("{header}{text}"));
+        let chosen: BTreeSet<usize> = chosen.iter().copied().collect();
+        partial_patch(header, &lines, &chosen, pick)
+            .and_then(|p| p.strip_prefix(header).map(str::to_owned))
+    };
+    let note = "\\ No newline at end of file\n";
+    // "a\nb" → "a\nb\nc\n", staging only "+c": b keeps its place but gets a newline.
+    let grown = format!("@@ -1,2 +1,3 @@\n a\n-b\n{note}+b\n+c\n");
+    assert_eq!(
+        hunks_of(&grown, &[5], Pick::Stage),
+        Some(format!("@@ -1,2 +1,3 @@\n a\n-b\n{note}+b\n+c\n"))
+    );
+    // "x\nd0\nd1\n" → "x\na0", staging only "+a0": d1 stays after it.
+    let cut = format!("@@ -1,3 +1,2 @@\n x\n-d0\n-d1\n+a0\n{note}");
+    assert_eq!(
+        hunks_of(&cut, &[4], Pick::Stage),
+        Some("@@ -1,3 +1,4 @@\n x\n d0\n+a0\n d1\n".to_owned())
+    );
+    // "x\nd0" → "x\na0\na1\n", discarding only "-d0": the lines kept come after it.
+    let added = format!("@@ -1,2 +1,3 @@\n x\n-d0\n{note}+a0\n+a1\n");
+    assert_eq!(
+        hunks_of(&added, &[2], Pick::Discard),
+        Some("@@ -1,4 +1,3 @@\n x\n-d0\n a0\n a1\n".to_owned())
+    );
+    // "d0\nd1\n" → "a0", discarding only "-d1": a0, kept, is no longer last on the old side.
+    let shrunk = format!("@@ -1,2 +1 @@\n-d0\n-d1\n+a0\n{note}");
+    assert_eq!(
+        hunks_of(&shrunk, &[2], Pick::Discard),
+        Some(format!("@@ -1,2 +1,1 @@\n-a0\n+a0\n{note}-d1\n"))
+    );
+}
+
 #[test]
 fn crlf_lines_keep_their_carriage_return() {
     let lines = parse("@@ -1 +1 @@\n-a\r\n+b\r\n");
@@ -370,6 +408,37 @@ fn partial_patches_apply(whole_file: bool) {
     assert_eq!(pick(Area::Staged, &two, Pick::Unstage), Ok(()));
     assert_eq!(index(), base.replace("line 2\n", ""));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A Latin-1 file is read with its odd bytes replaced: a patch of its lines would write the
+/// replacements into the index, so its lines only go whole.
+#[test]
+fn text_that_is_not_utf8_is_not_picked_from() {
+    let dir = std::env::temp_dir().join(format!("gitcraft-partial-latin1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let git = |args: &[&str]| git::run(Some(&dir), args);
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.name", "t"],
+        &["config", "user.email", "t@t"],
+    ] {
+        assert!(git(args).is_ok());
+    }
+    let file = dir.join("f.txt");
+    let _ = std::fs::write(&file, b"a\nb\n");
+    assert!(git(&["add", "."]).is_ok());
+    assert!(git(&["commit", "-q", "-m", "base"]).is_ok());
+    let _ = std::fs::write(&file, b"a\ncaf\xe9\nb\n");
+    let key = DiffKey::Work(git::StatusFile {
+        path: "f.txt".to_owned(),
+        old_path: None,
+        code: 'M',
+        area: Area::Unstaged,
+    });
+    let data = load(&dir, &key, DiffOptions::default(), true);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(data.map(|d| (d.lines.len(), d.partial)), Ok((4, false)));
 }
 
 /// A file made executable and edited: picking lines leaves the mode change where it is.

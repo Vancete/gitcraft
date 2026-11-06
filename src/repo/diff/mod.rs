@@ -188,8 +188,8 @@ pub fn load(repo: &Path, key: &DiffKey, opts: DiffOptions, dark: bool) -> Result
 
 /// Whether hunks and lines of this diff can be picked on their own.
 fn can_pick(key: &DiffKey, opts: DiffOptions, header: &str, lines: &[DiffLine]) -> bool {
-    // A patch made from a `-w` diff wouldn't apply; new, deleted, renamed and binary files, and
-    // truncated diffs, only go whole.
+    // A patch made from a `-w` diff wouldn't apply; new, deleted, renamed and binary files,
+    // truncated diffs and text that isn't UTF-8 only go whole.
     matches!(key, DiffKey::Work(f) if matches!(f.area, Area::Staged | Area::Unstaged))
         && !opts.ignore_ws
         && !header.is_empty()
@@ -205,6 +205,9 @@ fn can_pick(key: &DiffKey, opts: DiffOptions, header: &str, lines: &[DiffLine]) 
         && lines
             .iter()
             .all(|l| l.kind != Kind::Meta || l.raw.starts_with('\\'))
+        // Not UTF-8 (a Latin-1 file…): the text was read with its odd bytes replaced, and a
+        // patch made from it would write the replacements into the added lines.
+        && !lines.iter().any(|l| l.raw.contains(char::REPLACEMENT_CHARACTER))
 }
 
 /// Syntax colours per line. The old and the new side are each coloured as one stream, so
