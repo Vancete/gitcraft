@@ -22,7 +22,22 @@ pub fn shown_suggestion(body: &str, host: &str) -> Option<String> {
 /// the line) differs from one blank line.
 pub fn parse_suggestion(body: &str) -> Option<String> {
     let mut lines = body.lines();
-    lines.find(|line| line.trim_end() == "```suggestion")?;
+    // A suggestion's fence inside another code block is only text, say one showing how to write
+    // a suggestion: GitHub shows it as code, and has nothing to apply.
+    let mut fence: Option<(char, usize)> = None;
+    lines.find(|line| match fence {
+        Some((c, open)) => {
+            if closes_fence(line, c, open) {
+                fence = None;
+            }
+            false
+        }
+        None if line.trim_end() == "```suggestion" => true,
+        None => {
+            fence = opens_fence(line);
+            false
+        }
+    })?;
     let mut suggestion = String::new();
     for line in lines {
         if line.trim_end() == "```" {
@@ -32,6 +47,20 @@ pub fn parse_suggestion(body: &str) -> Option<String> {
         suggestion.push('\n');
     }
     None
+}
+
+/// The character and length of the code fence `line` opens, if it opens one.
+fn opens_fence(line: &str) -> Option<(char, usize)> {
+    let line = line.trim_start();
+    let c = line.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let len = line.chars().take_while(|&x| x == c).count();
+    (len >= 3).then_some((c, len))
+}
+
+/// Whether `line` closes a fence of `open` times `c`: as many of them or more, and nothing else.
+fn closes_fence(line: &str, c: char, open: usize) -> bool {
+    let line = line.trim();
+    line.chars().all(|x| x == c) && line.chars().count() >= open
 }
 
 /// `content` with lines `start` to `end` (counted from 1) replaced by `replacement`. Line ends stay
@@ -97,6 +126,17 @@ mod tests {
             apply_lines("a\nb\nc\n", 2, 2, &ends_blank).as_deref(),
             Ok("a\nB\n\nc\n")
         );
+    }
+
+    #[test]
+    fn a_suggestion_shown_as_code_is_no_suggestion() {
+        let how = "Write it like this:\n\n````\n```suggestion\nnew();\n```\n````";
+        assert_eq!(parse_suggestion(how), None);
+        let tilde = "~~~\n```suggestion\nnew();\n```\n~~~";
+        assert_eq!(parse_suggestion(tilde), None);
+        // One after a code block still counts.
+        let after = "```rust\nold();\n```\n```suggestion\nnew();\n```";
+        assert_eq!(parse_suggestion(after).as_deref(), Some("new();\n"));
     }
 
     #[test]

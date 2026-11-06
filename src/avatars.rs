@@ -74,7 +74,12 @@ fn avatars(ctx: &egui::Context) -> &'static Avatars {
                 let hint = lock(hints()).get(&email).cloned();
                 let state = fetch(&agent, &email, hint.as_ref());
                 if let Some(map) = AVATARS.get() {
-                    lock(&map.map).insert(email, state);
+                    // A hint that came in meanwhile asked for this address afresh: what was
+                    // fetched without it mustn't stand in for that answer.
+                    let mut map = lock(&map.map);
+                    if is_current(&lock(hints()), &email, hint.as_ref()) {
+                        map.insert(email, state);
+                    }
                 }
                 ctx.request_repaint();
             }
@@ -84,6 +89,11 @@ fn avatars(ctx: &egui::Context) -> &'static Avatars {
             queue: Mutex::new(tx),
         }
     })
+}
+
+/// Whether `used` is still what `hints` say about `email`.
+fn is_current(hints: &HashMap<String, Hint>, email: &str, used: Option<&Hint>) -> bool {
+    hints.get(email) == used
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -335,6 +345,17 @@ mod tests {
             cache_key("a@b.c", None),
             cache_key("a@b.c", Some(&Hint::Url(String::new())))
         );
+    }
+
+    #[test]
+    fn a_picture_fetched_before_a_hint_came_is_not_kept_as_its_answer() {
+        let mut hints = HashMap::new();
+        assert!(is_current(&hints, "a@b.c", None));
+        let hint = Hint::Url("https://av/u/1".into());
+        hints.insert("a@b.c".to_owned(), hint.clone());
+        // Fetched from Gravatar while GitHub's answer was on its way.
+        assert!(!is_current(&hints, "a@b.c", None));
+        assert!(is_current(&hints, "a@b.c", Some(&hint)));
     }
 
     #[test]

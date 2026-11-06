@@ -270,9 +270,10 @@ pub fn tally(checks: &[Check]) -> (usize, usize, usize, usize) {
     )
 }
 
-/// The host and `owner/repo` of a pull request's URL.
+/// The host and `owner/repo` of a pull request's URL. The last `/pull/` is the one before the
+/// number: a repository may well be called `pull` itself.
 pub(crate) fn repo_of_url(url: &str) -> Option<(String, String)> {
-    forge::location(url.split_once("/pull/")?.0)
+    forge::location(url.rsplit_once("/pull/")?.0)
 }
 
 /// The remote of the repository a pull request's URL belongs to. GitHub doesn't mind the case of
@@ -306,6 +307,10 @@ mod tests {
             Some(("github.com".to_owned(), "o/r".to_owned()))
         );
         assert_eq!(repo_of_url("https://github.com/o/r"), None);
+        assert_eq!(
+            repo_of_url("https://github.com/o/pull/pull/3"),
+            Some(("github.com".to_owned(), "o/pull".to_owned()))
+        );
     }
 
     fn remote(name: &str, url: &str) -> Remote {

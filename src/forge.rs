@@ -40,10 +40,14 @@ pub fn detect(remotes: &[Remote]) -> Option<Forge> {
     // GitHub by the host alone: a GitLab project may well be called `me.github.io`. GitLab can
     // also live under a path of another host (`https://example.org/gitlab/…`).
     // A host naming GitLab wins (`github-mirror.gitlab.example.org`).
-    let host = location(&remote.url).map(|(host, _)| host);
-    if host.as_deref().is_some_and(|host| host.contains("gitlab")) {
+    // A local path has no host, and `C:/…` only a drive's: neither is on any forge, whatever
+    // folder names it goes through.
+    let host = location(&remote.url)
+        .map(|(host, _)| host)
+        .filter(|host| host.len() > 1)?;
+    if host.contains("gitlab") {
         Some(Forge::GitLab)
-    } else if host.is_some_and(|host| host.contains("github")) {
+    } else if host.contains("github") {
         Some(Forge::GitHub)
     } else if remote.url.to_lowercase().contains("gitlab") {
         Some(Forge::GitLab)
@@ -256,7 +260,29 @@ pub fn location(url: &str) -> Option<(String, String)> {
     };
     let path = path.trim_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
-    (!host.is_empty() && path.contains('/')).then(|| (host.to_lowercase(), path.to_owned()))
+    if host.is_empty() || !path.contains('/') {
+        return None;
+    }
+    // SSH over the HTTPS port goes to another name than the forge's own.
+    let host = match host.to_lowercase().as_str() {
+        "ssh.github.com" => "github.com".to_owned(),
+        "altssh.gitlab.com" => "gitlab.com".to_owned(),
+        host => host.to_owned(),
+    };
+    Some((host, path.to_owned()))
+}
+
+/// The port of an `http(s)://` URL, which its web pages are on too; an SSH port says nothing
+/// about them.
+fn http_port(url: &str) -> Option<&str> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
+    let authority = rest.split('/').next()?;
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let (_, port) = host.split_once(':')?;
+    (!port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())).then_some(port)
 }
 
 /// The web page of the repository at remote `url`: `https://github.com/owner/repo` for
@@ -272,7 +298,10 @@ pub fn web_url(url: &str) -> Option<String> {
     } else {
         "https"
     };
-    Some(format!("{scheme}://{host}/{path}"))
+    match http_port(url) {
+        Some(port) => Some(format!("{scheme}://{host}:{port}/{path}")),
+        None => Some(format!("{scheme}://{host}/{path}")),
+    }
 }
 
 /// GitHub accounts' avatars by commit email, from the repository's latest commits (the API ties
@@ -339,6 +368,12 @@ mod tests {
             Some(("gitlab.example.org".to_owned(), "group/sub/proj".to_owned()))
         );
         assert_eq!(location("/srv/git/repo.git"), None);
+        // GitHub's and GitLab's SSH over port 443.
+        assert_eq!(location("ssh://git@ssh.github.com:443/owner/repo.git"), gh);
+        assert_eq!(
+            location("ssh://git@altssh.gitlab.com:443/g/p.git"),
+            Some(("gitlab.com".to_owned(), "g/p".to_owned()))
+        );
     }
 
     #[test]
@@ -350,6 +385,14 @@ mod tests {
         assert_eq!(
             web_url("http://git.example.org/team/repo.git"),
             Some("http://git.example.org/team/repo".to_owned())
+        );
+        assert_eq!(
+            web_url("https://git.example.org:8443/team/repo.git"),
+            Some("https://git.example.org:8443/team/repo".to_owned())
+        );
+        assert_eq!(
+            web_url("ssh://git@git.example.org:2222/team/repo.git"),
+            Some("https://git.example.org/team/repo".to_owned())
         );
         assert_eq!(web_url("C:/repos/gitcraft"), None);
         assert_eq!(web_url("/srv/git/repo.git"), None);
@@ -390,6 +433,9 @@ mod tests {
             Some(Forge::GitLab)
         );
         assert_eq!(detect(&[r("origin", "C:/repos/bare.git")]), None);
+        // A folder's name is no forge.
+        assert_eq!(detect(&[r("origin", "/srv/gitlab-backup/x.git")]), None);
+        assert_eq!(detect(&[r("origin", "C:/gitlab/x.git")]), None);
         assert_eq!(
             detect(&[r("origin", "https://github.example.com/a/b")]),
             Some(Forge::GitHub)
