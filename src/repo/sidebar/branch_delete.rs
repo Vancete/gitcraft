@@ -3,7 +3,7 @@
 use egui::Ui;
 
 use crate::git::Branch;
-use crate::repo::operations::expect_ref;
+use crate::repo::operations::{expect_ref, expect_ref_at};
 use crate::repo::{Action, Dialog, RepoTab, Undo, ops};
 
 impl RepoTab {
@@ -22,6 +22,11 @@ impl RepoTab {
             "Can't delete the checked-out branch"
         };
         let can = !b.is_head && !elsewhere && idle;
+        // Only while the branch is where the menu saw it: commits made on it since (in the
+        // terminal, while the dialog is open) are not what was asked to be deleted, nor what
+        // undoing would bring back.
+        let at_seen = || vec![expect_ref_at(&format!("refs/heads/{}", b.name), &b.target)];
+        let guarded = |steps: Vec<Vec<String>>| [at_seen(), steps].concat();
         if ui
             .add_enabled(can, egui::Button::new("Delete…"))
             .on_disabled_hover_text(why)
@@ -32,10 +37,10 @@ impl RepoTab {
                     "Delete branch",
                     format!("Delete the local branch “{}”?", b.name),
                     "Delete",
-                    ops(&[&["branch", "-d", "--", &b.name]]),
+                    guarded(ops(&[&["branch", "-d", "--", &b.name]])),
                     Some((
                         "Force, even if it isn't merged (-D)".to_owned(),
-                        ops(&[&["branch", "-D", "--", &b.name]]),
+                        guarded(ops(&[&["branch", "-D", "--", &b.name]])),
                     )),
                 )
                 .undo(Undo::Custom {
@@ -68,7 +73,8 @@ impl RepoTab {
             .clicked()
         {
             let remote_ref = format!("refs/heads/{name}");
-            let delete = |flag: &str| delete_both(flag, &b.name, &remote, name, &tracked.target);
+            let delete =
+                |flag: &str| guarded(delete_both(flag, &b.name, &remote, name, &tracked.target));
             // Undo pushes the remote branch back where it was and tracks it again.
             let undo = delete_both_undo(
                 restore,

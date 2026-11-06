@@ -29,7 +29,14 @@ pub fn worktree_file(file: &Path) -> std::io::Result<Vec<u8>> {
     if !meta.is_file() {
         return Err(std::io::Error::other("not a file"));
     }
-    std::fs::read(file)
+    // Checked again on what was opened: a link put there since would be followed by `open`.
+    let mut opened = std::fs::File::open(file)?;
+    if !opened.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a file"));
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut opened, &mut bytes)?;
+    Ok(bytes)
 }
 
 /// Every file in the tree of commit `rev`, sorted by path.

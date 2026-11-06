@@ -770,7 +770,9 @@ mod tests {
         assert_eq!(chain, Some(1));
         assert_eq!(rows, DEPTH + 1);
         // It took about 5 s at 1500 deep, in a debug build.
-        assert!(built < std::time::Duration::from_millis(500), "{built:?}");
+        // A loose bound, so that a busy machine does not fail it: building it the old way
+        // (time growing with the cube of the depth) would take tens of seconds here.
+        assert!(built < std::time::Duration::from_secs(10), "{built:?}");
         Ok(())
     }
 }

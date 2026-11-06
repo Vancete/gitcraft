@@ -68,7 +68,9 @@ fn undoing_a_head_move_goes_back_to_where_head_really_was() {
     assert_ne!(seen, before);
     assert!(matches!(
         kind,
-        OpKind::Normal(Undo::HeadMove { .. }, heads) if heads == format!("{before}\u{0}{after}")
+        // Then the branch it moved, which undo checks is still the one checked out.
+        OpKind::Normal(Undo::HeadMove { .. }, heads)
+            if heads.starts_with(&format!("{before}\u{0}{after}\u{0}refs/heads/"))
     ));
 }
 
@@ -141,7 +143,7 @@ fn undoing_a_remote_checkout_keeps_commits_made_on_the_branch_since() {
     let setup = [
         &["remote", "add", "origin", "/nonexistent"][..],
         &["update-ref", "refs/remotes/origin/feat", &base],
-        &["checkout", "-q", "-b", "main"],
+        &["checkout", "-q", "-B", "main"],
     ];
     for args in setup {
         assert!(git::run(Some(&dir), args).is_ok());

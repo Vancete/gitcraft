@@ -104,7 +104,7 @@ impl RepoTab {
                     "Delete tag",
                     format!("Delete the local tag “{}”?", tag.name),
                     "Delete",
-                    ops(&[&["tag", "-d", "--", &tag.name]]),
+                    delete_tag(&tag.name, object.as_deref()),
                     None,
                 )
                 .undo(delete_tag_undo(
@@ -113,6 +113,16 @@ impl RepoTab {
                 )),
             ));
         }
+    }
+}
+
+/// Deleting the tag `name`, only while it still points at `object` (what the menu saw): one
+/// replaced since (by a fetch, while the dialog is open) is not the one asked about, nor what
+/// undoing would bring back.
+fn delete_tag(name: &str, object: Option<&str>) -> Vec<Vec<String>> {
+    match object {
+        Some(object) => ops(&[&["update-ref", "-d", &format!("refs/tags/{name}"), object]]),
+        None => ops(&[&["tag", "-d", "--", name]]),
     }
 }
 

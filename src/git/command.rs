@@ -101,12 +101,19 @@ pub fn run_unattended(
 /// (Git Credential Manager and git ≥ 2.46 heed `credential.interactive`), nor git's askpass
 /// program. git reads `GIT_ASKPASS` before `core.askPass` and `SSH_ASKPASS`, so an inherited one
 /// (VS Code's terminal, ksshaskpass) would win over an empty `core.askPass`, and its being set
-/// but empty makes git skip all three. ssh, which has no terminal here, would run
-/// `SSH_ASKPASS` itself: `SSH_ASKPASS_REQUIRE=never` stops that.
+/// but empty makes git skip all three. ssh asks on the terminal the app was started from, if
+/// any (a passphrase, a new host key: the fetch would wait there for good), or else runs
+/// `SSH_ASKPASS` itself: on Unix it is made to ask a program that answers nothing, `false`,
+/// and nothing else; where that isn't there, never to run one.
 fn unattended(cmd: &mut Command) {
     cmd.args(["-c", "credential.interactive=false", "-c", "core.askPass="]);
     cmd.env("GIT_ASKPASS", "");
-    cmd.env("SSH_ASKPASS_REQUIRE", "never");
+    if cfg!(unix) {
+        cmd.env("SSH_ASKPASS_REQUIRE", "force");
+        cmd.env("SSH_ASKPASS", "false");
+    } else {
+        cmd.env("SSH_ASKPASS_REQUIRE", "never");
+    }
 }
 
 /// Whether `err` says git needed a username / password it couldn't get or that were refused.
@@ -280,7 +287,7 @@ mod tests {
         Ok(())
     }
 
-    /// Nor does ssh, which runs `SSH_ASKPASS` itself when it has no terminal.
+    /// Nor does ssh, which would ask on a terminal or run `SSH_ASKPASS` itself.
     #[cfg(unix)]
     #[test]
     fn a_quiet_operation_tells_ssh_to_ask_nobody() -> Result<(), String> {
@@ -291,7 +298,7 @@ mod tests {
         std::fs::write(
             &ssh,
             format!(
-                "#!/bin/sh\nprintf '%s' \"$SSH_ASKPASS_REQUIRE\" > '{}'\nexit 1\n",
+                "#!/bin/sh\nprintf '%s %s' \"$SSH_ASKPASS_REQUIRE\" \"$SSH_ASKPASS\" > '{}'\nexit 1\n",
                 seen.display()
             ),
         )
@@ -309,7 +316,8 @@ mod tests {
         let required = std::fs::read_to_string(&seen);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!out.status.success());
-        assert_eq!(required.map_err(|e| e.to_string())?, "never");
+        // Asked through `false`, which answers nothing, never on a terminal.
+        assert_eq!(required.map_err(|e| e.to_string())?, "force false");
         Ok(())
     }
 

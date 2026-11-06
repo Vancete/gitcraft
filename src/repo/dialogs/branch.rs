@@ -62,11 +62,14 @@ fn create_branch_undo(name: &str, at: &str, checkout: bool, previous: &str) -> V
             "--".to_owned(),
         ]);
     }
+    // `branch -D` rather than deleting the ref: its upstream and other settings go too (a
+    // branch pushed meanwhile would otherwise track that again once made anew under the name),
+    // and git refuses while a worktree has it checked out. The check above keeps its commits.
     undo.push(vec![
-        "update-ref".to_owned(),
-        "-d".to_owned(),
-        format!("refs/heads/{name}"),
-        at.to_owned(),
+        "branch".to_owned(),
+        "-D".to_owned(),
+        "--".to_owned(),
+        name.to_owned(),
     ]);
     undo
 }

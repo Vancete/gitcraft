@@ -1,6 +1,6 @@
 //! Rewriting history: editing a commit's message, and the interactive rebase.
 
-use super::operations::expect_ref_at;
+use super::operations::{expect_ref_at, expect_symref};
 use super::{Msg, Refresh, RepoTab, Undo, ops, rebase, short, spawn};
 use crate::git;
 
@@ -27,7 +27,7 @@ impl RepoTab {
             }
             // HEAD as the last read saw it: a commit made since (in the terminal) is not the
             // one whose message this is, and must not get it.
-            let guarded = [expect_ref_at("HEAD", &hash)]
+            let guarded = [self.same_branch(), expect_ref_at("HEAD", &hash)]
                 .into_iter()
                 .chain(ops(&[&amend]))
                 .collect();
@@ -88,7 +88,7 @@ impl RepoTab {
             // The todo list replaces the commits read: not one made since.
             Ok((command, head)) => self.run_undoable(
                 &format!("Edit the message of {}", short(&hash)),
-                vec![expect_ref_at("HEAD", &head), command],
+                vec![self.same_branch(), expect_ref_at("HEAD", &head), command],
                 Refresh::All,
                 Undo::HeadMove { mode: "--keep" },
                 ctx,
@@ -97,10 +97,36 @@ impl RepoTab {
         }
     }
 
+    /// A step refusing an operation unless the branch checked out is still the one this tab
+    /// last read (or HEAD still detached): another branch at the same commit passes a check of
+    /// HEAD's commit, and a rewrite would then rewrite that branch.
+    fn same_branch(&self) -> Vec<String> {
+        let branch = self
+            .refs
+            .current
+            .as_deref()
+            .map(|b| format!("refs/heads/{b}"))
+            .unwrap_or_default();
+        expect_symref("HEAD", &branch)
+    }
+
     /// Reads the commits after `onto`, for the interactive rebase editor.
     pub(super) fn interactive_rebase(&mut self, onto: String, label: String, ctx: &egui::Context) {
         let path = self.path.clone();
         spawn(&self.tx, ctx, move || {
+            // Pinned to the commit it is now: should `onto` (a branch) move while the editor is
+            // open, the commits between would be replayed without being in the todo list, and
+            // so dropped.
+            let onto = match git::resolve(&path, &onto) {
+                Ok(commit) => commit,
+                Err(e) => {
+                    return Msg::RebaseCommits {
+                        onto,
+                        label,
+                        result: Err(e),
+                    };
+                }
+            };
             let result = git::rebase_commits(&path, &onto);
             Msg::RebaseCommits {
                 onto,
@@ -152,11 +178,11 @@ impl RepoTab {
         match editor.command() {
             Ok(command) => {
                 let label = format!("Interactive rebase onto {}", editor.onto_label);
-                let guard = expect_ref_at("HEAD", &editor.head);
+                let guards = [self.same_branch(), expect_ref_at("HEAD", &editor.head)];
                 self.rebase = None;
                 self.run_undoable(
                     &label,
-                    vec![guard, command],
+                    [guards.to_vec(), vec![command]].concat(),
                     Refresh::All,
                     Undo::HeadMove { mode: "--keep" },
                     ctx,

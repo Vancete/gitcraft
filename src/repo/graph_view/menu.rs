@@ -71,7 +71,7 @@ impl RepoTab {
         if let Some(branch) = &pill
             && self.refs.current.as_deref() != Some(branch.as_str())
         {
-            self.pill_items(ui, branch, idle, acts);
+            self.pill_items(ui, branch, &hash, idle, acts);
             ui.separator();
         }
         self.branch_here_items(ui, &hash, &short, idle, is_head, acts);
@@ -115,9 +115,21 @@ impl RepoTab {
 
     /// Actions on the right-clicked `branch`: check it out, or bring it into the checked-out
     /// branch.
-    fn pill_items(&self, ui: &mut Ui, branch: &str, idle: bool, acts: &mut Vec<Action>) {
-        // A pill names the local branch when there is one, else `remote/branch`.
-        let local = self.refs.local.iter().any(|b| b.name == branch);
+    fn pill_items(
+        &self,
+        ui: &mut Ui,
+        branch: &str,
+        hash: &str,
+        idle: bool,
+        acts: &mut Vec<Action>,
+    ) {
+        // A pill names the local branch when there is one here, else `remote/branch`: a local
+        // branch elsewhere that happens to be called `origin/topic` is not this pill's.
+        let local = self
+            .refs
+            .local
+            .iter()
+            .any(|b| b.name == branch && b.target == hash);
         let git_ref = BranchRef {
             name: branch,
             remote: !local,

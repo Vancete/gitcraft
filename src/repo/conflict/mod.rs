@@ -209,10 +209,19 @@ fn unresolved_in(result: &str, segments: &[Segment]) -> usize {
     whole + starts.max(ends).max(usize::from(middles > 0))
 }
 
+/// Whether `file` is a symbolic link (not what it points to).
+fn is_link(file: &Path) -> bool {
+    std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_symlink())
+}
+
 impl ConflictEditor {
     /// Opens `path` if it still has conflict markers.
     pub fn open(repo: &Path, path: &str, state: Option<InProgress>) -> Option<Self> {
-        // Not through a link: a merge can leave one from the other side here.
+        // Never a link: a merge can leave one from the other side here, and saving would write
+        // through it to wherever it points.
+        if is_link(&repo.join(path)) {
+            return None;
+        }
         let text = String::from_utf8(crate::git::worktree_file(&repo.join(path)).ok()?).ok()?;
         let (segments, ours_label, theirs_label) = parse(&text);
         let conflicts = segments
@@ -297,8 +306,12 @@ impl ConflictEditor {
                 self.path
             ));
         }
-        std::fs::write(repo.join(&self.path), &self.result)
-            .map_err(|e| format!("Could not save {}: {e}", self.path))
+        let file = repo.join(&self.path);
+        // A link put there since it was opened is not written through.
+        if is_link(&file) {
+            return Err(format!("{} is a symbolic link now: not saved", self.path));
+        }
+        std::fs::write(file, &self.result).map_err(|e| format!("Could not save {}: {e}", self.path))
     }
 
     /// Names for the two sides as the user thinks of them.

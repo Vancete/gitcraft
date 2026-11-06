@@ -91,7 +91,12 @@ impl RepoTab {
     /// would never run.
     pub(super) fn keep_unfinished(&mut self, stopped: usize) {
         if let Some(op) = &mut self.last_op {
-            op.ops.drain(..stopped.min(op.ops.len()));
+            // The checks stay: what they guard must still hold when it runs after signing in.
+            let mut i = 0;
+            op.ops.retain(|step| {
+                i += 1;
+                i > stopped || is_expectation(step)
+            });
         }
     }
 
@@ -242,14 +247,22 @@ impl RepoTab {
         match kind {
             OpKind::Normal(Undo::None, _) => {}
             OpKind::Normal(Undo::HeadMove { mode }, heads) => {
-                let (before, after) = heads.split_once('\u{0}').unwrap_or(("", ""));
+                let mut parts = heads.split('\u{0}');
+                let (before, after) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
                 if before.is_empty() || after.is_empty() || before == after {
                     return;
                 }
+                // Resetting moves whatever branch is checked out: another one at the same
+                // commit passes the check of HEAD's commit, so the branch is checked too.
+                let guard: Vec<Vec<String>> = parts
+                    .next()
+                    .map(|branch| vec![expect_symref("HEAD", branch)])
+                    .unwrap_or_default();
+                let reset = |to: &str| [guard.clone(), ops(&[&["reset", mode, to]])].concat();
                 self.undo_stack.push(UndoEntry {
                     label: label.to_owned(),
-                    undo: ops(&[&["reset", mode, before]]),
-                    redo: ops(&[&["reset", mode, after]]),
+                    undo: reset(before),
+                    redo: reset(after),
                     heads: Some((before.to_owned(), after.to_owned())),
                 });
                 self.redo_stack.clear();
@@ -354,9 +367,13 @@ pub(super) fn run_steps_counted(
         // For HEAD moves, the new HEAD is what redo goes back to.
         OpKind::Normal(Undo::HeadMove { mode }, before) if result.is_ok() => {
             let before = head_before.filter(|h| !h.is_empty()).unwrap_or(before);
+            // And the branch it moved, which undo and redo must find checked out again.
+            let branch = git::run_ok_codes(Some(path), &["symbolic-ref", "-q", "HEAD"], &[0, 1])
+                .map(|s| s.trim().to_owned())
+                .unwrap_or_default();
             OpKind::Normal(
                 Undo::HeadMove { mode },
-                format!("{before}\u{0}{}", git::head(path)),
+                format!("{before}\u{0}{}\u{0}{branch}", git::head(path)),
             )
         }
         OpKind::Normal(Undo::Custom { .. }, before) if no_stash => {
