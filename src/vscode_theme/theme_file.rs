@@ -33,8 +33,7 @@ pub(super) fn find_theme(dirs: &[PathBuf], name: &str) -> Option<(PathBuf, bool)
         };
         // Newest version first when an extension is installed more than once.
         let mut exts: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-        exts.sort();
-        exts.reverse();
+        exts.sort_by(|a, b| natural_cmp(&b.to_string_lossy(), &a.to_string_lossy()));
         for ext in exts {
             let Some(pkg) = read_jsonc(&ext.join("package.json")) else {
                 continue;
@@ -61,6 +60,33 @@ pub(super) fn find_theme(dirs: &[PathBuf], name: &str) -> Option<(PathBuf, bool)
     None
 }
 
+/// Orders names with their numbers by value, so `theme-1.10.0` comes after `theme-1.9.0`.
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let (mut a, mut b) = (a, b);
+    loop {
+        let digits = |s: &str| s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+        let (da, db) = (digits(a), digits(b));
+        let order = if da > 0 && db > 0 {
+            let (na, nb) = (
+                a[..da].trim_start_matches('0'),
+                b[..db].trim_start_matches('0'),
+            );
+            na.len().cmp(&nb.len()).then_with(|| na.cmp(nb))
+        } else {
+            let (Some(ca), Some(cb)) = (a.chars().next(), b.chars().next()) else {
+                return a.len().cmp(&b.len());
+            };
+            ca.cmp(&cb)
+        };
+        if order != std::cmp::Ordering::Equal {
+            return order;
+        }
+        let step = |s: &str, d: usize| d.max(s.chars().next().map_or(0, char::len_utf8));
+        a = &a[step(a, da)..];
+        b = &b[step(b, db)..];
+    }
+}
+
 /// A contributed theme's label, looked up in the extension's `package.nls.json` (read once, into
 /// `nls`) when it is a `%key%`.
 fn theme_label(theme: &Value, ext: &Path, nls: &mut Option<Option<Value>>) -> Option<String> {
@@ -69,7 +95,12 @@ fn theme_label(theme: &Value, ext: &Path, nls: &mut Option<Option<Value>>) -> Op
         return Some(label.to_owned());
     };
     let nls = nls.get_or_insert_with(|| read_jsonc(&ext.join("package.nls.json")));
-    nls.as_ref()?.get(key)?.as_str().map(str::to_owned)
+    // A string, or `{ "message": …, "comment": … }`.
+    let value = nls.as_ref()?.get(key)?;
+    value
+        .as_str()
+        .or_else(|| value.get("message")?.as_str())
+        .map(str::to_owned)
 }
 
 /// Workbench colours, token rules and type (`dark`, `light`, ...) of a theme file.
@@ -212,6 +243,17 @@ mod tests {
     }
 
     #[test]
+    fn versions_compare_by_value() {
+        use std::cmp::Ordering::*;
+        assert_eq!(natural_cmp("a.theme-1.10.0", "a.theme-1.9.0"), Greater);
+        assert_eq!(natural_cmp("a.theme-1.9.0", "a.theme-1.9.0"), Equal);
+        assert_eq!(natural_cmp("a.theme-2.0.0", "a.theme-10.0.0"), Less);
+        assert_eq!(natural_cmp("a.theme-1.0.0", "a.theme-1.0.0-x"), Less);
+        assert_eq!(natural_cmp("b", "a"), Greater);
+        assert_eq!(natural_cmp("é1", "é2"), Less);
+    }
+
+    #[test]
     fn a_theme_without_a_foreground_gets_a_readable_one() {
         let mut theme = build("Bare", &serde_json::Map::new(), &[]);
         default_foreground(&mut theme, true);
@@ -241,9 +283,13 @@ mod tests {
         write(
             "package.json",
             r#"{ "contributes": { "themes": [
+                { "label": "%light%", "uiTheme": "vs", "path": "./themes/light.json" },
                 { "label": "%label%", "uiTheme": "vs-dark", "path": "./themes/nice.json" } ] } }"#,
         );
-        write("package.nls.json", r#"{ "label": "Nice Dark" }"#);
+        write(
+            "package.nls.json",
+            r#"{ "label": "Nice Dark", "light": { "message": "Nice Light", "comment": [] } }"#,
+        );
         write(
             "themes/base.json",
             r##"{ "colors": { "editor.foreground": "#aaaaaa" },
@@ -256,7 +302,9 @@ mod tests {
         );
         let found = find_theme(std::slice::from_ref(&dir), "Nice Dark");
         let read = found.as_ref().and_then(|(path, _)| read_theme(path, 0));
+        let light = find_theme(std::slice::from_ref(&dir), "Nice Light");
         let _ = std::fs::remove_dir_all(&dir);
+        assert!(light.is_some_and(|(path, dark)| !dark && path.ends_with("themes/light.json")));
         assert!(found.is_some_and(|(_, dark)| dark));
         assert!(read.is_some());
         let (colors, rules, _) = read.unwrap_or_default();

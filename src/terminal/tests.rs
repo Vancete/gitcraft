@@ -61,3 +61,21 @@ fn indexed_colours() {
         Some(Color32::from_gray(238))
     );
 }
+
+/// The shell's cursor-position query is answered even when it arrives split across two reads,
+/// with the cursor where it was at the query.
+#[test]
+fn cursor_position_queries_are_answered() {
+    let (writer, replies) = std::sync::mpsc::channel();
+    let mut parser = vt100::Parser::new_with_callbacks(
+        super::nz(24),
+        super::nz(80),
+        0,
+        super::Replies { writer },
+    );
+    parser.process(b"ab\x1b[");
+    parser.process(b"6nmore text");
+    parser.process(b"\r\n\x1b[6n\x1b[?6n\x1b[5n");
+    let got: Vec<Vec<u8>> = replies.try_iter().collect();
+    assert_eq!(got, [b"\x1b[1;3R".to_vec(), b"\x1b[2;1R".to_vec()]);
+}

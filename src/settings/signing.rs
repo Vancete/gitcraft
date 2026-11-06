@@ -46,10 +46,17 @@ impl Signing {
 
 /// The config key of the signing program for `format`.
 fn program_key(format: &str) -> &'static str {
+    program_keys(format)[0]
+}
+
+/// Every config key git reads the signing program for `format` from, the one gitcraft writes
+/// first. OpenPGP's is `gpg.program` or its newer name `gpg.openpgp.program`, whichever comes
+/// last.
+fn program_keys(format: &str) -> &'static [&'static str] {
     match format {
-        "ssh" => "gpg.ssh.program",
-        "x509" => "gpg.x509.program",
-        _ => "gpg.program",
+        "ssh" => &["gpg.ssh.program"],
+        "x509" => &["gpg.x509.program"],
+        _ => &["gpg.program", "gpg.openpgp.program"],
     }
 }
 
@@ -64,13 +71,14 @@ pub(super) fn parse(list: &str) -> Signing {
             None => (e.to_lowercase(), None),
         })
         .collect();
-    let get = |key: &str| {
+    let get_any = |keys: &[&str]| {
         entries
             .iter()
             .rev()
-            .find(|(k, _)| k == key)
+            .find(|(k, _)| keys.contains(&k.as_str()))
             .map(|(_, v)| *v)
     };
+    let get = |key: &str| get_any(&[key]);
     let text = |key: &str| get(key).flatten().unwrap_or_default().to_owned();
     let flag = |key: &str| {
         get(key).is_some_and(|v| {
@@ -78,7 +86,10 @@ pub(super) fn parse(list: &str) -> Signing {
         })
     };
     let format = text("gpg.format");
-    let program = text(program_key(&format));
+    let program = get_any(program_keys(&format))
+        .flatten()
+        .unwrap_or_default()
+        .to_owned();
     Signing {
         key: text("user.signingkey"),
         program,
@@ -99,7 +110,8 @@ pub(super) fn read(scope: &[&str]) -> Signing {
         .unwrap_or_default()
 }
 
-/// Sets `key` in the config `scope` names, or takes it out when `value` is empty.
+/// Sets `key` in the config `scope` names, or takes it out when `value` is empty. A key set
+/// more than once becomes set once: git refuses to overwrite several values with one.
 fn set(scope: &[&str], key: &str, value: &str) -> Result<(), String> {
     let mut args = vec!["config"];
     args.extend(scope);
@@ -108,7 +120,7 @@ fn set(scope: &[&str], key: &str, value: &str) -> Result<(), String> {
         // 5: it wasn't set.
         crate::git::run_ok_codes(None, &args, &[0, 5]).map(drop)
     } else {
-        args.extend([key, value]);
+        args.extend(["--replace-all", key, value]);
         crate::git::run(None, &args).map(drop)
     }
 }
@@ -120,8 +132,14 @@ pub(super) fn write(scope: &[&str], before: &Signing, after: &Signing) -> Result
     if after.format() != before.format() {
         set(scope, "gpg.format", &after.format)?;
     }
-    if after.program != before.program {
-        set(scope, program_key(after.format()), after.program.trim())?;
+    if after.program != before.program
+        && let Some((key, others)) = program_keys(after.format()).split_first()
+    {
+        for other in others {
+            // It would win over the one written.
+            set(scope, other, "")?;
+        }
+        set(scope, key, after.program.trim())?;
     }
     if after.key != before.key {
         set(scope, "user.signingkey", after.key.trim())?;
@@ -329,6 +347,39 @@ mod tests {
         assert!(!text.contains("signingkey"), "{text}");
         assert!(text.contains("program = ssh-keygen"), "{text}");
         assert!(text.contains("program = gpg2"), "{text}");
+        Ok(())
+    }
+
+    /// OpenPGP's program under its newer name, and keys set twice in a hand-edited config.
+    #[test]
+    fn signing_settings_set_twice_or_under_the_newer_name() -> Result<(), String> {
+        let newer = parse("gpg.program\ngpg2\0gpg.openpgp.program\n/opt/gpg\0");
+        assert_eq!(newer.program, "/opt/gpg");
+
+        let dir = std::env::temp_dir().join(format!("gitcraft-signing2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("config");
+        std::fs::write(
+            &path,
+            "[commit]\n\tgpgsign = true\n[commit]\n\tgpgsign = false\n\
+             [gpg \"openpgp\"]\n\tprogram = /opt/gpg\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let file = path.to_string_lossy();
+        let scope = ["--file", &*file];
+        let before = read(&scope);
+        assert_eq!(before.program, "/opt/gpg");
+        let after = Signing {
+            program: "gpg2".into(),
+            sign_commits: true,
+            ..before.clone()
+        };
+        let written = write(&scope, &before, &after);
+        let back = read(&scope);
+        let _ = std::fs::remove_dir_all(&dir);
+        written?;
+        assert_eq!(back, after);
         Ok(())
     }
 }

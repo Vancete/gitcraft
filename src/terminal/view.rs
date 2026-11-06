@@ -120,6 +120,9 @@ impl Terminal {
         let rows = ((inner.height() / cell.y).floor() as u16).clamp(1, 500);
         if (rows, cols) != self.size {
             self.size = (rows, cols);
+            // The cells it held have moved, and may be past the new edge (vt100 then
+            // subtracts past zero copying it).
+            self.selection = None;
             let _ = self.master.resize(PtySize {
                 rows,
                 cols,
