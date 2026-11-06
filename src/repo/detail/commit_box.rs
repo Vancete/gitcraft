@@ -59,19 +59,29 @@ impl RepoTab {
             }
         }
         ui.add_space(2.0);
-        let summary = ui.add(
+        // `--continue` commits with the message git kept: edits here would be lost.
+        let summary = ui.add_enabled(
+            !rebasing,
             egui::TextEdit::singleline(&mut self.commit_summary)
                 .hint_text("Summary")
                 .desired_width(f32::INFINITY)
                 .margin(egui::Margin::symmetric(8, 6)),
         );
-        let body = ui.add(
+        let body = ui.add_enabled(
+            !rebasing,
             egui::TextEdit::multiline(&mut self.commit_body)
                 .hint_text("Description (optional)")
                 .desired_width(f32::INFINITY)
                 .desired_rows(3)
                 .margin(egui::Margin::symmetric(8, 6)),
         );
+        if rebasing {
+            ui.label(
+                RichText::new("The commit keeps its message: reword it once this is done.")
+                    .color(t.text_faint)
+                    .small(),
+            );
+        }
         let len = self.commit_summary.chars().count();
         if len > 72 {
             ui.label(

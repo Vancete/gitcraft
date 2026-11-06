@@ -127,7 +127,11 @@ impl ConflictEditor {
                             .color(t.text_faint),
                     );
                     if self.manual {
-                        ui.label(RichText::new("edited by hand").color(t.warning).small());
+                        ui.label(RichText::new("edited by hand").color(t.warning).small())
+                            .on_hover_text(
+                                "Choices no longer change the result: \"Back to choices\" \
+                                 applies them, and drops the edits",
+                            );
                         if ui.small_button("Back to choices").clicked() {
                             self.manual = false;
                             self.result = render(

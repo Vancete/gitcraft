@@ -135,20 +135,7 @@ impl RepoTab {
             staged.len(),
             (!staged.is_empty() && idle).then_some("Unstage all"),
         ) {
-            let all: Vec<&str> = if head.is_empty() {
-                vec![
-                    "--literal-pathspecs",
-                    "rm",
-                    "--cached",
-                    "-r",
-                    "-q",
-                    "--",
-                    ".",
-                ]
-            } else {
-                vec!["reset", "-q"]
-            };
-            acts.push(stage_action("Unstage all", vec![all]));
+            acts.push(stage_action("Unstage all", vec![unstage_all_args(head)]));
         }
         let buttons = [("minus", "Unstage")];
         self.work_list(
@@ -245,6 +232,26 @@ fn stage_action(label: &str, steps: Vec<Vec<&str>>) -> Action {
     }
 }
 
+/// `git reset` of every path, or `git rm --cached` of them all before the first commit (no
+/// HEAD to reset to).
+fn unstage_all_args(head: &str) -> Vec<&'static str> {
+    if head.is_empty() {
+        vec![
+            "--literal-pathspecs",
+            "rm",
+            "--cached",
+            "-r",
+            "-q",
+            "--",
+            ".",
+        ]
+    } else {
+        // With a path: a bare `reset` would also end the merge or cherry-pick in progress
+        // (MERGE_HEAD gone, and its commit no merge).
+        vec!["--literal-pathspecs", "reset", "-q", "--", "."]
+    }
+}
+
 fn discard_dialog(f: &StatusFile) -> Dialog {
     if f.area == Area::Untracked {
         Dialog::confirm(
@@ -322,4 +329,49 @@ fn empty_hint(ui: &mut Ui, text: &str) {
         egui::FontId::proportional(11.5),
         t.text_faint,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unstaging everything in the middle of a merge leaves the merge going on.
+    #[test]
+    fn unstage_all_keeps_the_merge_in_progress() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("gitcraft-unstage-all-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let git = |args: &[&str]| crate::git::run(Some(&dir), args);
+        let write = |name: &str, text: &str| {
+            std::fs::write(dir.join(name), text).map_err(|e| e.to_string())
+        };
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["config", "commit.gpgSign", "false"],
+        ] {
+            git(args)?;
+        }
+        write("a", "a\n")?;
+        git(&["add", "-A"])?;
+        git(&["commit", "-qm", "a"])?;
+        git(&["checkout", "-qb", "side"])?;
+        write("b", "b\n")?;
+        git(&["add", "-A"])?;
+        git(&["commit", "-qm", "b"])?;
+        git(&["checkout", "-q", "main"])?;
+        write("c", "c\n")?;
+        git(&["add", "-A"])?;
+        git(&["commit", "-qm", "c"])?;
+        git(&["merge", "-q", "--no-commit", "--no-ff", "side"])?;
+        let head = git(&["rev-parse", "HEAD"])?;
+        git(&unstage_all_args(head.trim()))?;
+        let merging = git(&["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok();
+        let staged = git(&["diff", "--cached", "--name-only"])?;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(merging, "the merge was ended");
+        assert_eq!(staged.trim(), "");
+        Ok(())
+    }
 }

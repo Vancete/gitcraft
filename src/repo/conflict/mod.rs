@@ -161,10 +161,52 @@ fn render(segments: &[Segment], choices: &[Option<Choice>], labels: (&str, &str)
     out
 }
 
-fn start_markers(text: &str) -> usize {
+/// The lines of `text` that look like one of git's conflict markers.
+fn marker_lines(text: &str) -> impl Iterator<Item = &str> {
     text.lines()
-        .filter(|l| is_marker(l.trim_end_matches('\r'), '<'))
-        .count()
+        .map(|l| l.trim_end_matches('\r'))
+        .filter(|l| ['<', '|', '=', '>'].iter().any(|&kind| is_marker(l, kind)))
+}
+
+/// How many conflicts are left in `result`: each whole one, and what is left of those taken
+/// apart by hand (a marker deleted, the others kept). `segments`: the file as it was parsed,
+/// whose marker-like lines that are text (a start marker that never closed, a heading's
+/// `=======` on one side) may stay.
+fn unresolved_in(result: &str, segments: &[Segment]) -> usize {
+    use std::collections::HashMap;
+    let mut text_markers: HashMap<&str, usize> = HashMap::new();
+    for seg in segments {
+        let texts = match seg {
+            Segment::Common(text) => [Some(text), None, None],
+            Segment::Conflict { ours, base, theirs } => [Some(ours), base.as_ref(), Some(theirs)],
+        };
+        for line in texts.into_iter().flatten().flat_map(|t| marker_lines(t)) {
+            *text_markers.entry(line).or_default() += 1;
+        }
+    }
+    let (now, _, _) = parse(result);
+    let mut whole = 0;
+    // Marker lines outside a whole conflict that the file didn't have as text, by kind.
+    let (mut starts, mut middles, mut ends) = (0, 0, 0);
+    for seg in &now {
+        let text = match seg {
+            Segment::Conflict { .. } => {
+                whole += 1;
+                continue;
+            }
+            Segment::Common(text) => text,
+        };
+        for line in marker_lines(text) {
+            match text_markers.get_mut(line) {
+                Some(n) if *n > 0 => *n -= 1,
+                _ if line.starts_with('<') => starts += 1,
+                _ if line.starts_with('>') => ends += 1,
+                _ => middles += 1,
+            }
+        }
+    }
+    // A conflict taken apart keeps its start or its end marker, or at least a middle one.
+    whole + starts.max(ends).max(usize::from(middles > 0))
 }
 
 impl ConflictEditor {
@@ -226,25 +268,19 @@ impl ConflictEditor {
                 Some(choice)
             };
         }
-        self.manual = false;
-        self.result = render(
-            &self.segments,
-            &self.choices,
-            (&self.ours_label, &self.theirs_label),
-        );
+        // Edited by hand: the choice waits for "Back to choices" rather than undo the edits.
+        if !self.manual {
+            self.result = render(
+                &self.segments,
+                &self.choices,
+                (&self.ours_label, &self.theirs_label),
+            );
+        }
     }
 
+    /// The conflicts left in the result, by its markers (also after editing it by hand).
     fn unresolved(&self) -> usize {
-        // A start marker that never closed is kept as plain text: not a conflict to resolve.
-        let kept_as_text: usize = self
-            .segments
-            .iter()
-            .map(|s| match s {
-                Segment::Common(text) => start_markers(text),
-                Segment::Conflict { .. } => 0,
-            })
-            .sum();
-        start_markers(&self.result).saturating_sub(kept_as_text)
+        unresolved_in(&self.result, &self.segments)
     }
 
     pub fn save(&self, repo: &Path) -> Result<(), String> {
@@ -356,6 +392,77 @@ mod tests {
         assert_eq!(ed.unresolved(), 1);
         ed.choose(0, Choice::Ours);
         assert_eq!(ed.unresolved(), 0);
+    }
+
+    fn editor(text: &str) -> ConflictEditor {
+        let (segments, ours_label, theirs_label) = parse(text);
+        let conflicts = segments
+            .iter()
+            .filter(|s| matches!(s, Segment::Conflict { .. }))
+            .count();
+        ConflictEditor {
+            path: "f".into(),
+            choices: vec![None; conflicts],
+            segments,
+            opened: text.into(),
+            result: text.into(),
+            manual: false,
+            ours_label,
+            theirs_label,
+            rebase: false,
+            solving: false,
+            on_disk: conflicts,
+        }
+    }
+
+    /// Markers left by a hand edit keep the file from being saved as resolved, also when the
+    /// edit removed a start marker the file had as text.
+    #[test]
+    fn hand_edits_that_leave_markers_are_unresolved() {
+        let text = "a\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> b\nc\n<<<<<<< not a conflict\nd\n";
+        let mut ed = editor(text);
+        assert_eq!(ed.unresolved(), 1);
+        // The stray line deleted by hand, the real conflict still there.
+        ed.manual = true;
+        ed.result = text.replacen("<<<<<<< not a conflict\n", "", 1);
+        assert_eq!(ed.unresolved(), 1);
+        assert!(
+            ed.save(Path::new("/nonexistent"))
+                .is_err_and(|e| e.contains("unresolved"))
+        );
+        // A conflict taken apart: its end marker deleted, the rest kept.
+        let real = "a\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> b\nc\n";
+        let mut ed = editor(real);
+        ed.manual = true;
+        ed.result = "a\n<<<<<<< HEAD\nx\n=======\ny\nc\n".into();
+        assert_eq!(ed.unresolved(), 1);
+        ed.result = "a\nx\n=======\ny\nc\n".into();
+        assert_eq!(ed.unresolved(), 1);
+        assert!(
+            ed.save(Path::new("/nonexistent"))
+                .is_err_and(|e| e.contains("unresolved"))
+        );
+        ed.result = "a\nxy\nc\n".into();
+        assert_eq!(ed.unresolved(), 0);
+        // A side that has a marker-like line as text (a heading's underline) can be chosen.
+        let heading = "<<<<<<< HEAD\nx\n=======\nTitles\n=======\n>>>>>>> b\n";
+        let mut ed = editor(heading);
+        ed.choose(0, Choice::Theirs);
+        assert_eq!(ed.result, "Titles\n=======\n");
+        assert_eq!(ed.unresolved(), 0);
+    }
+
+    /// Choosing after editing the result by hand keeps the edits, as "Back to choices" says.
+    #[test]
+    fn choices_wait_while_edited_by_hand() {
+        let mut ed = editor(FILE);
+        ed.choose(0, Choice::Ours);
+        ed.manual = true;
+        ed.result.push_str("my edit\n");
+        let edited = ed.result.clone();
+        ed.choose(1, Choice::Theirs);
+        assert_eq!(ed.result, edited);
+        assert_eq!(ed.choices, vec![Some(Choice::Ours), Some(Choice::Theirs)]);
     }
 
     #[test]
