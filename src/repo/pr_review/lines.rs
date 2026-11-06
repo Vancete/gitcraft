@@ -33,7 +33,10 @@ pub(in crate::repo) fn target_of(
 /// Whether a comment's suggestion can be committed: GitHub takes it only for lines of the file as
 /// it is now, on a pull request that's still going.
 pub(super) fn suggestion_applies(thread: &Thread, comment_pending: bool, open: bool) -> bool {
-    open && !comment_pending && thread.side == DiffSide::Right && !thread.starts_left
+    open && !comment_pending
+        && !thread.outdated
+        && thread.side == DiffSide::Right
+        && !thread.starts_left
 }
 
 /// Which lines a suggestion replaces.
@@ -193,6 +196,14 @@ mod tests {
         assert!(
             !suggestion_applies(&mixed, false, true),
             "starts on the old file"
+        );
+        let outdated = Thread {
+            outdated: true,
+            ..thread("a.rs", 3, DiffSide::Right, false, 1)
+        };
+        assert!(
+            !suggestion_applies(&outdated, false, true),
+            "its line number is from an older commit"
         );
     }
 

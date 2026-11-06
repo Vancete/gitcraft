@@ -99,8 +99,8 @@ impl ConflictEditor {
                 acts.push(Action::Ops {
                     label: format!("{label} for {}", self.path),
                     ops: ops(&[
-                        &["checkout", side, "--", &self.path],
-                        &["add", "--", &self.path],
+                        &["--literal-pathspecs", "checkout", side, "--", &self.path],
+                        &["--literal-pathspecs", "add", "--", &self.path],
                     ]),
                     refresh: Refresh::Status,
                 });

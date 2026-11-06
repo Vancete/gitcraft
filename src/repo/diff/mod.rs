@@ -242,8 +242,8 @@ fn highlight_sides(path: &str, lines: &[DiffLine], dark: bool) -> Vec<Option<Spa
 /// `git restore --staged`, or `git rm --cached` before the first commit (no HEAD to restore from).
 pub(super) fn unstage_args<'a>(head: &str, path: &'a str) -> Vec<&'a str> {
     if head.is_empty() {
-        vec!["rm", "--cached", "-q", "--", path]
+        vec!["--literal-pathspecs", "rm", "--cached", "-q", "--", path]
     } else {
-        vec!["restore", "--staged", "--", path]
+        vec!["--literal-pathspecs", "restore", "--staged", "--", path]
     }
 }

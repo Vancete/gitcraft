@@ -295,7 +295,10 @@ mod tests {
         assert!(ci.loading, "no second read while the first is on its way");
         let fork = HashMap::from([("abc".to_owned(), passed())]);
         ci.arrived(false, Ok(fork));
-        assert!(ci.by_sha.is_empty(), "the fork's statuses aren't upstream's");
+        assert!(
+            ci.by_sha.is_empty(),
+            "the fork's statuses aren't upstream's"
+        );
         assert!(!ci.loading);
         assert!(ci.next.is_some(), "read again from upstream");
         // Upstream's own answer is taken.

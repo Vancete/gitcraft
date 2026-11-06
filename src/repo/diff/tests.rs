@@ -551,3 +551,37 @@ fn changed_part_gets_its_own_section() {
     assert_eq!(pieces, vec!["let x = ", "2", ";"]);
     assert_eq!(job.sections[1].format.background, Color32::GREEN);
 }
+
+/// Unstaging `[ab].txt` leaves `a.txt` staged: write commands take file names literally.
+#[test]
+fn unstaging_a_file_does_not_treat_its_name_as_a_pattern() {
+    let dir = std::env::temp_dir().join(format!("gitcraft-unstage-literal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let git = |args: &[&str]| git::run(Some(&dir), args);
+    let staged = || git(&["diff", "--cached", "--name-only"]);
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.name", "t"],
+        &["config", "user.email", "t@t"],
+    ] {
+        assert!(git(args).is_ok());
+    }
+    for name in ["a.txt", "[ab].txt"] {
+        let _ = std::fs::write(dir.join(name), b"x\n");
+    }
+    // Before the first commit (`rm --cached`), then after it (`restore --staged`).
+    assert!(git(&["add", "-A"]).is_ok());
+    assert!(git(&unstage_args("", "[ab].txt")).is_ok());
+    let before_commit = staged();
+    assert!(git(&["commit", "-q", "-m", "base"]).is_ok());
+    for name in ["a.txt", "[ab].txt"] {
+        let _ = std::fs::write(dir.join(name), b"y\n");
+    }
+    assert!(git(&["add", "-A"]).is_ok());
+    assert!(git(&unstage_args("HEAD", "[ab].txt")).is_ok());
+    let after_commit = staged();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(before_commit.as_deref().map(str::trim), Ok("a.txt"));
+    assert_eq!(after_commit.as_deref().map(str::trim), Ok("a.txt"));
+}

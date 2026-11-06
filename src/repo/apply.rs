@@ -233,7 +233,15 @@ impl RepoTab {
                 if git::is_tracked(&self.path, path) {
                     self.run_ops(
                         &format!("Ignore {pattern}"),
-                        ops(&[&["rm", "-r", "--cached", "--quiet", "--", path]]),
+                        ops(&[&[
+                            "--literal-pathspecs",
+                            "rm",
+                            "-r",
+                            "--cached",
+                            "--quiet",
+                            "--",
+                            path,
+                        ]]),
                         Refresh::Status,
                         OpKind::plain(),
                         ctx,
@@ -345,7 +353,7 @@ impl RepoTab {
                 let file = editor.path.clone();
                 self.run_ops(
                     "Mark resolved",
-                    ops(&[&["add", "--", &file]]),
+                    ops(&[&["--literal-pathspecs", "add", "--", &file]]),
                     Refresh::Status,
                     OpKind::plain(),
                     ctx,

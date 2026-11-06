@@ -85,7 +85,7 @@ impl RepoTab {
                 RowClick::Open => acts.push(Action::OpenDiff(DiffKey::Work(f.clone()))),
                 RowClick::Button(_) => acts.push(stage_action(
                     "Mark resolved",
-                    vec![vec!["add", "--", &f.path]],
+                    vec![vec!["--literal-pathspecs", "add", "--", &f.path]],
                 )),
                 RowClick::None => {}
             },
@@ -113,9 +113,10 @@ impl RepoTab {
             |acts, f, click| match click {
                 RowClick::Open => acts.push(Action::OpenDiff(DiffKey::Work(f.clone()))),
                 RowClick::Button(0) => acts.push(Action::Dialog(discard_dialog(f))),
-                RowClick::Button(_) => {
-                    acts.push(stage_action("Stage", vec![vec!["add", "--", &f.path]]))
-                }
+                RowClick::Button(_) => acts.push(stage_action(
+                    "Stage",
+                    vec![vec!["--literal-pathspecs", "add", "--", &f.path]],
+                )),
                 RowClick::None => {}
             },
         );
@@ -135,7 +136,15 @@ impl RepoTab {
             (!staged.is_empty() && idle).then_some("Unstage all"),
         ) {
             let all: Vec<&str> = if head.is_empty() {
-                vec!["rm", "--cached", "-r", "-q", "--", "."]
+                vec![
+                    "--literal-pathspecs",
+                    "rm",
+                    "--cached",
+                    "-r",
+                    "-q",
+                    "--",
+                    ".",
+                ]
             } else {
                 vec!["reset", "-q"]
             };
@@ -245,7 +254,7 @@ fn discard_dialog(f: &StatusFile) -> Dialog {
                 f.path
             ),
             "Delete file",
-            ops(&[&["clean", "-f", "-q", "--", &f.path]]),
+            ops(&[&["--literal-pathspecs", "clean", "-f", "-q", "--", &f.path]]),
             None,
         )
         .refresh(Refresh::Status)
@@ -257,7 +266,7 @@ fn discard_dialog(f: &StatusFile) -> Dialog {
                 f.path
             ),
             "Discard",
-            ops(&[&["restore", "--", &f.path]]),
+            ops(&[&["--literal-pathspecs", "restore", "--", &f.path]]),
             None,
         )
         .refresh(Refresh::Status)
