@@ -29,6 +29,11 @@ impl RepoTab {
         let t = Tokens::get(ui.ctx());
         let badges = badges(&row.commit.refs, &self.refs);
         let (Some(first), Some(node_x)) = (badges.first(), row.node_x) else {
+            // No pill was right-clicked: forget one right-clicked on this row before, which
+            // may have moved off it since, or its menu would offer that branch here.
+            if resp.secondary_clicked() {
+                ui.data_mut(|d| d.insert_temp(pill_menu_id(&row.commit.hash), None::<String>));
+            }
             return resp;
         };
         let (rect, mid, gx, cols) = (row.rect, row.mid(), row.gx, row.cols);
@@ -129,12 +134,20 @@ impl RepoTab {
         // The checked-out branch's remote pill, further on than the branch: pull.
         let current = self.refs.current.as_deref() == Some(badge.label.as_str());
         if badge.kind == BadgeKind::Branch && !badge.local && current {
+            // Only for the branch it tracks: `git pull` brings that one in, not another
+            // remote's branch of the same name.
             let behind = self
                 .refs
                 .local
                 .iter()
                 .find(|b| b.name == badge.label)
-                .is_some_and(|b| b.ahead_behind().1 > 0);
+                .is_some_and(|b| {
+                    b.ahead_behind().1 > 0
+                        && badge
+                            .remotes
+                            .iter()
+                            .any(|r| b.upstream == format!("{r}/{}", badge.label))
+                });
             return behind.then_some(Action::Pull);
         }
         match badge.kind {
@@ -396,4 +409,50 @@ fn truncate(painter: &Painter, text: &str, font: &FontId, width: f32) -> String 
         }
     }
     if lo == 0 { "…".to_owned() } else { cut(lo) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::{Branch, Refs};
+
+    fn tab(refs: Refs) -> RepoTab {
+        let ctx = egui::Context::default();
+        let mut tab = RepoTab::new_deferred("/nonexistent/pills-test".into(), &ctx);
+        tab.refs = refs;
+        tab
+    }
+
+    fn remote_pill(label: &str, remote: &str) -> Badge {
+        Badge {
+            label: label.to_owned(),
+            kind: BadgeKind::Branch,
+            local: false,
+            remotes: vec![remote.to_owned()],
+            head: false,
+        }
+    }
+
+    #[test]
+    fn only_the_tracked_remote_pill_of_the_checked_out_branch_pulls() {
+        let main = Branch {
+            name: "main".to_owned(),
+            target: "a".to_owned(),
+            is_head: true,
+            upstream: "origin/main".to_owned(),
+            track: "[behind 2]".to_owned(),
+        };
+        let tab = tab(Refs {
+            local: vec![main],
+            current: Some("main".to_owned()),
+            head: "a".to_owned(),
+            ..Refs::default()
+        });
+        assert!(matches!(
+            tab.pill_checkout(&remote_pill("main", "origin")),
+            Some(Action::Pull)
+        ));
+        // `git pull` would bring in origin/main, not fork/main.
+        assert!(tab.pill_checkout(&remote_pill("main", "fork")).is_none());
+    }
 }

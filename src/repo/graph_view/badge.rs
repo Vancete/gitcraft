@@ -57,21 +57,27 @@ impl Badge {
 pub(super) fn badges(decorations: &[String], refs: &Refs) -> Vec<Badge> {
     // The remote whose branch list has it, else the longest remote it is under (`my/fork/main`
     // is `my/fork`'s even when there is a remote `my`), unless it is a local branch's name.
-    let remote_of = |d: &str| {
+    // `tracking`: it is known to be a remote-tracking branch (a full `refs/remotes/` name),
+    // then of its first part when no remote fits (one since removed from the config).
+    let remote_of = |d: &str, tracking: bool| {
         let remote = refs
             .remotes
             .iter()
             .find(|(_, list)| list.iter().any(|b| b.name == d))
-            .map(|(remote, _)| remote.as_str())
+            .map(|(remote, _)| remote.to_owned())
             .or_else(|| {
-                if refs.local.iter().any(|b| b.name == d) {
+                if !tracking && refs.local.iter().any(|b| b.name == d) {
                     return None;
                 }
                 let names: Vec<&str> = refs.remotes.iter().map(|(r, _)| r.as_str()).collect();
-                sidebar::remote_of(d, &names)
+                match sidebar::remote_of(d, &names) {
+                    Some(remote) => Some(remote.to_owned()),
+                    None if tracking => d.split_once('/').map(|(remote, _)| remote.to_owned()),
+                    None => None,
+                }
             })?;
-        let branch = sidebar::remote_short(d, remote)?;
-        Some((remote.to_owned(), branch.to_owned()))
+        let branch = sidebar::remote_short(d, &remote)?;
+        Some((branch.to_owned(), remote))
     };
     fn branch(out: &mut Vec<Badge>, name: &str) -> usize {
         match out
@@ -93,7 +99,9 @@ pub(super) fn badges(decorations: &[String], refs: &Refs) -> Vec<Badge> {
     }
     let mut out: Vec<Badge> = Vec::new();
     for d in decorations {
+        // With `log.decorate=full` in the user's config, `%D` gives full ref names.
         if let Some(name) = d.strip_prefix("HEAD -> ") {
+            let name = name.strip_prefix("refs/heads/").unwrap_or(name);
             let i = branch(&mut out, name);
             if let Some(b) = out.get_mut(i) {
                 b.local = true;
@@ -108,6 +116,7 @@ pub(super) fn badges(decorations: &[String], refs: &Refs) -> Vec<Badge> {
                 head: true,
             });
         } else if let Some(tag) = d.strip_prefix("tag: ") {
+            let tag = tag.strip_prefix("refs/tags/").unwrap_or(tag);
             out.push(Badge {
                 label: tag.to_owned(),
                 kind: BadgeKind::Tag,
@@ -115,7 +124,15 @@ pub(super) fn badges(decorations: &[String], refs: &Refs) -> Vec<Badge> {
                 remotes: Vec::new(),
                 head: false,
             });
-        } else if let Some((remote, name)) = remote_of(d) {
+        } else if let Some(name) = d.strip_prefix("refs/heads/") {
+            let i = branch(&mut out, name);
+            if let Some(b) = out.get_mut(i) {
+                b.local = true;
+            }
+        } else if let Some((name, remote)) = match d.strip_prefix("refs/remotes/") {
+            Some(rest) => remote_of(rest, true),
+            None => remote_of(d, false),
+        } {
             // `origin/HEAD` only says which branch the remote defaults to.
             if name == "HEAD" {
                 continue;
@@ -214,6 +231,43 @@ mod tests {
         assert_eq!(b[0].label, "origin/wip");
         assert!(b[0].local && b[0].remotes.is_empty());
         assert_eq!(b[0].git_ref(), "origin/wip");
+    }
+
+    #[test]
+    fn full_ref_names_make_the_same_pills() {
+        // `%D` with `log.decorate=full` in the user's config.
+        let refs = Refs {
+            local: vec![branch("main"), branch("x")],
+            remotes: vec![("origin".to_owned(), vec![branch("origin/main")])],
+            ..Refs::default()
+        };
+        let decos = [
+            "HEAD -> refs/heads/main",
+            "refs/remotes/origin/main",
+            "refs/remotes/origin/HEAD",
+            "tag: refs/tags/x",
+            "refs/heads/x",
+            "refs/remotes/gone/topic",
+        ]
+        .map(String::from);
+        let b = badges(&decos, &refs);
+        let pills: Vec<(&str, bool, &[String])> = b
+            .iter()
+            .map(|b| (b.label.as_str(), b.local, b.remotes.as_slice()))
+            .collect();
+        assert_eq!(
+            pills,
+            vec![
+                ("main", true, &["origin".to_owned()][..]),
+                ("x", true, &[][..]),
+                ("topic", false, &["gone".to_owned()][..]),
+                ("x", false, &[][..]),
+            ]
+        );
+        assert!(b[0].head);
+        assert_eq!(b[1].git_ref(), "x");
+        assert_eq!(b[2].git_ref(), "gone/topic");
+        assert_eq!(b[3].kind, BadgeKind::Tag);
     }
 
     #[test]
