@@ -124,8 +124,11 @@ fn tool_command(forge: Forge) -> Command {
         .env("NO_COLOR", "1");
     // About the repository it runs in and the host it is given, not one the environment names:
     // `GH_REPO` would answer for another repository, `GH_HOST` send `gh api` (and `-R owner/repo`)
-    // to another host than github.com.
-    cmd.env_remove("GH_REPO").env_remove("GH_HOST");
+    // to another host than github.com, `GITLAB_HOST` point `glab` at another GitLab than the
+    // remote's.
+    cmd.env_remove("GH_REPO")
+        .env_remove("GH_HOST")
+        .env_remove("GITLAB_HOST");
     crate::shell_path::apply(&mut cmd);
     #[cfg(windows)]
     {
@@ -384,7 +387,13 @@ mod tests {
                     (text(k), v.map(text))
                 })
                 .collect();
-            for removed in ["CLICOLOR_FORCE", "GH_FORCE_TTY", "GH_REPO", "GH_HOST"] {
+            for removed in [
+                "CLICOLOR_FORCE",
+                "GH_FORCE_TTY",
+                "GH_REPO",
+                "GH_HOST",
+                "GITLAB_HOST",
+            ] {
                 assert_eq!(envs.get(removed), Some(&None), "{removed}");
             }
             assert_eq!(envs.get("NO_COLOR"), Some(&Some("1".to_owned())));

@@ -37,6 +37,12 @@ impl ImageLoader for Fitting {
     }
 
     fn load(&self, ctx: &egui::Context, uri: &str, size_hint: SizeHint) -> ImageLoadResult {
+        // Asked before the SVG loader: the raster decoder would fail on an SVG (the app's own
+        // icons) and that error would end the search for a loader before the SVG one is asked.
+        // SVGs are drawn at the size asked for, so never too big anyway.
+        if is_svg(uri) {
+            return Err(egui::load::LoadError::NotSupported);
+        }
         match self.inner.load(ctx, uri, size_hint)? {
             ImagePoll::Ready { image } => {
                 let max = ctx.input(|i| i.max_texture_side).max(1);
@@ -80,6 +86,15 @@ impl ImageLoader for Fitting {
     fn has_pending(&self) -> bool {
         self.inner.has_pending()
     }
+}
+
+/// Whether `uri` names an SVG picture, by its extension.
+fn is_svg(uri: &str) -> bool {
+    let path = uri.split(['?', '#']).next().unwrap_or(uri);
+    path.len() >= 4
+        && path
+            .get(path.len() - 4..)
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(".svg"))
 }
 
 fn fits(image: &ColorImage, max: usize) -> bool {
@@ -133,6 +148,29 @@ mod tests {
     }
 
     /// Through the loader, as the image views ask for it: what comes back fits.
+    /// The app's icons are SVGs: asked first, this loader leaves them to the SVG loader.
+    #[test]
+    fn icons_still_reach_the_svg_loader() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        install(&ctx);
+        let uri = "bytes://icons/check.svg";
+        ctx.include_bytes(uri, include_bytes!("../assets/icons/check.svg").to_vec());
+        let started = std::time::Instant::now();
+        loop {
+            match ctx
+                .try_load_image(uri, SizeHint::default())
+                .map_err(|e| e.to_string())?
+            {
+                ImagePoll::Ready { .. } => return Ok(()),
+                ImagePoll::Pending { .. } if started.elapsed().as_secs() < 10 => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                ImagePoll::Pending { .. } => return Err("never loaded".to_owned()),
+            }
+        }
+    }
+
     #[test]
     fn the_loader_hands_out_pictures_that_fit() -> Result<(), String> {
         let ctx = egui::Context::default();

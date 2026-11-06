@@ -143,7 +143,9 @@ fn tag_object(repo: &Path, name: &str) -> Option<String> {
 /// gone: made at the commit instead, it would come back a lightweight tag, message lost.
 fn delete_tag_undo(name: &str, object: &str) -> Undo {
     Undo::Custom {
-        undo: ops(&[&["tag", "--", name, object]]),
+        // `--no-sign`: with tag.gpgSign set, git would make a new signed tag (asking for a
+        // message) instead of pointing the name at the object that was there.
+        undo: ops(&[&["tag", "--no-sign", "--", name, object]]),
         redo: ops(&[&["tag", "-d", "--", name]]),
     }
 }

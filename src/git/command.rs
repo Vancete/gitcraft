@@ -249,6 +249,9 @@ mod tests {
         let _ = std::fs::remove_file(&marker);
         let script = marking_script(dir, &marker)?;
         let mut cmd = git_cmd();
+        // Not the user's own config, whose `core.askPass` would stand in for the script.
+        cmd.env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null");
         // What the app inherited, which `unattended` then has to override.
         cmd.env("SSH_ASKPASS", &script);
         if git_askpass {

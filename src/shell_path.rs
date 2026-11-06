@@ -44,13 +44,48 @@ pub fn terminal_path() -> Option<&'static OsString> {
     .as_ref()
 }
 
-/// `own` without its relative folders, when it has any.
+/// `own` without its relative folders, when it has any. With none left, the system's own
+/// folders: an empty PATH would be the current folder again, the repository's.
 fn absolute_only(own: &OsString) -> Option<OsString> {
-    let dirs: Vec<PathBuf> = std::env::split_paths(own)
+    let mut dirs: Vec<PathBuf> = std::env::split_paths(own)
         .filter(|d| d.is_absolute())
         .collect();
+    if dirs.is_empty() {
+        dirs = system_dirs();
+    }
     let joined = std::env::join_paths(dirs).ok()?;
     (joined != *own).then_some(joined)
+}
+
+/// Where a system keeps its programs, for a PATH that had nothing else.
+fn system_dirs() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        std::env::var_os("SystemRoot")
+            .map(|root| vec![PathBuf::from(root).join("System32")])
+            .unwrap_or_default()
+    } else {
+        ["/usr/local/bin", "/usr/bin", "/bin"]
+            .map(PathBuf::from)
+            .to_vec()
+    }
+}
+
+/// `program` found in the folders of [`path`] (gitcraft's own PATH without relative folders)
+/// when it is a bare name (`bash`), as it is otherwise. A program started in the repository's
+/// folder and looked up through a PATH with relative entries could be one the repository
+/// brought; the terminal's shell is found here, its PATH left as the user's.
+#[cfg(unix)]
+pub fn resolve(program: &str) -> String {
+    if program.contains('/') {
+        return program.to_owned();
+    }
+    let own = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = path().cloned().unwrap_or(own);
+    std::env::split_paths(&dirs)
+        .filter(|d| d.is_absolute())
+        .map(|d| d.join(program))
+        .find(|p| p.is_file())
+        .map_or_else(|| program.to_owned(), |p| p.display().to_string())
 }
 
 /// Gives `cmd` that PATH.
@@ -209,6 +244,21 @@ mod tests {
         let own = OsString::from(".:/usr/bin::bin");
         assert_eq!(absolute_only(&own), Some(OsString::from("/usr/bin")));
         assert_eq!(absolute_only(&OsString::from("/usr/bin:/bin")), None);
+        // Nothing absolute left: the system's folders, not an empty PATH (the current folder).
+        assert_eq!(
+            absolute_only(&OsString::from(".:bin")),
+            Some(OsString::from("/usr/local/bin:/usr/bin:/bin"))
+        );
+    }
+
+    /// A shell named without its folder is found among absolute folders, never in the
+    /// repository the terminal starts in.
+    #[cfg(unix)]
+    #[test]
+    fn a_bare_shell_name_is_found_in_an_absolute_folder() {
+        let found = resolve("sh");
+        assert!(std::path::Path::new(&found).is_absolute(), "{found}");
+        assert_eq!(resolve("/bin/zsh"), "/bin/zsh");
     }
 
     #[test]

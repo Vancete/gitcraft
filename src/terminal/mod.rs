@@ -84,6 +84,11 @@ impl Terminal {
             })
             .map_err(|e| format!("could not open a terminal: {e}"))?;
         let program = shell.program.clone();
+        // A bare name (`bash`) found among absolute folders, not through the terminal's PATH,
+        // which may have relative ones and is looked up from the repository's folder.
+        #[cfg(unix)]
+        let mut cmd = CommandBuilder::new(crate::shell_path::resolve(&program));
+        #[cfg(not(unix))]
         let mut cmd = CommandBuilder::new(&program);
         cmd.args(&shell.args);
         cmd.cwd(cwd);
