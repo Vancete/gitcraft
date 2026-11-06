@@ -208,7 +208,9 @@ fn plain_text(log: &str) -> String {
                 while chars.next_if_eq(&'\r').is_some() {}
                 // A carriage return alone starts the line over, as on a terminal: what a
                 // progress bar overwrote, GitLab's `section_start:…` marks, are not to be read.
-                if chars.peek().is_some_and(|&c| c != '\n') {
+                // Followed by nothing but colours up to the line's end (`\r\x1b[0m\n`), it
+                // overwrites nothing.
+                if !only_colours_to_line_end(chars.clone()) {
                     out.truncate(out.rfind('\n').map_or(0, |n| n + 1));
                 }
             }
@@ -224,6 +226,24 @@ fn plain_text(log: &str) -> String {
     }
     let start = out[cut..].find('\n').map_or(cut, |n| cut + n + 1);
     format!("… (the start is left out)\n{}", &out[start..])
+}
+
+/// Whether `rest` holds nothing up to its line's end (or its own end) but escape sequences
+/// that only set colours: not text, nor an erase (`ESC [ K`, `ESC [ J`), which a carriage
+/// return before it means to clear the line with.
+fn only_colours_to_line_end(mut rest: std::iter::Peekable<std::str::Chars<'_>>) -> bool {
+    loop {
+        match rest.next() {
+            None | Some('\n') => return true,
+            Some('\u{1b}') if rest.next_if_eq(&'[').is_some() => {
+                let end = rest.find(char::is_ascii_alphabetic);
+                if matches!(end, None | Some('K' | 'J')) {
+                    return false;
+                }
+            }
+            Some(_) => return false,
+        }
+    }
 }
 
 /// Whether `sha` is a full or abbreviated commit id, not anything a tool could take for more.
@@ -274,6 +294,13 @@ mod tests {
                       done\r\n\
                       twice\r\r\nend\r";
         assert_eq!(plain_text(gitlab), "Preparing\n100%\n\ndone\ntwice\nend");
+    }
+
+    /// A colour reset between a carriage return and the line's end overwrites nothing.
+    #[test]
+    fn a_line_ended_by_a_colour_reset_stays() {
+        let log = "error details\r\u{1b}[0m\nnext\r\u{1b}[0m";
+        assert_eq!(plain_text(log), "error details\nnext");
     }
 
     #[test]

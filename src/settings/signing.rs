@@ -135,11 +135,12 @@ pub(super) fn write(scope: &[&str], before: &Signing, after: &Signing) -> Result
     if after.program != before.program
         && let Some((key, others)) = program_keys(after.format()).split_first()
     {
+        // Written first: should that fail, the program set under another key is still there.
+        set(scope, key, after.program.trim())?;
         for other in others {
             // It would win over the one written.
             set(scope, other, "")?;
         }
-        set(scope, key, after.program.trim())?;
     }
     if after.key != before.key {
         set(scope, "user.signingkey", after.key.trim())?;

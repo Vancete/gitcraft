@@ -51,7 +51,7 @@ pub fn parse_suggestion(body: &str) -> Option<String> {
 
 /// The character and length of the code fence `line` opens, if it opens one.
 fn opens_fence(line: &str) -> Option<(char, usize)> {
-    let line = line.trim_start();
+    let line = fence_indent(line)?;
     let c = line.chars().next().filter(|c| matches!(c, '`' | '~'))?;
     let len = line.chars().take_while(|&x| x == c).count();
     (len >= 3).then_some((c, len))
@@ -59,8 +59,18 @@ fn opens_fence(line: &str) -> Option<(char, usize)> {
 
 /// Whether `line` closes a fence of `open` times `c`: as many of them or more, and nothing else.
 fn closes_fence(line: &str, c: char, open: usize) -> bool {
-    let line = line.trim();
+    let Some(line) = fence_indent(line) else {
+        return false;
+    };
+    let line = line.trim_end();
     line.chars().all(|x| x == c) && line.chars().count() >= open
+}
+
+/// `line` without its indent, if that is short enough for a fence (three spaces at most, as
+/// in Markdown): more makes it an indented code line, or text inside the fence.
+fn fence_indent(line: &str) -> Option<&str> {
+    let rest = line.trim_start_matches(' ');
+    (line.len() - rest.len() <= 3 && !rest.starts_with('\t')).then_some(rest)
 }
 
 /// `content` with lines `start` to `end` (counted from 1) replaced by `replacement`. Line ends stay
@@ -140,6 +150,9 @@ mod tests {
         // One after a code block still counts.
         let after = "```rust\nold();\n```\n```suggestion\nnew();\n```";
         assert_eq!(parse_suggestion(after).as_deref(), Some("new();\n"));
+        // Indented four spaces, backticks are a line of code, not a fence: it hides nothing.
+        let indented = "Try:\n\n    ```\n\n```suggestion\nnew();\n```";
+        assert_eq!(parse_suggestion(indented).as_deref(), Some("new();\n"));
     }
 
     #[test]

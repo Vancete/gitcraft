@@ -271,8 +271,11 @@ impl RepoTab {
         }
         self.lfs = loaded.lfs;
         let forge = forge::detect(&loaded.remotes);
+        // Another project (origin pointed elsewhere): its pull requests are other ones, under
+        // the same numbers, and a list asked of the old one is not to be taken in.
+        let moved = loaded.remotes != self.remotes;
         self.remotes = loaded.remotes;
-        if forge != self.forge {
+        if forge != self.forge || moved {
             self.forge = forge;
             self.prs.clear();
             self.prs_loaded = None;
