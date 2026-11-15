@@ -32,6 +32,7 @@ const FEATURES: &[(&str, &[&str])] = &[
             "Right-click a commit or a pill for branches, tags, merge, rebase, cherry-pick, revert, reset and more.",
             "Search messages, authors and hashes, or switch to Code to find the commits that added or removed some text.",
             "Interactive rebase: reorder, reword, squash, fix up or drop commits, then start it.",
+            "Stashes show in the graph as dashed boxes above the commit they were made on; click one to see it, right-click it to apply, pop or drop it.",
         ],
     ),
     (
@@ -46,6 +47,7 @@ const FEATURES: &[(&str, &[&str])] = &[
         &[
             "Stage, unstage or discard whole files from the right pane.",
             "In a file's diff, stage, unstage or discard one hunk, or click the lines you want and act on only those.",
+            "A diff shows only the changes or the whole file, unified or side by side, and remembers both. Drag over its lines to select text and Ctrl+C to copy it; the strip by the scrollbar marks where the changes are.",
             "Write the summary and description and commit; amend the last commit; pick the identity you commit as.",
             "Double-click a commit's message in the right pane to edit it (any commit of the checked-out branch with no merges after it).",
             "Undo and redo commits, merges, rebases, resets, checkouts, branches, tags and stashes.",

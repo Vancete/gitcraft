@@ -612,7 +612,10 @@ impl RepoTab {
                         DiffKey::Work(_) => (None, true),
                     };
                     widgets::file_menu(&title, &path, rev, ignorable, acts);
-                    widgets::chip(ui, &origin, t.text_dim);
+                    // Lines picked bring their buttons, with no room left for the origin.
+                    if !(partial && chosen > 0) {
+                        widgets::chip(ui, &origin, t.text_dim);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if icons::small_button(ui, "x", "Close (Esc)").clicked() {
                             acts.push(Action::CloseDiff);
