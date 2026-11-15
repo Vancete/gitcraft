@@ -493,12 +493,31 @@ fn parse_numstat(out: &str) -> Vec<(String, Option<u32>, Option<u32>)> {
     result
 }
 
-/// The patch of one file in a commit (`ignore_ws`: `-w`).
-pub fn file_diff(repo: &Path, hash: &str, path: &str, ignore_ws: bool) -> Result<String, String> {
-    let mut args = vec!["show", "--format=", "--diff-merges=first-parent", "-M"];
-    if ignore_ws {
-        args.push("-w");
+/// How a patch is read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiffOptions {
+    /// `-w`.
+    pub ignore_ws: bool,
+    /// The whole file as context, not just the lines around the changes.
+    pub whole_file: bool,
+}
+
+impl DiffOptions {
+    fn push_args(self, args: &mut Vec<&str>) {
+        if self.ignore_ws {
+            args.push("-w");
+        }
+        if self.whole_file {
+            // More context than any file has lines: git shows each file as one hunk.
+            args.push("--unified=999999999");
+        }
     }
+}
+
+/// The patch of one file in a commit.
+pub fn file_diff(repo: &Path, hash: &str, path: &str, opts: DiffOptions) -> Result<String, String> {
+    let mut args = vec!["show", "--format=", "--diff-merges=first-parent", "-M"];
+    opts.push_args(&mut args);
     args.extend([hash, "--", path]);
     run(Some(repo), &args)
 }
@@ -528,12 +547,10 @@ pub fn range_file_diff(
     from: &str,
     to: Option<&str>,
     path: &str,
-    ignore_ws: bool,
+    opts: DiffOptions,
 ) -> Result<String, String> {
     let mut args = vec!["diff", "-M"];
-    if ignore_ws {
-        args.push("-w");
-    }
+    opts.push_args(&mut args);
     args.push(from);
     args.extend(to);
     args.extend(["--", path]);
@@ -814,16 +831,14 @@ fn parse_status(out: &str) -> WorkStatus {
     status
 }
 
-/// The patch of one uncommitted file (`ignore_ws`: `-w`).
-pub fn work_diff(repo: &Path, file: &StatusFile, ignore_ws: bool) -> Result<String, String> {
+/// The patch of one uncommitted file.
+pub fn work_diff(repo: &Path, file: &StatusFile, opts: DiffOptions) -> Result<String, String> {
     let path = file.path.as_str();
     let mut args: Vec<&str> = match file.area {
         Area::Staged => vec!["diff", "--cached", "-M"],
         _ => vec!["diff"],
     };
-    if ignore_ws {
-        args.push("-w");
-    }
+    opts.push_args(&mut args);
     args.extend(["--", path]);
     match file.area {
         Area::Staged | Area::Unstaged | Area::Conflicted => run(Some(repo), &args),

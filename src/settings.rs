@@ -28,6 +28,10 @@ pub struct Settings {
     /// An absolute date column (tips show a relative date either way).
     pub show_date: bool,
     pub show_hash: bool,
+    /// Diffs side by side rather than unified.
+    pub diff_split: bool,
+    /// Diffs show the whole file, not just the lines around the changes.
+    pub diff_whole_file: bool,
     /// Background fetch interval in minutes; 0 turns it off.
     pub auto_fetch_minutes: u32,
     /// Load avatars: GitHub / GitLab accounts on repositories hosted there, Gravatar otherwise.
@@ -53,6 +57,8 @@ impl Default for Settings {
             show_author: true,
             show_date: false,
             show_hash: false,
+            diff_split: false,
+            diff_whole_file: false,
             auto_fetch_minutes: 10,
             avatars: true,
             editor: "code".to_owned(),
