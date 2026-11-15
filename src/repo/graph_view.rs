@@ -213,6 +213,12 @@ impl RepoTab {
                         });
                     continue;
                 }
+                if let Some(stash) = self.stash_at(i).and_then(|s| self.stashes.get(s)) {
+                    egui::Popup::context_menu(&resp)
+                        .style(crate::theme::menu_style)
+                        .show(|ui| super::sidebar::stash_menu_items(ui, acts, &stash.name, idle));
+                    continue;
+                }
                 self.commit_menu(&resp, i, idle, acts);
             }
         });
@@ -734,6 +740,7 @@ impl RepoTab {
         };
         let painter = ui.painter_at(rect);
         let is_wip = commit.hash == WIP_HASH;
+        let stash = self.stash_at(i).and_then(|s| self.stashes.get(s));
         let is_match = self.search.matches.contains(&commit.hash);
         // The row's own band, without the gap.
         let band = rect.shrink2(vec2(0.0, ROW_GAP / 2.0));
@@ -905,11 +912,36 @@ impl RepoTab {
                 edge(&gp, node, pos2(x(lane), top), t.lane(lane), width);
             }
             for &lane in &row.outgoing {
-                let color = if is_wip { t.text_faint } else { t.lane(lane) };
+                let color = if is_wip || stash.is_some() {
+                    t.text_faint
+                } else {
+                    t.lane(lane)
+                };
                 edge(&gp, node, pos2(x(lane), bottom), color, width);
             }
 
-            if is_wip {
+            if stash.is_some() {
+                // A dashed box with the stash icon, as the toolbar's Stash button shows it.
+                let r = Rect::from_center_size(node, vec2(15.0, 15.0));
+                gp.rect_filled(r, CornerRadius::same(3), t.dock);
+                let (l, tp, rt, b) = (r.left(), r.top(), r.right(), r.bottom());
+                gp.add(egui::Shape::dashed_line(
+                    &[
+                        pos2(l, tp),
+                        pos2(rt, tp),
+                        pos2(rt, b),
+                        pos2(l, b),
+                        pos2(l, tp),
+                    ],
+                    Stroke::new(1.5, t.text_dim),
+                    2.5,
+                    2.0,
+                ));
+                // Images ignore the clip; a squeezed graph column leaves the icon out.
+                if r.right() <= gx + cols.graph {
+                    icons::paint(ui, r, "archive", 10.0, t.text_dim);
+                }
+            } else if is_wip {
                 gp.circle_filled(node, 6.0, t.dock);
                 gp.add(egui::Shape::dashed_line(
                     &circle_points(node, 6.0, 16),
