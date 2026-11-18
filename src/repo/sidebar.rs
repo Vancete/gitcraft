@@ -3,6 +3,7 @@
 
 use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
 
+use super::branch_tree::{self, LeafRow, TreeView};
 use super::widgets;
 use super::{
     Action, Dialog, Refresh, RepoTab, Undo, compare_action, fast_forward_action, merge_action, ops,
@@ -13,7 +14,9 @@ use crate::icons;
 use crate::theme::{self, Tokens};
 
 /// The pane's rows: a little taller than the file lists', 2 px more above and below.
-const ROW_H: f32 = widgets::ROW_H + 4.0;
+pub(super) const ROW_H: f32 = widgets::ROW_H + 4.0;
+/// How far in a remote's branches are, under their remote.
+const REMOTE_INDENT: f32 = 18.0;
 
 impl RepoTab {
     pub(super) fn sidebar(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
@@ -60,9 +63,19 @@ impl RepoTab {
                     )));
                 }
                 if open {
-                    for b in local {
-                        self.local_branch_row(ui, acts, b, idle);
-                    }
+                    let tree = branch_tree::build(local.iter().map(|b| (b.name.as_str(), *b)));
+                    let view = TreeView {
+                        id: egui::Id::new(("branch-folder", &self.path, "local")),
+                        filtering: !filter.is_empty(),
+                        indent: 0.0,
+                    };
+                    branch_tree::show(
+                        ui,
+                        &tree,
+                        &view,
+                        &|b: &&Branch| b.is_head,
+                        &mut |ui, row, b: &&Branch| self.local_branch_row(ui, acts, b, row, idle),
+                    );
                 }
 
                 self.remotes_section(ui, acts, idle, &filter);
@@ -151,7 +164,14 @@ impl RepoTab {
             });
     }
 
-    fn local_branch_row(&self, ui: &mut Ui, acts: &mut Vec<Action>, b: &Branch, idle: bool) {
+    fn local_branch_row(
+        &self,
+        ui: &mut Ui,
+        acts: &mut Vec<Action>,
+        b: &Branch,
+        row: LeafRow<'_>,
+        idle: bool,
+    ) {
         let (ahead, behind) = b.ahead_behind();
         // Checked out in another worktree: git won't check it out here too.
         let elsewhere = self
@@ -161,7 +181,7 @@ impl RepoTab {
         let has_pr = self.prs.iter().any(|p| p.branch == b.name);
         let r = branch_row(
             ui,
-            &b.name,
+            row,
             b.is_head,
             ahead,
             behind,
@@ -176,10 +196,11 @@ impl RepoTab {
         };
         let r = match elsewhere {
             Some(wt) => r.on_hover_text(format!(
-                "{tip}\nChecked out in worktree {}\nDouble-click to open it",
+                "{}\n{tip}\nChecked out in worktree {}\nDouble-click to open it",
+                b.name,
                 wt.path.display()
             )),
-            None => r.on_hover_text(format!("{tip}\nDouble-click to check out")),
+            None => r.on_hover_text(format!("{}\n{tip}\nDouble-click to check out", b.name)),
         };
         if r.double_clicked() && elsewhere.is_some() {
             if let Some(wt) = elsewhere {
@@ -429,7 +450,6 @@ impl RepoTab {
         if !open {
             return;
         }
-        let current = self.refs.current.clone();
         for remote in &self.remotes {
             let branches: Vec<&Branch> = self
                 .refs
@@ -441,7 +461,7 @@ impl RepoTab {
                 .collect();
             // A collapsible row per remote.
             let id = ui.id().with(("remote-open", &remote.name));
-            let mut expanded = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(true);
+            let mut expanded = ui.data_mut(|d| d.get_persisted::<bool>(id)).unwrap_or(true);
             let (rect, r) =
                 ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
             if r.hovered() {
@@ -449,7 +469,7 @@ impl RepoTab {
             }
             if r.clicked() {
                 expanded = !expanded;
-                ui.data_mut(|d| d.insert_temp(id, expanded));
+                ui.data_mut(|d| d.insert_persisted(id, expanded));
             }
             let y = rect.center().y;
             icons::paint(
@@ -517,86 +537,115 @@ impl RepoTab {
             if !expanded {
                 continue;
             }
-            for b in branches {
+            let tree = branch_tree::build(branches.iter().map(|b| {
                 let short = b
                     .name
                     .strip_prefix(&format!("{}/", remote.name))
                     .unwrap_or(&b.name);
-                let has_pr = self.prs.iter().any(|p| p.branch == short);
-                let r = branch_row_indented(ui, short, has_pr)
-                    .on_hover_text(format!("{}\nDouble-click to check out", b.name));
-                if r.double_clicked() && idle {
-                    acts.push(Action::CheckoutRemote(b.name.clone()));
-                } else if r.clicked() {
-                    acts.push(Action::SelectHash(b.target.clone()));
-                }
-                egui::Popup::context_menu(&r)
-                    .style(crate::theme::menu_style)
-                    .show(|ui| {
-                        if ui
-                            .add_enabled(idle, egui::Button::new("Check out as local branch"))
-                            .clicked()
-                        {
-                            acts.push(Action::CheckoutRemote(b.name.clone()));
-                        }
-                        if let Some(current) = current.as_deref() {
-                            if ui
-                                .add_enabled(
-                                    idle,
-                                    egui::Button::new(format!("Fast-forward {current} to it")),
-                                )
-                                .clicked()
-                            {
-                                acts.push(fast_forward_action(&b.name, current));
-                            }
-                            if ui
-                                .add_enabled(
-                                    idle,
-                                    egui::Button::new(format!("Merge into {current}")),
-                                )
-                                .clicked()
-                            {
-                                acts.push(merge_action(&b.name, current));
-                            }
-                            if ui
-                                .add_enabled(
-                                    idle,
-                                    egui::Button::new(format!("Rebase {current} onto it")),
-                                )
-                                .clicked()
-                            {
-                                acts.push(rebase_action(&b.name, current));
-                            }
-                            ui.separator();
-                            super::graph_view::compare_items(ui, acts, &b.name, current);
-                            ui.separator();
-                        }
-                        if ui.button("Create branch here…").clicked() {
-                            acts.push(Action::Dialog(Dialog::create_branch(&b.target, &b.name)));
-                        }
-                        ui.separator();
-                        if ui.button("Copy name").clicked() {
-                            ui.ctx().copy_text(b.name.clone());
-                        }
-                        ui.separator();
-                        if ui
-                            .add_enabled(idle, egui::Button::new("Delete from remote…"))
-                            .clicked()
-                        {
-                            acts.push(Action::Dialog(Dialog::confirm(
-                            "Delete remote branch",
-                            format!(
-                                "Delete “{short}” from {}? This changes the remote for everyone.",
-                                remote.name
-                            ),
-                            "Delete",
-                            ops(&[&["push", &remote.name, "--delete", short]]),
-                            None,
-                        )));
-                        }
-                    });
-            }
+                (short, *b)
+            }));
+            let view = TreeView {
+                id: egui::Id::new(("branch-folder", &self.path, "remote", &remote.name)),
+                filtering: !filter.is_empty(),
+                indent: REMOTE_INDENT,
+            };
+            branch_tree::show(
+                ui,
+                &tree,
+                &view,
+                &|_: &&Branch| false,
+                &mut |ui, row, b: &&Branch| {
+                    self.remote_branch_row(ui, acts, &remote.name, b, row, idle);
+                },
+            );
         }
+    }
+
+    fn remote_branch_row(
+        &self,
+        ui: &mut Ui,
+        acts: &mut Vec<Action>,
+        remote: &str,
+        b: &Branch,
+        row: LeafRow<'_>,
+        idle: bool,
+    ) {
+        let short = b
+            .name
+            .strip_prefix(&format!("{remote}/"))
+            .unwrap_or(&b.name);
+        let has_pr = self.prs.iter().any(|p| p.branch == short);
+        let r = remote_row(ui, row, has_pr)
+            .on_hover_text(format!("{}\nDouble-click to check out", b.name));
+        if r.double_clicked() && idle {
+            acts.push(Action::CheckoutRemote(b.name.clone()));
+        } else if r.clicked() {
+            acts.push(Action::SelectHash(b.target.clone()));
+        }
+        egui::Popup::context_menu(&r)
+            .style(crate::theme::menu_style)
+            .show(|ui| {
+                if ui
+                    .add_enabled(idle, egui::Button::new("Check out as local branch"))
+                    .clicked()
+                {
+                    acts.push(Action::CheckoutRemote(b.name.clone()));
+                }
+                if let Some(current) = self.refs.current.as_deref() {
+                    if ui
+                        .add_enabled(
+                            idle,
+                            egui::Button::new(format!("Fast-forward {current} to it")),
+                        )
+                        .clicked()
+                    {
+                        acts.push(fast_forward_action(&b.name, current));
+                    }
+                    if ui
+                        .add_enabled(
+                            idle,
+                            egui::Button::new(format!("Merge into {current}")),
+                        )
+                        .clicked()
+                    {
+                        acts.push(merge_action(&b.name, current));
+                    }
+                    if ui
+                        .add_enabled(
+                            idle,
+                            egui::Button::new(format!("Rebase {current} onto it")),
+                        )
+                        .clicked()
+                    {
+                        acts.push(rebase_action(&b.name, current));
+                    }
+                    ui.separator();
+                    super::graph_view::compare_items(ui, acts, &b.name, current);
+                    ui.separator();
+                }
+                if ui.button("Create branch here…").clicked() {
+                    acts.push(Action::Dialog(Dialog::create_branch(&b.target, &b.name)));
+                }
+                ui.separator();
+                if ui.button("Copy name").clicked() {
+                    ui.ctx().copy_text(b.name.clone());
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(idle, egui::Button::new("Delete from remote…"))
+                    .clicked()
+                {
+                    acts.push(Action::Dialog(Dialog::confirm(
+                    "Delete remote branch",
+                    format!(
+                        "Delete “{short}” from {remote}? This changes the remote for everyone.",
+                    ),
+                    "Delete",
+                    ops(&[&["push", remote, "--delete", short]]),
+                    None,
+                )));
+                }
+            });
     }
 
     fn stash_section(&self, ui: &mut Ui, acts: &mut Vec<Action>, idle: bool) {
@@ -972,7 +1021,7 @@ impl RepoTab {
 #[allow(clippy::too_many_arguments)]
 fn branch_row(
     ui: &mut Ui,
-    name: &str,
+    row: LeafRow<'_>,
     is_head: bool,
     ahead: u32,
     behind: u32,
@@ -990,7 +1039,8 @@ fn branch_row(
         painter.rect_filled(rect, 0.0, t.hover);
     }
     let y = rect.center().y;
-    let icon_rect = Rect::from_center_size(pos2(rect.left() + 34.0, y), vec2(16.0, 16.0));
+    let icon_rect =
+        Rect::from_center_size(pos2(rect.left() + 34.0 + row.indent, y), vec2(16.0, 16.0));
     if is_head {
         icons::paint(ui, icon_rect, "check", 14.0, t.accent);
     } else {
@@ -1044,17 +1094,17 @@ fn branch_row(
             pos2(right, rect.bottom()),
         ))
         .text(
-            pos2(rect.left() + 48.0, y),
+            pos2(rect.left() + 48.0 + row.indent, y),
             Align2::LEFT_CENTER,
-            name,
+            row.name,
             font,
             t.text,
         );
     resp
 }
 
-/// A remote's branch, one level in under its remote.
-fn branch_row_indented(ui: &mut Ui, name: &str, has_pr: bool) -> Response {
+/// A remote's branch: only the icon and the name, in from its remote.
+fn remote_row(ui: &mut Ui, row: LeafRow<'_>, has_pr: bool) -> Response {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     if resp.hovered() {
@@ -1063,7 +1113,7 @@ fn branch_row_indented(ui: &mut Ui, name: &str, has_pr: bool) -> Response {
     let y = rect.center().y;
     icons::paint(
         ui,
-        Rect::from_center_size(pos2(rect.left() + 52.0, y), vec2(16.0, 16.0)),
+        Rect::from_center_size(pos2(rect.left() + 34.0 + row.indent, y), vec2(16.0, 16.0)),
         "git-branch",
         13.0,
         t.text_faint,
@@ -1075,9 +1125,9 @@ fn branch_row_indented(ui: &mut Ui, name: &str, has_pr: bool) -> Response {
         right = ir.left() - 6.0;
     }
     ui.painter_at(rect.with_max_x(right)).text(
-        pos2(rect.left() + 66.0, y),
+        pos2(rect.left() + 48.0 + row.indent, y),
         Align2::LEFT_CENTER,
-        name,
+        row.name,
         egui::FontId::proportional(12.5),
         t.text,
     );
