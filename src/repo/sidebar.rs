@@ -3,6 +3,7 @@
 
 use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
 
+use super::pinned_sections::{Button, Header, Sections};
 use super::widgets;
 use super::{
     Action, Dialog, Refresh, RepoTab, Undo, compare_action, fast_forward_action, merge_action, ops,
@@ -37,42 +38,60 @@ impl RepoTab {
         let matches = |b: &&Branch| filter.is_empty() || b.name.to_lowercase().contains(&filter);
         let idle = self.busy_op.is_none();
 
-        egui::ScrollArea::vertical()
+        let mut scroll = egui::ScrollArea::vertical()
             .id_salt("branches")
-            .auto_shrink(false)
+            .auto_shrink(false);
+        if let Some(offset) = self.sidebar_jump.take() {
+            scroll = scroll.vertical_scroll_offset(offset);
+        }
+        let mut sections = Sections::new(egui::Id::new(("sidebar-section", &self.path)));
+        let output = scroll
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
 
                 let local: Vec<&Branch> = self.refs.local.iter().filter(matches).collect();
-                let (open, add) = widgets::section_with_button(
+                let can_branch = idle && !self.refs.head.is_empty();
+                let open = sections.add(
                     ui,
-                    "local",
-                    "laptop",
-                    "LOCAL",
-                    local.len(),
-                    true,
-                    Some(("plus", "New branch at HEAD…")),
+                    Header {
+                        key: "local",
+                        icon: "laptop",
+                        title: "LOCAL",
+                        count: local.len(),
+                        default_open: true,
+                        button: Some(Button {
+                            icon: "plus",
+                            tooltip: "New branch at HEAD…",
+                            action: can_branch.then(|| {
+                                Action::Dialog(Dialog::create_branch(&self.refs.head, "HEAD"))
+                            }),
+                        }),
+                    },
                 );
-                if add && idle && !self.refs.head.is_empty() {
-                    acts.push(Action::Dialog(Dialog::create_branch(
-                        &self.refs.head,
-                        "HEAD",
-                    )));
-                }
                 if open {
                     for b in local {
                         self.local_branch_row(ui, acts, b, idle);
                     }
                 }
 
-                self.remotes_section(ui, acts, idle, &filter);
-                self.worktree_section(ui, acts, idle);
-                self.stash_section(ui, acts, idle);
-                self.pr_section(ui, acts, idle);
+                self.remotes_section(ui, acts, idle, &filter, &mut sections);
+                self.worktree_section(ui, acts, idle, &mut sections);
+                self.stash_section(ui, acts, idle, &mut sections);
+                self.pr_section(ui, acts, idle, &mut sections);
 
                 let tags: Vec<&Branch> = self.refs.tags.iter().filter(matches).collect();
                 if !tags.is_empty()
-                    && widgets::section(ui, "tags", "tag", "TAGS", tags.len(), false)
+                    && sections.add(
+                        ui,
+                        Header {
+                            key: "tags",
+                            icon: "tag",
+                            title: "TAGS",
+                            count: tags.len(),
+                            default_open: false,
+                            button: None,
+                        },
+                    )
                 {
                     for tag in tags {
                         let r = plain_row(ui, "tag", &tag.name, "");
@@ -149,6 +168,7 @@ impl RepoTab {
                     }
                 }
             });
+        self.sidebar_jump = sections.show(ui, output.inner_rect, output.state.offset.y, acts);
     }
 
     fn local_branch_row(&self, ui: &mut Ui, acts: &mut Vec<Action>, b: &Branch, idle: bool) {
@@ -412,20 +432,30 @@ impl RepoTab {
         "main".to_owned()
     }
 
-    fn remotes_section(&self, ui: &mut Ui, acts: &mut Vec<Action>, idle: bool, filter: &str) {
+    fn remotes_section(
+        &self,
+        ui: &mut Ui,
+        acts: &mut Vec<Action>,
+        idle: bool,
+        filter: &str,
+        sections: &mut Sections,
+    ) {
         let t = Tokens::get(ui.ctx());
-        let (open, add) = widgets::section_with_button(
+        let open = sections.add(
             ui,
-            "remotes",
-            "cloud",
-            "REMOTES",
-            self.remotes.len(),
-            true,
-            Some(("plus", "Add a remote…")),
+            Header {
+                key: "remotes",
+                icon: "cloud",
+                title: "REMOTES",
+                count: self.remotes.len(),
+                default_open: true,
+                button: Some(Button {
+                    icon: "plus",
+                    tooltip: "Add a remote…",
+                    action: idle.then(|| Action::Dialog(Dialog::remote(None))),
+                }),
+            },
         );
-        if add && idle {
-            acts.push(Action::Dialog(Dialog::remote(None)));
-        }
         if !open {
             return;
         }
@@ -599,20 +629,30 @@ impl RepoTab {
         }
     }
 
-    fn stash_section(&self, ui: &mut Ui, acts: &mut Vec<Action>, idle: bool) {
+    fn stash_section(
+        &self,
+        ui: &mut Ui,
+        acts: &mut Vec<Action>,
+        idle: bool,
+        sections: &mut Sections,
+    ) {
         let t = Tokens::get(ui.ctx());
-        let (open, add) = widgets::section_with_button(
+        let can_stash = idle && !self.work.is_clean();
+        let open = sections.add(
             ui,
-            "stashes",
-            "archive",
-            "STASHES",
-            self.stashes.len(),
-            true,
-            Some(("plus", "Stash changes…")),
+            Header {
+                key: "stashes",
+                icon: "archive",
+                title: "STASHES",
+                count: self.stashes.len(),
+                default_open: true,
+                button: Some(Button {
+                    icon: "plus",
+                    tooltip: "Stash changes…",
+                    action: can_stash.then(|| Action::Dialog(Dialog::stash())),
+                }),
+            },
         );
-        if add && idle && !self.work.is_clean() {
-            acts.push(Action::Dialog(Dialog::stash()));
-        }
         if !open {
             return;
         }
@@ -657,14 +697,31 @@ impl RepoTab {
         }
     }
 
-    fn pr_section(&self, ui: &mut Ui, acts: &mut Vec<Action>, idle: bool) {
+    fn pr_section(
+        &self,
+        ui: &mut Ui,
+        acts: &mut Vec<Action>,
+        idle: bool,
+        sections: &mut Sections,
+    ) {
         let Some(forge) = self.forge else { return };
         let t = Tokens::get(ui.ctx());
         let title = match forge {
             crate::forge::Forge::GitHub => "PULL REQUESTS",
             crate::forge::Forge::GitLab => "MERGE REQUESTS",
         };
-        if !widgets::section(ui, "prs", "git-pull-request", title, self.prs.len(), true) {
+        let open = sections.add(
+            ui,
+            Header {
+                key: "prs",
+                icon: "git-pull-request",
+                title,
+                count: self.prs.len(),
+                default_open: true,
+                button: None,
+            },
+        );
+        if !open {
             return;
         }
         if let Some(err) = &self.pr_error {
@@ -802,24 +859,31 @@ pub(super) fn stash_menu_items(ui: &mut Ui, acts: &mut Vec<Action>, name: &str, 
 }
 
 impl RepoTab {
-    fn worktree_section(&self, ui: &mut Ui, acts: &mut Vec<Action>, idle: bool) {
+    fn worktree_section(
+        &self,
+        ui: &mut Ui,
+        acts: &mut Vec<Action>,
+        idle: bool,
+        sections: &mut Sections,
+    ) {
         let t = Tokens::get(ui.ctx());
-        let (open, add) = widgets::section_with_button(
+        let open = sections.add(
             ui,
-            "worktrees",
-            "folder-tree",
-            "WORKTREES",
-            self.worktrees.len(),
-            true,
-            Some(("plus", "Add a worktree…")),
+            Header {
+                key: "worktrees",
+                icon: "folder-tree",
+                title: "WORKTREES",
+                count: self.worktrees.len(),
+                default_open: true,
+                button: Some(Button {
+                    icon: "plus",
+                    tooltip: "Add a worktree…",
+                    action: idle.then(|| {
+                        Action::Dialog(Dialog::add_worktree(&self.path, None, &self.refs.head))
+                    }),
+                }),
+            },
         );
-        if add && idle {
-            acts.push(Action::Dialog(Dialog::add_worktree(
-                &self.path,
-                None,
-                &self.refs.head,
-            )));
-        }
         if !open {
             return;
         }
