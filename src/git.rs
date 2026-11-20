@@ -54,7 +54,7 @@ pub fn run_bytes(dir: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, String> {
 
 /// Like [`run`], but exit codes in `ok` count as success (`diff --no-index` exits 1 on changes).
 pub fn run_ok_codes(dir: Option<&Path>, args: &[&str], ok: &[i32]) -> Result<String, String> {
-    run_inner(dir, args, ok, None)
+    run_inner(dir, args, ok, None, true)
 }
 
 /// A username and password (or token) for an HTTPS remote, typed into gitcraft.
@@ -75,7 +75,17 @@ pub fn run_with(
     args: &[&str],
     creds: Option<&Credentials>,
 ) -> Result<String, String> {
-    run_inner(dir, args, &[0], creds)
+    run_inner(dir, args, &[0], creds, true)
+}
+
+/// [`run_with`] for work in the background (the periodic fetch): ssh asks the user nothing and
+/// fails instead, as it can't be answered by someone who didn't start it.
+pub fn run_quiet_with(
+    dir: Option<&Path>,
+    args: &[&str],
+    creds: Option<&Credentials>,
+) -> Result<String, String> {
+    run_inner(dir, args, &[0], creds, false)
 }
 
 /// Whether `err` says git needed a username / password it couldn't get or that were refused.
@@ -100,8 +110,12 @@ fn run_inner(
     args: &[&str],
     ok: &[i32],
     creds: Option<&Credentials>,
+    ask: bool,
 ) -> Result<String, String> {
     let mut cmd = git_cmd();
+    if ask {
+        crate::askpass::apply(&mut cmd);
+    }
     if let Some(dir) = dir {
         cmd.arg("-C").arg(dir);
     }
@@ -272,25 +286,23 @@ pub struct Commit {
     pub refs: Vec<String>,
 }
 
-/// The commits of every branch (stashes aside), newest first, in an order fit for drawing the
-/// graph: `limit` of them after the first `skip`.
-pub fn log(repo: &Path, skip: usize, limit: usize) -> Result<Vec<Commit>, String> {
+/// The commits reachable from `revs` (every branch but the stash, unless the graph hides or
+/// solos some), newest first, in an order fit for drawing the graph: `limit` of them after the
+/// first `skip`.
+pub fn log(repo: &Path, revs: &[String], skip: usize, limit: usize) -> Result<Vec<Commit>, String> {
     let format = format!("--format=%H{FS}%P{FS}%an{FS}%ae{FS}%at{FS}%ad{FS}%s{FS}%D{FS}%b{RS}");
     let limit = format!("--max-count={limit}");
     let skip = format!("--skip={skip}");
-    let out = match run(
-        Some(repo),
-        &[
-            "log",
-            "--exclude=refs/stash",
-            "--all",
-            "--date-order",
-            "--date=format-local:%Y-%m-%d %H:%M",
-            &skip,
-            &limit,
-            &format,
-        ],
-    ) {
+    let mut args = vec!["log"];
+    args.extend(revs.iter().map(String::as_str));
+    args.extend([
+        "--date-order",
+        "--date=format-local:%Y-%m-%d %H:%M",
+        &skip,
+        &limit,
+        &format,
+    ]);
+    let out = match run(Some(repo), &args) {
         Ok(out) => out,
         // A freshly initialised repository has no commits yet.
         Err(e) if e.contains("does not have any commits") => String::new(),

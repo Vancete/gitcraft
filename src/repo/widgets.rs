@@ -77,7 +77,7 @@ pub fn section(
     id: &str,
     icon: &str,
     title: &str,
-    count: usize,
+    count: impl std::fmt::Display,
     default_open: bool,
 ) -> bool {
     section_with_button(ui, id, icon, title, count, default_open, None).0
@@ -90,7 +90,7 @@ pub fn section_with_button(
     id: &str,
     icon: &str,
     title: &str,
-    count: usize,
+    count: impl std::fmt::Display,
     default_open: bool,
     button: Option<(&str, &str)>,
 ) -> (bool, bool) {
@@ -133,7 +133,7 @@ pub fn section_with_button(
         theme::semibold(11.5),
         t.text_dim,
     );
-    painter.text(
+    let count = painter.text(
         pos2(rect.right() - 10.0, y),
         Align2::RIGHT_CENTER,
         count.to_string(),
@@ -142,7 +142,9 @@ pub fn section_with_button(
     );
     let mut clicked = false;
     if let Some((icon, tooltip)) = button {
-        let r = Rect::from_center_size(pos2(rect.right() - 36.0, y), vec2(20.0, 20.0));
+        // Left of the count, however long it reads (`120/870` while branches are hidden).
+        let x = (count.left() - 18.0).min(rect.right() - 36.0);
+        let r = Rect::from_center_size(pos2(x, y), vec2(20.0, 20.0));
         let b = ui
             .interact(r, id.with("button"), Sense::click())
             .on_hover_text(tooltip);
@@ -188,6 +190,21 @@ pub fn file_row(
     selected: bool,
     extra: RowExtra<'_>,
 ) -> FileRowResponse {
+    file_row_in(ui, code, path, old_path, None, selected, extra)
+}
+
+/// [`file_row`] in a tree of folders, `indent` in: just the file's name, its folder being the
+/// rows above.
+pub fn file_row_in(
+    ui: &mut Ui,
+    code: char,
+    path: &str,
+    old_path: Option<&str>,
+    indent: Option<f32>,
+    selected: bool,
+    extra: RowExtra<'_>,
+) -> FileRowResponse {
+    let shift = indent.unwrap_or(0.0);
     let t = Tokens::get(ui.ctx());
     let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     let hovered = ui.rect_contains_pointer(rect);
@@ -201,7 +218,7 @@ pub fn file_row(
 
     // Status letter in a small rounded square.
     let color = status_color(&t, code);
-    let badge = Rect::from_center_size(pos2(rect.left() + 18.0, y), vec2(16.0, 16.0));
+    let badge = Rect::from_center_size(pos2(rect.left() + 18.0 + shift, y), vec2(16.0, 16.0));
     painter.rect_filled(badge, CornerRadius::same(3), color.gamma_multiply(0.22));
     let letter = if code == '?' { 'A' } else { code };
     painter.text(
@@ -280,7 +297,7 @@ pub fn file_row(
         None => ("", path),
     };
     let text_clip = Rect::from_min_max(
-        pos2(rect.left() + 32.0, rect.top()),
+        pos2(rect.left() + 32.0 + shift, rect.top()),
         pos2(right, rect.bottom()),
     );
     let tp = painter.with_clip_rect(text_clip);
@@ -297,7 +314,9 @@ pub fn file_row(
         faint.push_str(old);
         faint.push_str("  ");
     }
-    faint.push_str(dir);
+    if indent.is_none() {
+        faint.push_str(dir);
+    }
     if !faint.is_empty() {
         tp.text(
             pos2(name_rect.right() + 8.0, y),
@@ -564,4 +583,74 @@ fn ignore_patterns(path: &str) -> Vec<(String, String, String)> {
         out.push((format!("Folder {dir}/"), format!("/{dir}/"), dir.to_owned()));
     }
     out
+}
+
+/// How a slider's value reads in the box beside it.
+#[derive(Clone, Copy)]
+pub enum SliderUnit {
+    /// `1.25` reads `125 %`.
+    Percent,
+    /// The number and a unit after it, like ` px`.
+    Suffix(&'static str),
+}
+
+/// A slider: a rail filled up to a round knob in the theme's accent, and the value beside it
+/// to drag or type. Returns the slider's and the box's response together.
+pub fn slider(
+    ui: &mut Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f32,
+    unit: SliderUnit,
+) -> Response {
+    const KNOB: f32 = 7.0;
+    let t = Tokens::get(ui.ctx());
+    let (min, max) = (*range.start(), *range.end());
+    ui.horizontal(|ui| {
+        let size = vec2(ui.spacing().slider_width, ui.spacing().interact_size.y);
+        let (rect, mut resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
+        let resp_hover = resp.clone();
+        let track = rect.x_range().shrink(KNOB);
+        if let Some(p) = resp.interact_pointer_pos() {
+            let f = ((p.x - track.min) / track.span()).clamp(0.0, 1.0);
+            let mut v = min + f * (max - min);
+            if step > 0.0 {
+                v = min + ((v - min) / step).round() * step;
+            }
+            let v = v.clamp(min, max);
+            if (v - *value).abs() > f32::EPSILON {
+                *value = v;
+                resp.mark_changed();
+            }
+        }
+        let f = if max > min {
+            ((*value - min) / (max - min)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let y = rect.center().y;
+        let x = track.min + f * track.span();
+        let p = ui.painter();
+        let rail = Rect::from_min_max(pos2(rect.left(), y - 2.0), pos2(rect.right(), y + 2.0));
+        p.rect_filled(rail, 2.0, t.field_border);
+        p.rect_filled(rail.with_max_x(x), 2.0, t.accent.gamma_multiply(0.6));
+        let lifted = resp_hover.hovered() || resp_hover.dragged();
+        p.circle_filled(pos2(x, y), if lifted { KNOB + 1.0 } else { KNOB }, t.accent);
+        let resp = resp.on_hover_cursor(egui::CursorIcon::Grab);
+
+        let mut drag = egui::DragValue::new(value)
+            .range(min..=max)
+            .speed(step.max(0.01));
+        drag = match unit {
+            SliderUnit::Percent => drag
+                .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
+                .custom_parser(|s| {
+                    let n: f64 = s.trim().trim_end_matches('%').trim().parse().ok()?;
+                    Some(n / 100.0)
+                }),
+            SliderUnit::Suffix(suffix) => drag.suffix(suffix),
+        };
+        resp | ui.add(drag)
+    })
+    .inner
 }

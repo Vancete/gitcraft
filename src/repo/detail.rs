@@ -1,12 +1,13 @@
 //! Right pane: the selected commit, or the working-tree changes with staging and the commit box.
 
-use egui::{Align2, Key, RichText, Sense, Ui, pos2, vec2};
+use egui::{Align2, Key, Rect, RichText, Sense, Ui, pos2, vec2};
 
 use super::diff::unstage_args;
 use super::widgets::{self, RowExtra};
 use super::{Action, Dialog, DiffKey, DiffView, Refresh, RepoTab, Reword, abort_action, ops};
 use crate::git::{Area, ChangedFile, StatusFile};
 use crate::icons;
+use crate::settings::Settings;
 use crate::theme::{self, Tokens};
 
 impl RepoTab {
@@ -87,6 +88,11 @@ impl RepoTab {
 
         // Taken out while the pane borrows `self`; put back after it.
         let mut reword = self.reword.take();
+        // "Edit message…" from the commit's menu, now that its details are here.
+        let wants_edit = self.edit_message.as_deref() == Some(detail.hash.as_str());
+        if wants_edit {
+            self.edit_message = None;
+        }
         let head = self.refs.head.clone();
         egui::ScrollArea::vertical()
             .id_salt("detail_scroll")
@@ -153,7 +159,7 @@ impl RepoTab {
                                         )
                                         .double_clicked();
                                 }
-                                if clicked && editable {
+                                if (clicked || wants_edit) && editable {
                                     reword = Some(Reword {
                                         hash: detail.hash.clone(),
                                         subject: subject.to_owned(),
@@ -264,6 +270,10 @@ impl RepoTab {
         rev: Option<&str>,
         key: impl Fn(&str) -> DiffKey,
     ) {
+        if Settings::get(ui.ctx()).files_as_tree {
+            let tree = FileTree::build(files);
+            return self.file_tree(ui, acts, &tree, "", 0, rev, &key);
+        }
         for f in files {
             let key = key(&f.path);
             let selected = self.open_key() == Some(&key);
@@ -278,6 +288,96 @@ impl RepoTab {
             widgets::file_menu(&r.row, &f.path, rev, false, acts);
             if r.row.clicked() {
                 acts.push(Action::OpenDiff(key));
+            }
+        }
+    }
+
+    /// One folder of [`FileTree`]: its subfolders (collapsible), then its files, `depth` in.
+    #[allow(clippy::too_many_arguments)]
+    fn file_tree(
+        &self,
+        ui: &mut Ui,
+        acts: &mut Vec<Action>,
+        folder: &FileTree<'_>,
+        parent: &str,
+        depth: usize,
+        rev: Option<&str>,
+        key: &dyn Fn(&str) -> DiffKey,
+    ) {
+        let t = Tokens::get(ui.ctx());
+        let indent = depth as f32 * TREE_INDENT;
+        for (name, sub) in &folder.folders {
+            // A folder holding only one folder reads as one row: `src/repo`.
+            let (mut name, mut sub) = (name.clone(), sub);
+            while sub.files.is_empty() && sub.folders.len() == 1 {
+                let Some((next, inner)) = sub.folders.iter().next() else {
+                    break;
+                };
+                name = format!("{name}/{next}");
+                sub = inner;
+            }
+            let path = if parent.is_empty() {
+                name.clone()
+            } else {
+                format!("{parent}/{name}")
+            };
+            let id = ui.id().with(("files-folder", &path));
+            let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(true);
+            let (rect, r) =
+                ui.allocate_exact_size(vec2(ui.available_width(), widgets::ROW_H), Sense::click());
+            if r.hovered() {
+                ui.painter().rect_filled(rect, 0.0, t.hover);
+            }
+            if r.clicked() {
+                open = !open;
+                ui.data_mut(|d| d.insert_temp(id, open));
+            }
+            let y = rect.center().y;
+            let x = rect.left() + indent;
+            icons::paint(
+                ui,
+                Rect::from_center_size(pos2(x + 12.0, y), vec2(12.0, 12.0)),
+                if open {
+                    "chevron-down"
+                } else {
+                    "chevron-right"
+                },
+                11.0,
+                t.text_faint,
+            );
+            icons::paint(
+                ui,
+                Rect::from_center_size(pos2(x + 28.0, y), vec2(14.0, 14.0)),
+                "folder-open",
+                13.0,
+                t.text_dim,
+            );
+            ui.painter_at(rect).text(
+                pos2(x + 42.0, y),
+                Align2::LEFT_CENTER,
+                &name,
+                egui::FontId::proportional(12.5),
+                t.text_dim,
+            );
+            if open {
+                self.file_tree(ui, acts, sub, &path, depth + 1, rev, key);
+            }
+        }
+        for f in &folder.files {
+            let k = key(&f.path);
+            let selected = self.open_key() == Some(&k);
+            let r = widgets::file_row_in(
+                ui,
+                f.status,
+                &f.path,
+                f.old_path.as_deref(),
+                Some(indent + 16.0),
+                selected,
+                RowExtra::Stats(f.added, f.removed),
+            );
+            widgets::file_menu(&r.row, &f.path, rev, false, acts);
+            if r.row.clicked() {
+                acts.push(Action::OpenDiff(k));
             }
         }
     }
@@ -733,7 +833,33 @@ fn discard_dialog(f: &StatusFile) -> Dialog {
     }
 }
 
-/// "N files changed +a −d", and an optional note on the right.
+/// How much further in each level of a file tree is.
+const TREE_INDENT: f32 = 14.0;
+
+/// Changed files grouped by folder, for the tree view.
+#[derive(Default)]
+struct FileTree<'a> {
+    folders: std::collections::BTreeMap<String, FileTree<'a>>,
+    files: Vec<&'a ChangedFile>,
+}
+
+impl<'a> FileTree<'a> {
+    fn build(files: &'a [ChangedFile]) -> Self {
+        let mut root = FileTree::default();
+        for f in files {
+            let mut node = &mut root;
+            let mut parts: Vec<&str> = f.path.split('/').collect();
+            parts.pop();
+            for part in parts {
+                node = node.folders.entry(part.to_owned()).or_default();
+            }
+            node.files.push(f);
+        }
+        root
+    }
+}
+
+/// "N files changed +a −d", an optional note, and the Path / Tree switch on the right.
 fn files_header(ui: &mut Ui, files: &[ChangedFile], note: Option<&str>) {
     let t = Tokens::get(ui.ctx());
     let (adds, dels) = files.iter().fold((0, 0), |(a, d), f| {
@@ -768,9 +894,44 @@ fn files_header(ui: &mut Ui, files: &[ChangedFile], note: Option<&str>) {
         theme::mono(11.0),
         t.danger,
     );
+    // Path / Tree, the one in use underlined.
+    let mut settings = Settings::get(ui.ctx());
+    let mut right = rect.right() - 6.0;
+    for (tree, icon, tip) in [
+        (true, "folder-tree", "Files in a tree of their folders"),
+        (false, "list", "Files as a list of paths"),
+    ] {
+        let r = Rect::from_center_size(pos2(right - 10.0, y), vec2(20.0, 20.0));
+        let b = ui
+            .interact(r, ui.id().with(("files-view", tree)), Sense::click())
+            .on_hover_text(tip);
+        let on = settings.files_as_tree == tree;
+        if b.hovered() {
+            ui.painter().rect_filled(r, t.radius_sm, t.pressed);
+        }
+        icons::paint(
+            ui,
+            r,
+            icon,
+            13.0,
+            if on || b.hovered() {
+                t.text
+            } else {
+                t.text_faint
+            },
+        );
+        if on {
+            widgets::active_underline(ui, r, t.accent);
+        }
+        if b.clicked() && !on {
+            settings.files_as_tree = tree;
+            settings.set(ui.ctx());
+        }
+        right = r.left() - 2.0;
+    }
     if let Some(note) = note {
-        p.text(
-            pos2(rect.right() - 10.0, y),
+        ui.painter().text(
+            pos2(right - 6.0, y),
             Align2::RIGHT_CENTER,
             note,
             egui::FontId::proportional(11.0),

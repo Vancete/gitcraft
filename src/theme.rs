@@ -2,6 +2,7 @@
 //! a blue accent, Inter for the UI and JetBrains Mono for hashes and diffs.
 //!
 //! Widgets read [`Tokens::get`] instead of hard-coding colours, so every theme applies everywhere.
+//! With a VS Code theme chosen, [`Tokens::with_vscode`] repaints them in its workbench colours.
 
 use std::sync::Arc;
 
@@ -10,6 +11,8 @@ use egui::{
     Visuals,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::vscode::theme::EditorTheme;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeKind {
@@ -147,6 +150,89 @@ impl Tokens {
         }
     }
 
+    /// The tokens recoloured with a VS Code theme's workbench colours (as CodeCraft does). The
+    /// base is gitcraft's dark or light palette, whichever matches the theme, for anything it
+    /// doesn't set.
+    pub fn with_vscode(vs: &EditorTheme) -> Self {
+        let base = Tokens::for_kind(if vs.dark {
+            ThemeKind::Dark
+        } else {
+            ThemeKind::Light
+        });
+        let editor = vs
+            .color("editor.background")
+            .unwrap_or(base.dock)
+            .to_opaque();
+        // Translucent colours are laid over the editor's background.
+        let get = |keys: &[&str]| keys.iter().find_map(|k| vs.color(k));
+        let solid =
+            |keys: &[&str], fallback: Color32| get(keys).map_or(fallback, |c| over(editor, c));
+        let text = solid(&["editor.foreground", "foreground"], base.text);
+        let sidebar = solid(&["sideBar.background"], editor);
+        // The colour VS Code marks the active tab or view with.
+        let accent = solid(
+            &[
+                "tab.activeBorderTop",
+                "tab.activeBorder",
+                "activityBar.activeBorder",
+                "activityBarBadge.background",
+                "focusBorder",
+            ],
+            base.accent,
+        );
+        // Dark text on a bright accent, white on a dark one.
+        let [r, g, b, _] = accent.to_srgba_unmultiplied();
+        let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+        let accent_text = if luma > 150.0 {
+            Color32::from_rgb(30, 30, 30)
+        } else {
+            Color32::WHITE
+        };
+        let mix = |a: Color32, b: Color32, t: f32| a.lerp_to_gamma(b, t);
+        Tokens {
+            chrome: sidebar,
+            dock: editor,
+            card: sidebar,
+            field: solid(&["input.background"], mix(editor, Color32::BLACK, 0.1)),
+            field_border: solid(
+                &["input.border", "dropdown.border", "widget.border"],
+                mix(editor, text, 0.25),
+            ),
+            hover: solid(&["list.hoverBackground"], mix(sidebar, text, 0.08)),
+            pressed: mix(sidebar, text, 0.16),
+            text,
+            text_dim: solid(&["sideBar.foreground"], mix(text, editor, 0.25)),
+            text_faint: solid(&["descriptionForeground"], mix(text, editor, 0.45)),
+            icon: solid(&["icon.foreground"], mix(text, editor, 0.15)),
+            accent,
+            accent_text,
+            separator: solid(
+                &["sideBar.border", "editorGroup.border", "panel.border"],
+                mix(editor, Color32::BLACK, 0.25),
+            ),
+            tab_strip: solid(&["editorGroupHeader.tabsBackground"], sidebar),
+            row_selected: solid(
+                &[
+                    "list.activeSelectionBackground",
+                    "list.inactiveSelectionBackground",
+                ],
+                base.row_selected,
+            ),
+            // Laid over the lines, so they stay translucent.
+            diff_add_bg: get(&[
+                "diffEditor.insertedLineBackground",
+                "diffEditor.insertedTextBackground",
+            ])
+            .unwrap_or(base.diff_add_bg),
+            diff_del_bg: get(&[
+                "diffEditor.removedLineBackground",
+                "diffEditor.removedTextBackground",
+            ])
+            .unwrap_or(base.diff_del_bg),
+            ..base
+        }
+    }
+
     pub fn dark(&self) -> bool {
         self.kind != ThemeKind::Light
     }
@@ -185,6 +271,13 @@ impl Tokens {
         let set = if self.dark() { &DARK } else { &LIGHT };
         set[lane % set.len()]
     }
+}
+
+/// `top` painted over `bottom`, opaque.
+fn over(bottom: Color32, top: Color32) -> Color32 {
+    let [r, g, b, a] = top.to_srgba_unmultiplied();
+    let solid = Color32::from_rgb(r, g, b);
+    bottom.lerp_to_gamma(solid, a as f32 / 255.0)
 }
 
 fn tokens_id() -> egui::Id {
@@ -268,8 +361,8 @@ pub fn menu_style(s: &mut egui::Style) {
     }
 }
 
-pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
-    let t = Tokens::for_kind(kind);
+/// Makes `t` the theme of the whole UI.
+pub fn apply(ctx: &egui::Context, t: Tokens) {
     ctx.data_mut(|d| d.insert_temp(tokens_id(), t));
     let mut v = if t.dark() {
         Visuals::dark()

@@ -594,6 +594,17 @@ impl RepoTab {
             settings.diff_whole_file,
         );
         let mut clear = false;
+        // -1 / 1: to the change before / after what is on screen.
+        let mut jump: i32 = 0;
+        if !self.keys_blocked && !ui.ctx().egui_wants_keyboard_input() {
+            ui.input(|i| {
+                if i.modifiers.alt && i.key_pressed(egui::Key::ArrowUp) {
+                    jump = -1;
+                } else if i.modifiers.alt && i.key_pressed(egui::Key::ArrowDown) {
+                    jump = 1;
+                }
+            });
+        }
         egui::Frame::new()
             .fill(t.chrome)
             .inner_margin(egui::Margin::symmetric(10, 6))
@@ -668,6 +679,37 @@ impl RepoTab {
                             }
                         }
                         ui.add_space(8.0);
+                        if icons::small_button(ui, "chevron-down", "Next change (Alt+Down)")
+                            .clicked()
+                        {
+                            jump = 1;
+                        }
+                        if icons::small_button(ui, "chevron-up", "Previous change (Alt+Up)")
+                            .clicked()
+                        {
+                            jump = -1;
+                        }
+                        ui.add_space(4.0);
+                        let first_change = match &view.data {
+                            Some(Ok(d)) => d
+                                .lines
+                                .iter()
+                                .position(|l| matches!(l.kind, Kind::Add | Kind::Del))
+                                .and_then(|i| editor_line(&d.lines, i)),
+                            _ => None,
+                        };
+                        if icons::small_button(
+                            ui,
+                            "code",
+                            "Open in the editor (or double-click a line to open it there)",
+                        )
+                        .clicked()
+                        {
+                            acts.push(match first_change {
+                                Some(line) => Action::OpenInEditorAt(path.clone().into(), line),
+                                None => Action::OpenInEditor(path.clone().into()),
+                            });
+                        }
                         let ws = icons::small_button(
                             ui,
                             "pilcrow",
@@ -798,6 +840,8 @@ impl RepoTab {
         // Each with whether the pointer is over that line's half, not only at its height.
         let mut pointer_hits: Vec<((usize, Side, usize), bool)> = Vec::new();
         let mut text_hover = false;
+        // A line double-clicked: opened in the editor.
+        let mut open_at: Option<usize> = None;
         let mut paint = |ui: &mut Ui, rect: Rect, i: usize, side: Side, scroll_x: f32| {
             let kind = data.lines.get(i).map(|l| l.kind);
             let pickable = partial && matches!(kind, Some(Kind::Add | Kind::Del));
@@ -824,6 +868,9 @@ impl RepoTab {
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
                 if resp.clicked() {
                     clicked = Some(i);
+                }
+                if resp.double_clicked() {
+                    open_at = Some(i);
                 }
             }
             if kind == Some(Kind::Hunk) && !hunk_picks.is_empty() {
@@ -875,6 +922,11 @@ impl RepoTab {
         let mut scroll = egui::ScrollArea::both()
             .id_salt(("diff_scroll", &path, split))
             .auto_shrink(false);
+        if jump != 0
+            && let Some(y) = jump_target(&runs, view.scroll_y, jump)
+        {
+            scroll = scroll.vertical_scroll_offset(y);
+        }
         if (map.clicked() || map.dragged())
             && let Some(p) = map.interact_pointer_pos()
         {
@@ -977,6 +1029,23 @@ impl RepoTab {
                 ui.ctx().copy_text(text.clone());
             }
         }
+        // The line under the pointer, on the half it is over.
+        let line_under = pointer_hits
+            .iter()
+            .find(|(_, over)| *over)
+            .map(|((i, _, _), _)| *i);
+        if text_drag.double_clicked() {
+            open_at = open_at.or(line_under);
+        }
+        if let Some(line) = open_at.and_then(|i| editor_line(&data.lines, i)) {
+            acts.push(Action::OpenInEditorAt(path.clone().into(), line));
+        }
+        // Where the menu was opened, kept while it is open.
+        let menu_line = ui.id().with("diff-menu-line");
+        if text_drag.secondary_clicked() {
+            let line = line_under.and_then(|i| editor_line(&data.lines, i));
+            ui.data_mut(|d| d.insert_temp(menu_line, line));
+        }
         egui::Popup::context_menu(&text_drag)
             .style(crate::theme::menu_style)
             .show(|ui| {
@@ -987,9 +1056,22 @@ impl RepoTab {
                 {
                     ui.ctx().copy_text(text.clone());
                 }
+                ui.separator();
+                let line = ui.data(|d| d.get_temp::<Option<u32>>(menu_line)).flatten();
+                let label = match line {
+                    Some(n) => format!("Open in editor at line {n}"),
+                    None => "Open in editor".to_owned(),
+                };
+                if ui.button(label).clicked() {
+                    acts.push(match line {
+                        Some(n) => Action::OpenInEditorAt(path.clone().into(), n),
+                        None => Action::OpenInEditor(path.clone().into()),
+                    });
+                }
             });
 
         if let Some(view) = &mut self.diff {
+            view.scroll_y = shown.state.offset.y;
             view.text_sel = sel;
             if clear {
                 view.chosen.clear();
@@ -1182,6 +1264,33 @@ fn change_runs(rows: impl Iterator<Item = (bool, bool)>) -> ChangeRuns {
     runs
 }
 
+/// Lines of context kept above a change jumped to.
+const JUMP_CONTEXT: usize = 3;
+
+/// Where to scroll to show the change before (`dir` -1) or after (1) the one at `scroll_y`,
+/// with a few lines above it; `None` when there is none that way.
+fn jump_target(runs: &ChangeRuns, scroll_y: f32, dir: i32) -> Option<f32> {
+    // A removal and the addition right after it are one change.
+    let mut all: Vec<Range<usize>> = runs.removed.iter().chain(&runs.added).cloned().collect();
+    all.sort_by_key(|r| r.start);
+    let mut starts: Vec<usize> = Vec::new();
+    let mut end = 0;
+    for r in all {
+        if starts.is_empty() || r.start > end {
+            starts.push(r.start);
+        }
+        end = end.max(r.end);
+    }
+    let offsets = starts
+        .into_iter()
+        .map(|row| row.saturating_sub(JUMP_CONTEXT) as f32 * LINE_H);
+    if dir > 0 {
+        offsets.into_iter().find(|y| *y > scroll_y + 1.0)
+    } else {
+        offsets.into_iter().rev().find(|y| *y < scroll_y - 1.0)
+    }
+}
+
 /// The strip beside the diff's scrollbar: a mark for each run of changes where it sits in the
 /// file (side by side: removals on the left half, additions on the right), and the part on
 /// screen. `view`: (scroll offset, visible height, content height).
@@ -1356,6 +1465,16 @@ fn paint_line(
     }
     p.galley(origin, galley.clone(), fg);
     Some((origin, galley))
+}
+
+/// The line of the file (as it is now) that diff line `i` stands for: its own new-side number,
+/// or for a removed line the next line kept after it.
+fn editor_line(lines: &[DiffLine], i: usize) -> Option<u32> {
+    lines
+        .get(i..)?
+        .iter()
+        .find_map(|l| l.new)
+        .or_else(|| lines.get(..i)?.iter().rev().find_map(|l| l.new))
 }
 
 /// A layout job for `spans`, with the chars in `changed` on `strong`.

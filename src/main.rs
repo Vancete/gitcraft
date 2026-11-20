@@ -6,6 +6,10 @@ use std::sync::atomic::Ordering;
 use gitcraft::app;
 
 fn main() -> eframe::Result {
+    // Started by ssh to ask the user something (see `askpass`): ask the window and exit.
+    if let Some(code) = gitcraft::askpass::run_if_asked() {
+        std::process::exit(code);
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("GitCraft")

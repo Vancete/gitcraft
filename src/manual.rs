@@ -21,6 +21,7 @@ const FEATURES: &[(&str, &[&str])] = &[
             "Open, create or clone a repository from the start page; recent ones are listed there.",
             "One tab per repository. Changes made elsewhere (editor, terminal) show up by themselves.",
             "Right-click a tab to give it its own icon and highlight colour.",
+            "Settings › Themes: four code styles, or a VS Code theme imported from your VS Code, which colours the whole window. The palette icon switches between Dark, Medium Gray and Light.",
             "Drag a tab along the strip to reorder the tabs.",
         ],
     ),
@@ -28,10 +29,13 @@ const FEATURES: &[(&str, &[&str])] = &[
         "Graph",
         &[
             "Every branch with its pill on its latest commit: solid for the checked-out one, a laptop when it is local, a cloud when a remote has it.",
-            "Double-click a pill to check that branch out (and pull it when its remote is ahead; on the checked-out branch's remote pill, just pull); hover +N to see every branch of the commit, and right-click any of them.",
+            "Double-click a pill to check that branch out; hover +N to see every branch of the commit, and right-click any of them.",
+            "Double-click a branch's pill further on than the branch (its remote, say) to move the branch there: your uncommitted changes are stashed and brought back on top. When the two have diverged, the toolbar offers to rebase, merge or reset instead.",
+            "Hover a branch in the left pane for its eye: hide it from the graph, or right-click it and Solo to draw only that one. The headers count the branches shown; the toolbar shows them all again.",
             "Right-click a commit or a pill for branches, tags, merge, rebase, cherry-pick, revert, reset and more.",
             "Search messages, authors and hashes, or switch to Code to find the commits that added or removed some text.",
             "Interactive rebase: reorder, reword, squash, fix up or drop commits, then start it.",
+            "Right-click a commit of the checked-out branch to edit its message, move it up or down, or drop it, without the rebase screen.",
             "Stashes show in the graph as dashed boxes above the commit they were made on; click one to see it, right-click it to apply, pop or drop it.",
         ],
     ),
@@ -47,7 +51,9 @@ const FEATURES: &[(&str, &[&str])] = &[
         &[
             "Stage, unstage or discard whole files from the right pane.",
             "In a file's diff, stage, unstage or discard one hunk, or click the lines you want and act on only those.",
-            "A diff shows only the changes or the whole file, unified or side by side, and remembers both. Drag over its lines to select text and Ctrl+C to copy it; the strip by the scrollbar marks where the changes are.",
+            "A diff shows only the changes or the whole file, unified or side by side, and remembers both. Drag over its lines to select text and Ctrl+C to copy it; the strip by the scrollbar marks where the changes are, and the arrows (Alt+Up / Alt+Down) jump between them.",
+            "A commit's files as a list of paths or a tree of folders: the switch above them.",
+            "Double-click a line of a diff (or right-click it) to open the file in your editor at that line; the <> button opens it at the first change. The editor is set in Settings.",
             "Write the summary and description and commit; amend the last commit; pick the identity you commit as.",
             "Double-click a commit's message in the right pane to edit it (any commit of the checked-out branch with no merges after it).",
             "Undo and redo commits, merges, rebases, resets, checkouts, branches, tags and stashes.",
@@ -60,6 +66,7 @@ const FEATURES: &[(&str, &[&str])] = &[
             "Conflicts open in a three-pane editor with Ours, Theirs and Both for each conflict.",
             "Right-click a file for its history and blame.",
             "A terminal panel with tabs, in the repository's folder.",
+            "When ssh needs a password, a key's passphrase or to trust a new host, gitcraft asks in a dialog (macOS and Linux).",
         ],
     ),
 ];
@@ -71,6 +78,7 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Cmd+T", "New tab"),
             ("Cmd+W", "Close the tab (or middle-click it)"),
+            ("Cmd+Shift+T", "Reopen the tab closed last"),
             ("Cmd+P", "Command palette: every action and branch"),
             ("F5", "Reload the repository"),
             ("F1", "This manual"),
@@ -83,7 +91,10 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Cmd+F", "Search commits"),
             ("Enter / Shift+Enter", "Next / previous search result"),
             ("Cmd+click", "Compare with the selected commit"),
-            ("Double-click a pill", "Check out that branch or tag"),
+            (
+                "Double-click a pill",
+                "Check out that branch or tag, or move it there",
+            ),
             ("Esc", "Close the diff, comparison or search"),
         ],
     ),
@@ -91,6 +102,7 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         "Changes",
         &[
             ("Cmd+Enter", "Commit (from the message fields)"),
+            ("Alt+↑ / Alt+↓", "Previous / next change in a diff"),
             (
                 "Click / Shift+click",
                 "Pick lines in a diff, or a range of them",

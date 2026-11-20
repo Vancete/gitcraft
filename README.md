@@ -15,8 +15,8 @@ so your config, credentials and hooks apply as usual.
 
 - Start page: checks that `git` is installed; open, create (`git init`) or clone a repository;
   recent repositories.
-- Browser-like tabs, one per repository (Ctrl+T, Ctrl+W, middle-click). Open tabs, recents,
-  theme and settings are remembered.
+- Browser-like tabs, one per repository (Ctrl+T, Ctrl+W, middle-click; Ctrl+Shift+T reopens the
+  one closed last). Open tabs, recents, theme and settings are remembered.
 - Changes made elsewhere (editor, terminal) show up by themselves: the folder is watched.
 
 **Graph**
@@ -30,11 +30,22 @@ so your config, credentials and hooks apply as usual.
 - The checked-out branch's pill is solid, the others a darker shade. Double-click a pill to
   check that branch (or tag) out; hover `+N` to list every pill of the commit and double-click
   the one you want.
+- Double-click a pill further on than its branch (the remote's, say) to move the branch there,
+  checking it out if needed: uncommitted changes are stashed and applied again on top (if they
+  clash, the files are left with conflicts to fix and the stash is kept). When the two have
+  diverged, the toolbar turns into the choices for a moment: rebase, merge or reset.
+- Hide or solo branches: an eye on each branch in the left pane (on hover) hides it from the
+  graph, with its own commits; _Solo_ in its menu draws only the soloed ones. The headers show
+  how many are drawn (`4/5`), the toolbar says how many are hidden and shows them all again on a
+  click. Kept per repository.
+- Stashes in the graph, above the commit they were made on, marked with their icon.
 - Each commit's summary, followed by the rest of its message, faded and cut to fit.
 - An _Uncommitted changes_ row on top while the working tree is dirty.
 - Search (Ctrl+F) through messages, authors and hashes of all history, or switch to _Code_ to
   find the commits that added or removed a piece of text in a file (`git log -S`); Enter /
   Shift+Enter jump between results, loading older history when needed.
+- Right-click a commit of the checked-out branch to edit its message, move it up or down, or
+  drop it, without going through the interactive rebase (Ctrl+Z undoes each).
 - Right-click a commit: create a branch or a tag, check it out, interactive rebase onto it,
   cherry-pick, revert, reset the current branch to it (soft / mixed / hard, confirmed), the menu
   of each branch on it, copy the hash, message or branch name. Right-click a branch's pill to get
@@ -83,10 +94,14 @@ so your config, credentials and hooks apply as usual.
   the changed part of each line marked, whitespace changes optional, images shown before / after.
   Esc closes.
 - Only the changes or the whole file, and side by side or unified, both kept for next time. A
-  strip beside the scrollbar marks where the changes are; click it to jump there. Drag over the
-  lines to select text, Ctrl+C or right-click to copy it.
-- Code takes the colours of the theme VS Code (or Insiders, VSCodium) is using, read from its
-  settings and extensions, when it is dark or light like gitcraft's; a setting turns it off.
+  strip beside the scrollbar marks where the changes are; click it to jump there, or use the
+  arrows (Alt+Up / Alt+Down) for the change before or after. Drag over the lines to select text,
+  Ctrl+C or right-click to copy it.
+- A commit's files as a list of paths or a tree of their folders (a switch above them).
+- Code colours: four styles of gitcraft's own (CodeCraft's), or any colour theme installed in
+  VS Code (or Insiders, VSCodium) imported in Settings › Themes, which then colours the whole
+  window as well.
+- Double-click a line of a diff, or right-click it, to open the file in your editor at that line.
 - Conflicts open in a three-pane editor: each conflict's two sides with _Ours_, _Theirs_ and
   _Both_ buttons, and the result below (editable). _Use mine_ / _Use theirs_ for a whole file.
 - A merge, rebase, cherry-pick or revert stopped on conflicts shows a banner with _Abort_; the
@@ -111,8 +126,11 @@ so your config, credentials and hooks apply as usual.
 - Avatars: on a GitHub repository, the authors' GitHub accounts (through `gh` when installed, else
   GitHub's API); on GitLab, the host's avatar API; elsewhere Gravatar (a hash of the email).
   Cached on disk; can be turned off.
-- Settings: zoom, branch column width, graph columns, avatars, notifications, update check,
-  background fetch, editor command, default shell and terminal font size, saved identities.
+- Settings: zoom (applied with a button), branch column width, graph columns, avatars,
+  notifications, update check, code themes, background fetch, editor command, default shell and
+  terminal font size, saved identities.
+- On macOS and Linux, ssh's questions (a password, a key's passphrase, trusting a new host) come
+  up in a dialog: gitcraft is ssh's `SSH_ASKPASS`.
 - Checks GitHub every 12 hours for a newer release and shows a pill to download it (can be turned
   off).
 - Toasts, and a desktop notification when a long operation ends while the window is in the
@@ -189,11 +207,14 @@ was made this way, on a demo repository.
 | `src/terminal.rs`        | integrated terminal: pty, VT parsing (`vt100`), painting, keys, selection          |
 | `src/repo/mod.rs`        | one repository tab: state, background git work, undo / redo, toolbar               |
 | `src/repo/sidebar.rs`    | branches, remotes, worktrees, stashes, pull requests, tags                         |
+| `src/repo/branch_filter.rs` | branches hidden from or soloed in the graph                                     |
 | `src/repo/graph_view.rs` | commit graph, pills, search bar, commit menu                                       |
 | `src/repo/detail.rs`     | commit / stash detail, changes and commit box                                      |
 | `src/repo/diff.rs`       | diff loading, pairing and the diff view (unified, split, images)                   |
 | `src/repo/highlight.rs`  | syntax colours (syntect, with bat's syntaxes from `two-face`)                      |
-| `src/vscode_theme.rs`    | VS Code's current colour theme as a syntect theme                                  |
+| `src/vscode/`            | VS Code's colour themes: finding them, and reading one for code and window         |
+| `src/code_theme.rs`      | gitcraft's code styles and the code theme in use                                   |
+| `src/askpass.rs`         | ssh's questions shown in the window (`SSH_ASKPASS`)                                |
 | `src/repo/conflict.rs`   | three-pane conflict editor                                                         |
 | `src/repo/rebase.rs`     | interactive rebase editor and its todo list                                        |
 | `src/repo/file_view.rs`  | a file's history and blame                                                         |

@@ -1,12 +1,14 @@
 //! Syntax colouring for diffs (syntect with bat's syntaxes, pure-Rust regex engine), chosen by
-//! file extension or name.
+//! file extension or name, in the colours picked in the settings (see `crate::code_theme`).
 
 use std::sync::OnceLock;
 
 use egui::Color32;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::ThemeSet;
-use syntect::parsing::SyntaxSet;
+use syntect::highlighting::Theme;
+use syntect::parsing::{SyntaxReference, SyntaxSet};
+
+use crate::theme::{ThemeKind, Tokens};
 
 /// Coloured pieces of one line.
 pub type Spans = Vec<(Color32, String)>;
@@ -19,9 +21,16 @@ fn syntaxes() -> &'static SyntaxSet {
     SET.get_or_init(two_face::syntax::extra_newlines)
 }
 
-fn themes() -> &'static ThemeSet {
-    static SET: OnceLock<ThemeSet> = OnceLock::new();
-    SET.get_or_init(ThemeSet::load_defaults)
+/// The syntax for `path`, by extension or by the whole name for files like `Dockerfile` and
+/// `Makefile`; `None` for plain text.
+fn syntax_for(path: &str) -> Option<&'static SyntaxReference> {
+    let ss = syntaxes();
+    let file = std::path::Path::new(path);
+    let name = file.file_name()?.to_string_lossy();
+    file.extension()
+        .and_then(|e| ss.find_syntax_by_extension(&e.to_string_lossy().to_lowercase()))
+        .or_else(|| ss.find_syntax_by_extension(&name))
+        .filter(|s| s.name != "Plain Text")
 }
 
 /// Colours `lines` (one file's text, in order) for `path`; `None` for plain text, unknown
@@ -34,30 +43,35 @@ pub fn highlight<'a>(
     if lines.len() > MAX_LINES {
         return None;
     }
+    let syntax = syntax_for(path)?;
+    let theme = crate::code_theme::current_theme(dark);
+    // gitcraft's styles leave plain text uncoloured, for the text colour of the theme.
+    let plain = Tokens::for_kind(if dark {
+        ThemeKind::Dark
+    } else {
+        ThemeKind::Light
+    })
+    .text;
+    colour(syntax, &theme, lines, plain)
+}
+
+/// Colours `lines` of `path` with `theme`, plain text in `plain`: the settings' theme previews.
+pub fn highlight_with<'a>(
+    path: &str,
+    theme: &Theme,
+    lines: impl Iterator<Item = &'a str>,
+    plain: Color32,
+) -> Option<Vec<Spans>> {
+    colour(syntax_for(path)?, theme, lines, plain)
+}
+
+fn colour<'a>(
+    syntax: &SyntaxReference,
+    theme: &Theme,
+    lines: impl Iterator<Item = &'a str>,
+    plain: Color32,
+) -> Option<Vec<Spans>> {
     let ss = syntaxes();
-    let file = std::path::Path::new(path);
-    let name = file.file_name()?.to_string_lossy();
-    // By extension, or by the whole name for files like `Dockerfile` and `Makefile`.
-    let syntax = file
-        .extension()
-        .and_then(|e| ss.find_syntax_by_extension(&e.to_string_lossy().to_lowercase()))
-        .or_else(|| ss.find_syntax_by_extension(&name))?;
-    if syntax.name == "Plain Text" {
-        return None;
-    }
-    // VS Code's theme when it suits the background: a dark theme on a light gitcraft reads badly.
-    let editor = crate::vscode_theme::enabled()
-        .then(crate::vscode_theme::current)
-        .flatten()
-        .filter(|e| e.dark == dark);
-    let theme = match &editor {
-        Some(e) => &e.theme,
-        None => themes().themes.get(if dark {
-            "base16-ocean.dark"
-        } else {
-            "InspiredGitHub"
-        })?,
-    };
     let mut h = HighlightLines::new(syntax, theme);
     let mut out = Vec::new();
     for line in lines {
@@ -68,10 +82,12 @@ pub fn highlight<'a>(
                 .into_iter()
                 .map(|(style, text)| {
                     let c = style.foreground;
-                    (
-                        Color32::from_rgb(c.r, c.g, c.b),
-                        text.trim_end_matches('\n').to_owned(),
-                    )
+                    let color = if c.a == 0 {
+                        plain
+                    } else {
+                        Color32::from_rgb(c.r, c.g, c.b)
+                    };
+                    (color, text.trim_end_matches('\n').to_owned())
                 })
                 .filter(|(_, t)| !t.is_empty())
                 .collect(),

@@ -1,13 +1,14 @@
 //! One open repository: its state, background git work and the view
 //! (branches on the left, commit graph or diff in the middle, commit detail / changes on the right).
 
+mod branch_filter;
 mod conflict;
 mod detail;
 mod dialogs;
 mod diff;
 mod file_view;
 mod graph_view;
-mod highlight;
+pub(crate) mod highlight;
 mod rebase;
 mod sidebar;
 pub(crate) mod widgets;
@@ -29,6 +30,7 @@ use crate::icons;
 use crate::settings::Settings;
 use crate::terminal::{ShellSpec, Terminal};
 use crate::theme::Tokens;
+pub(crate) use branch_filter::BranchFilter;
 
 pub use dialogs::Dialog;
 pub use widgets::primary_button;
@@ -59,10 +61,10 @@ enum Msg {
     /// A comparison's files, for the request numbered so.
     Compare(u64, Result<CompareData, String>),
     Prs(Result<Vec<PullRequest>, String>),
-    /// The commits to replay when rewording `hash`.
-    RewordCommits {
+    /// The commits to replay for a quick edit of `hash`.
+    QuickEditCommits {
         hash: String,
-        message: String,
+        edit: QuickEdit,
         result: Result<Vec<git::RebaseCommit>, String>,
     },
     OpDone {
@@ -124,6 +126,19 @@ struct PendingOp {
     refresh: Refresh,
     kind: OpKind,
     quiet: bool,
+    autostash: bool,
+}
+
+/// Uncommitted changes stashed around an operation and applied again after it.
+const AUTOSTASH: &str = "gitcraft: autostash";
+/// Starts the error of an operation whose stashed changes didn't apply cleanly after it.
+const AUTOSTASH_CONFLICT: &str = "Your changes conflict with the new files";
+
+/// Choices shown in place of the toolbar for a moment, when what was asked needs one.
+pub(crate) struct Prompt {
+    text: String,
+    /// (label, tooltip, what it does, whether it throws something away)
+    options: Vec<(String, String, Action, bool)>,
 }
 
 #[derive(Clone, Debug)]
@@ -161,6 +176,8 @@ pub(crate) struct DiffView {
     /// The latest read of this diff: only its answer is shown, so a slower answer to an older
     /// read (before the whitespace or whole-file setting changed…) can't replace it.
     request: u64,
+    /// How far down it was scrolled last frame, to jump to the change before or after.
+    scroll_y: f32,
 }
 
 /// Numbers the diff reads of every tab, so no two diffs ever wait for the same number.
@@ -175,6 +192,7 @@ impl DiffView {
             anchor: None,
             text_sel: None,
             request: 0,
+            scroll_y: 0.0,
         }
     }
 
@@ -195,6 +213,17 @@ impl DiffView {
         self.anchor = None;
         self.text_sel = None;
     }
+}
+
+/// A change to one commit of the checked-out branch, made from its menu (or its message in the
+/// right pane) without the interactive rebase screen.
+pub(crate) enum QuickEdit {
+    Reword(String),
+    Drop,
+    /// Swapped with the commit after it.
+    MoveUp,
+    /// Swapped with the commit before it.
+    MoveDown,
 }
 
 /// A commit's message being edited in the right pane (double-click on it).
@@ -284,7 +313,15 @@ pub(crate) enum Action {
     },
     Checkout(String),
     /// Checks out a local branch behind its upstream, then fast-forwards it.
-    CheckoutPull(String),
+    /// Hides, shows or solos a branch in the graph.
+    BranchFilter(branch_filter::Change),
+    /// Moves local `branch` to `target` (further on): checks it out if needed and
+    /// fast-forwards it, the uncommitted changes stashed around; when they have diverged, the
+    /// toolbar offers what can be done instead.
+    MoveBranch {
+        branch: String,
+        target: String,
+    },
     CheckoutRemote(String),
     Dialog(Dialog),
     Commit,
@@ -318,6 +355,8 @@ pub(crate) enum Action {
     /// Open a path (relative to the repository) with the system's default app.
     OpenPath(PathBuf),
     OpenInEditor(PathBuf),
+    /// A file in the editor, at a line (1-based).
+    OpenInEditorAt(PathBuf, u32),
     SetIdentity(String, String),
     /// How diffs show: side by side, without whitespace changes, the whole file.
     SetDiffOptions {
@@ -340,6 +379,10 @@ pub(crate) enum Action {
         hash: String,
         message: String,
     },
+    /// Drops a commit, or swaps it with its neighbour, by a rebase from below it.
+    QuickEdit(String, QuickEdit),
+    /// Shows a commit with its message open for editing in the right pane.
+    EditMessage(String),
     InteractiveRebase {
         onto: String,
         label: String,
@@ -442,6 +485,12 @@ pub struct RepoTab {
     branch_filter: String,
     /// Jump to the changes row on the next rebuild (after an operation left conflicts).
     focus_wip: bool,
+    /// A question in place of the toolbar (see [`Prompt`]).
+    prompt: Option<Prompt>,
+    /// A commit whose message opens for editing once its details are shown.
+    edit_message: Option<String>,
+    /// Branches hidden from the graph or soloed in it.
+    pub(crate) graph_filter: BranchFilter,
     last_fetch: Instant,
 
     terminals: Vec<Terminal>,
@@ -465,7 +514,8 @@ pub struct RepoTab {
 }
 
 impl RepoTab {
-    pub fn new(path: PathBuf, ctx: &egui::Context) -> Self {
+    /// A tab whose graph starts with `filter`'s branches hidden or soloed.
+    pub fn with_filter(path: PathBuf, filter: BranchFilter, ctx: &egui::Context) -> Self {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -527,6 +577,9 @@ impl RepoTab {
             status: None,
             branch_filter: String::new(),
             focus_wip: false,
+            prompt: None,
+            edit_message: None,
+            graph_filter: BranchFilter::default(),
             last_fetch: Instant::now(),
             terminals: Vec::new(),
             active_terminal: 0,
@@ -541,6 +594,7 @@ impl RepoTab {
             finished: None,
         };
         tab.watch(ctx);
+        tab.graph_filter = filter;
         tab.reload(ctx);
         tab
     }
@@ -563,10 +617,11 @@ impl RepoTab {
         let path = self.path.clone();
         // Keep the pages already loaded.
         let count = self.history.len().clamp(git::LOG_PAGE, MAX_HISTORY);
+        let revs = self.graph_filter.revs();
         spawn(&self.tx, ctx, move || {
             Msg::Loaded((|| {
                 let refs = git::refs(&path)?;
-                let history = git::log(&path, 0, count)?;
+                let history = git::log(&path, &revs, 0, count)?;
                 let work = git::status(&path)?;
                 // Very old gits have no `worktree list`; the section just stays empty.
                 let worktrees = git::worktrees(&path).unwrap_or_default();
@@ -599,8 +654,9 @@ impl RepoTab {
         self.loading_more = true;
         let path = self.path.clone();
         let skip = self.history.len();
+        let revs = self.graph_filter.revs();
         spawn(&self.tx, ctx, move || {
-            Msg::More(git::log(&path, skip, git::LOG_PAGE))
+            Msg::More(git::log(&path, &revs, skip, git::LOG_PAGE))
         });
     }
 
@@ -905,6 +961,11 @@ impl RepoTab {
         });
     }
 
+    /// The theme changed: the open diff is coloured again.
+    pub(crate) fn recolor(&mut self, ctx: &egui::Context) {
+        self.refresh_diff(ctx);
+    }
+
     /// Starts comparing two points of history (replacing the comparison shown).
     fn compare(&mut self, compare: Compare, ctx: &egui::Context) {
         if matches!(
@@ -1012,9 +1073,32 @@ impl RepoTab {
         kind: OpKind,
         ctx: &egui::Context,
     ) {
-        self.run_ops_ex(label, ops, refresh, kind, false, ctx);
+        self.run_ops_ex(label, ops, refresh, kind, false, false, ctx);
     }
 
+    /// [`run_undoable`](Self::run_undoable) with the uncommitted changes stashed first and
+    /// applied again afterwards, whether the operation worked or not.
+    fn run_undoable_autostash(
+        &mut self,
+        label: &str,
+        ops: Vec<Vec<String>>,
+        undo: Undo,
+        ctx: &egui::Context,
+    ) {
+        let before = self.refs.head.clone();
+        let autostash = !self.work.is_clean();
+        self.run_ops_ex(
+            label,
+            ops,
+            Refresh::All,
+            OpKind::Normal(undo, before),
+            false,
+            autostash,
+            ctx,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn run_ops_ex(
         &mut self,
         label: &str,
@@ -1022,11 +1106,13 @@ impl RepoTab {
         refresh: Refresh,
         kind: OpKind,
         quiet: bool,
+        autostash: bool,
         ctx: &egui::Context,
     ) {
         if self.busy_op.is_some() {
             return;
         }
+        self.prompt = None;
         self.busy_op = Some(label.to_owned());
         self.op_started = Some(Instant::now());
         if !quiet {
@@ -1038,17 +1124,40 @@ impl RepoTab {
             refresh,
             kind: kind.clone(),
             quiet,
+            autostash,
         });
         let path = self.path.clone();
         let label = label.to_owned();
         let creds = self.credentials.clone();
         spawn(&self.tx, ctx, move || {
             let mut result = Ok(String::new());
+            let mut stashed = false;
+            if autostash {
+                match git::run(Some(&path), &["stash", "push", "-m", AUTOSTASH]) {
+                    Ok(out) => stashed = !out.contains("No local changes"),
+                    Err(e) => result = Err(format!("could not stash your changes: {e}")),
+                }
+            }
             for op in &ops {
-                let args: Vec<&str> = op.iter().map(String::as_str).collect();
-                result = git::run_with(Some(&path), &args, creds.as_ref());
                 if result.is_err() {
                     break;
+                }
+                let args: Vec<&str> = op.iter().map(String::as_str).collect();
+                result = if quiet {
+                    git::run_quiet_with(Some(&path), &args, creds.as_ref())
+                } else {
+                    git::run_with(Some(&path), &args, creds.as_ref())
+                };
+            }
+            // The changes come back however it went; staged ones staged again when possible.
+            if stashed {
+                let pop = git::run(Some(&path), &["stash", "pop", "--index"])
+                    .or_else(|_| git::run(Some(&path), &["stash", "pop"]));
+                if let Err(e) = pop {
+                    result = Err(match result {
+                        Ok(_) => format!("{AUTOSTASH_CONFLICT}: {e}"),
+                        Err(before) => format!("{before}\n{AUTOSTASH_CONFLICT}: {e}"),
+                    });
                 }
             }
             // For HEAD moves, the new HEAD is what redo goes back to.
@@ -1107,13 +1216,11 @@ impl RepoTab {
         );
     }
 
-    /// Checkout and `pull --ff-only`; undoing goes back and puts the branch where it was.
-    fn checkout_pull(&mut self, branch: &str, ctx: &egui::Context) {
-        let previous = self
-            .refs
-            .current
-            .clone()
-            .unwrap_or_else(|| self.refs.head.clone());
+    /// Moves `branch` to `target`, further on: checks it out if it isn't, and fast-forwards
+    /// it with the uncommitted changes stashed around. Branches that have diverged get the
+    /// choice of rebasing, merging or resetting in the toolbar instead. Undoing goes back and
+    /// puts the branch where it was.
+    fn move_branch(&mut self, branch: &str, target: &str, ctx: &egui::Context) {
         let Some(was) = self
             .refs
             .local
@@ -1123,22 +1230,134 @@ impl RepoTab {
         else {
             return self.checkout(branch, ctx);
         };
-        let run = ops(&[&["checkout", branch], &["pull", "--ff-only"]]);
-        let undo = if previous.is_empty() {
-            Undo::None
+        let current = self.refs.current.as_deref() == Some(branch);
+        let (only_here, only_there) = self.divergence(branch, target);
+        if only_here > 0 {
+            self.prompt = Some(self.diverged_prompt(branch, target, only_here, only_there));
+            return;
+        }
+        let mut run = Vec::new();
+        if !current {
+            run.push(vec!["checkout".to_owned(), branch.to_owned()]);
+        }
+        run.push(vec![
+            "merge".to_owned(),
+            "--ff-only".to_owned(),
+            target.to_owned(),
+        ]);
+        let (label, undo) = if current {
+            (
+                format!("Fast-forward {branch} to {target}"),
+                Undo::HeadMove { mode: "--keep" },
+            )
         } else {
-            Undo::Custom {
-                undo: ops(&[&["checkout", &previous], &["branch", "-f", branch, &was]]),
-                redo: run.clone(),
+            (
+                format!("Checkout {branch} at {target}"),
+                self.back_to_previous(branch, &was, run.clone()),
+            )
+        };
+        self.run_undoable_autostash(&label, run, undo, ctx);
+    }
+
+    /// Undoing a move of `branch` that checked it out: back to the branch before, and
+    /// `branch` back at `was`.
+    fn back_to_previous(&self, branch: &str, was: &str, redo: Vec<Vec<String>>) -> Undo {
+        let previous = self
+            .refs
+            .current
+            .clone()
+            .unwrap_or_else(|| self.refs.head.clone());
+        if previous.is_empty() {
+            return Undo::None;
+        }
+        Undo::Custom {
+            undo: ops(&[&["checkout", &previous], &["branch", "-f", branch, was]]),
+            redo,
+        }
+    }
+
+    /// Commits only on `a`, and only on `b`.
+    fn divergence(&self, a: &str, b: &str) -> (u32, u32) {
+        let range = format!("{a}...{b}");
+        git::run(
+            Some(&self.path),
+            &["rev-list", "--left-right", "--count", &range],
+        )
+        .ok()
+        .and_then(|out| {
+            let (l, r) = out.trim().split_once(char::is_whitespace)?;
+            Some((l.trim().parse().ok()?, r.trim().parse().ok()?))
+        })
+        .unwrap_or((0, 0))
+    }
+
+    /// What can be done when `branch` can't simply move to `target`: rebase it, merge, or
+    /// reset it there (git's own `--autostash` keeps the changes through each).
+    fn diverged_prompt(&self, branch: &str, target: &str, here: u32, there: u32) -> Prompt {
+        let current = self.refs.current.as_deref() == Some(branch);
+        let was = self
+            .refs
+            .local
+            .iter()
+            .find(|b| b.name == branch)
+            .map(|b| b.target.clone())
+            .unwrap_or_default();
+        let commits = |n: u32| {
+            if n == 1 {
+                "1 commit".to_owned()
+            } else {
+                format!("{n} commits")
             }
         };
-        self.run_undoable(
-            &format!("Checkout and pull {branch}"),
-            run,
-            Refresh::All,
-            undo,
-            ctx,
-        );
+        let option = |label: String, tip: String, step: &[&str], danger: bool| {
+            let mut run = Vec::new();
+            if !current {
+                run.push(vec!["checkout".to_owned(), branch.to_owned()]);
+            }
+            run.push(step.iter().map(|s| (*s).to_owned()).collect());
+            let undo = if current {
+                Undo::HeadMove { mode: "--keep" }
+            } else {
+                self.back_to_previous(branch, &was, run.clone())
+            };
+            let action = Action::UndoableOps {
+                label: label.clone(),
+                ops: run,
+                refresh: Refresh::All,
+                undo,
+            };
+            (label, tip, action, danger)
+        };
+        Prompt {
+            text: format!(
+                "{branch} and {target} have diverged: {} only on {branch}, {} only on {target}.",
+                commits(here),
+                commits(there)
+            ),
+            options: vec![
+                option(
+                    format!("Rebase {branch} onto {target}"),
+                    format!("Replays {branch}'s {} on top of {target}", commits(here)),
+                    &["rebase", "--autostash", target],
+                    false,
+                ),
+                option(
+                    format!("Merge {target} into {branch}"),
+                    "A merge commit joins the two".to_owned(),
+                    &["merge", "--autostash", "--no-edit", target],
+                    false,
+                ),
+                option(
+                    format!("Reset {branch} to {target}"),
+                    format!(
+                        "Moves {branch} to {target}, leaving out its {}; Undo brings them back",
+                        commits(here)
+                    ),
+                    &["reset", "--keep", target],
+                    true,
+                ),
+            ],
+        }
     }
 
     /// The latest commit is amended (its message only, whatever is staged); an older one is
@@ -1170,14 +1389,34 @@ impl RepoTab {
             );
             return;
         }
+        self.quick_edit(hash, QuickEdit::Reword(message), ctx);
+    }
+
+    /// Lists the commits a quick edit of `hash` replays (from its parent; from its
+    /// grandparent to move it down), then runs the rebase (see `Msg::QuickEditCommits`).
+    fn quick_edit(&mut self, hash: String, edit: QuickEdit, ctx: &egui::Context) {
+        if self.busy_op.is_some() {
+            return;
+        }
+        // The latest commit dropped: a reset, which keeps the uncommitted changes.
+        if matches!(edit, QuickEdit::Drop) && hash == self.refs.head {
+            self.run_undoable(
+                &format!("Drop {}", short(&hash)),
+                ops(&[&["reset", "--keep", &format!("{hash}^")]]),
+                Refresh::All,
+                Undo::HeadMove { mode: "--keep" },
+                ctx,
+            );
+            return;
+        }
+        let onto = match edit {
+            QuickEdit::MoveDown => format!("{hash}~2"),
+            _ => format!("{hash}^"),
+        };
         let path = self.path.clone();
         spawn(&self.tx, ctx, move || {
-            let result = git::rebase_commits(&path, &format!("{hash}^"));
-            Msg::RewordCommits {
-                hash,
-                message,
-                result,
-            }
+            let result = git::rebase_commits(&path, &onto);
+            Msg::QuickEditCommits { hash, edit, result }
         });
     }
 
@@ -1481,6 +1720,7 @@ impl RepoTab {
                 Refresh::All,
                 OpKind::Normal(Undo::None, String::new()),
                 true,
+                false,
                 ctx,
             );
         }
@@ -1596,22 +1836,46 @@ impl RepoTab {
                 }
                 Err(e) => self.status = Some((format!("Interactive rebase: {e}"), true)),
             },
-            Msg::RewordCommits {
-                hash,
-                message,
-                result,
-            } => {
+            Msg::QuickEditCommits { hash, edit, result } => {
+                let label = match &edit {
+                    QuickEdit::Reword(_) => format!("Edit the message of {}", short(&hash)),
+                    QuickEdit::Drop => format!("Drop {}", short(&hash)),
+                    QuickEdit::MoveUp => format!("Move {} up", short(&hash)),
+                    QuickEdit::MoveDown => format!("Move {} down", short(&hash)),
+                };
                 let result = result.and_then(|commits| {
-                    let onto = format!("{hash}^");
+                    let onto = match edit {
+                        QuickEdit::MoveDown => format!("{hash}~2"),
+                        _ => format!("{hash}^"),
+                    };
                     let mut editor =
                         rebase::RebaseEditor::new(onto, short(&hash).to_owned(), commits);
-                    let entry = editor
+                    let i = editor
                         .entries
-                        .iter_mut()
-                        .find(|e| e.commit.hash == hash)
+                        .iter()
+                        .position(|e| e.commit.hash == hash)
                         .ok_or("only commits of the checked-out branch can be edited")?;
-                    entry.step = rebase::Step::Reword;
-                    entry.message = message;
+                    match edit {
+                        QuickEdit::Reword(message) => {
+                            if let Some(entry) = editor.entries.get_mut(i) {
+                                entry.step = rebase::Step::Reword;
+                                entry.message = message;
+                            }
+                        }
+                        QuickEdit::Drop => {
+                            if let Some(entry) = editor.entries.get_mut(i) {
+                                entry.step = rebase::Step::Drop;
+                            }
+                        }
+                        // Oldest first: up is towards the end.
+                        QuickEdit::MoveUp if i + 1 < editor.entries.len() => {
+                            editor.entries.swap(i, i + 1);
+                        }
+                        QuickEdit::MoveDown if i > 0 => editor.entries.swap(i - 1, i),
+                        QuickEdit::MoveUp | QuickEdit::MoveDown => {
+                            return Err("there is no commit there to swap it with".to_owned());
+                        }
+                    }
                     if let Some(problem) = editor.problem() {
                         return Err(problem);
                     }
@@ -1619,13 +1883,13 @@ impl RepoTab {
                 });
                 match result {
                     Ok(command) => self.run_undoable(
-                        &format!("Edit the message of {}", short(&hash)),
+                        &label,
                         vec![command],
                         Refresh::All,
                         Undo::HeadMove { mode: "--keep" },
                         ctx,
                     ),
-                    Err(e) => self.status = Some((format!("Edit message: {e}"), true)),
+                    Err(e) => self.status = Some((format!("{label}: {e}"), true)),
                 }
             }
             Msg::FileHistory(path, result) => {
@@ -1718,6 +1982,34 @@ impl RepoTab {
                             .unwrap_or_default();
                         self.dialog = Some(Dialog::credentials(&url, refused));
                     }
+                    Err(e) if e.contains(AUTOSTASH_CONFLICT) => {
+                        self.focus_wip = true;
+                        self.status = Some((format!("{label}: done"), false));
+                        self.prompt = Some(Prompt {
+                            text: "Your changes didn't apply cleanly on top: fix the files \
+                                   marked as conflicted in Changes. They are kept in the stash \
+                                   as well."
+                                .to_owned(),
+                            options: Vec::new(),
+                        });
+                        self.record_undo(&label, kind);
+                    }
+                    Err(e)
+                        if label == "Pull"
+                            && (e.contains("Not possible to fast-forward")
+                                || e.contains("Diverging branches")) =>
+                    {
+                        let current = self.refs.current.clone().unwrap_or_default();
+                        let upstream = self
+                            .refs
+                            .local
+                            .iter()
+                            .find(|b| b.name == current)
+                            .map(|b| b.upstream.clone())
+                            .unwrap_or_default();
+                        let (here, there) = self.divergence(&current, &upstream);
+                        self.prompt = Some(self.diverged_prompt(&current, &upstream, here, there));
+                    }
                     Err(e) => {
                         self.focus_wip = e.contains("CONFLICT") || e.contains("could not apply");
                         self.status = Some((format!("{label} failed: {e}"), true));
@@ -1801,7 +2093,11 @@ impl RepoTab {
                 undo,
             } => self.run_undoable(&label, ops, refresh, undo, ctx),
             Action::Checkout(name) => self.checkout(&name, ctx),
-            Action::CheckoutPull(name) => self.checkout_pull(&name, ctx),
+            Action::MoveBranch { branch, target } => self.move_branch(&branch, &target, ctx),
+            Action::BranchFilter(change) => {
+                self.graph_filter.apply(change);
+                self.reload(ctx);
+            }
             Action::CheckoutRemote(name) => self.checkout_remote(&name, ctx),
             Action::Dialog(dialog) => self.dialog = Some(dialog),
             Action::Commit => self.commit(ctx),
@@ -1817,7 +2113,7 @@ impl RepoTab {
             }
             Action::Pull => self.run_undoable(
                 "Pull",
-                ops(&[&["pull", "--ff-only"]]),
+                ops(&[&["pull", "--ff-only", "--autostash"]]),
                 Refresh::All,
                 Undo::HeadMove { mode: "--keep" },
                 ctx,
@@ -1896,7 +2192,13 @@ impl RepoTab {
             }
             Action::OpenInEditor(rel) => {
                 let editor = Settings::get(ctx).editor;
-                if let Err(e) = open_in_editor(&editor, &self.path.join(rel)) {
+                if let Err(e) = open_in_editor(&editor, &self.path.join(rel), None) {
+                    self.status = Some((e, true));
+                }
+            }
+            Action::OpenInEditorAt(rel, line) => {
+                let editor = Settings::get(ctx).editor;
+                if let Err(e) = open_in_editor(&editor, &self.path.join(rel), Some(line)) {
                     self.status = Some((e, true));
                 }
             }
@@ -1941,6 +2243,11 @@ impl RepoTab {
                 });
             }
             Action::Reword { hash, message } => self.reword_commit(hash, message, ctx),
+            Action::QuickEdit(hash, edit) => self.quick_edit(hash, edit, ctx),
+            Action::EditMessage(hash) => {
+                self.goto(&hash, ctx);
+                self.edit_message = Some(hash);
+            }
             Action::RunRebase => {
                 let Some(editor) = &self.rebase else { return };
                 if editor.problem().is_some() || self.busy_op.is_some() {
@@ -1965,7 +2272,15 @@ impl RepoTab {
             Action::SignIn(creds) => {
                 self.credentials = Some(creds);
                 if let Some(op) = self.last_op.take() {
-                    self.run_ops_ex(&op.label, op.ops, op.refresh, op.kind, op.quiet, ctx);
+                    self.run_ops_ex(
+                        &op.label,
+                        op.ops,
+                        op.refresh,
+                        op.kind,
+                        op.quiet,
+                        op.autostash,
+                        ctx,
+                    );
                 }
             }
             Action::Ignore { pattern, path } => match git::add_to_gitignore(&self.path, &pattern) {
@@ -2206,6 +2521,9 @@ impl RepoTab {
     }
 
     fn toolbar(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
+        if self.prompt.is_some() {
+            return self.prompt_bar(ui, acts);
+        }
         let t = Tokens::get(ui.ctx());
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -2342,6 +2660,25 @@ impl RepoTab {
                         ))
                         .color(t.warning),
                     );
+                }
+            }
+
+            // Branches left out of the graph: how many, and a way back to all of them.
+            if self.graph_filter.is_active() {
+                ui.add_space(10.0);
+                let f = &self.graph_filter;
+                let text = if f.solo.is_empty() {
+                    let n = f.hidden.len();
+                    format!("{n} branch{} hidden", if n == 1 { "" } else { "es" })
+                } else {
+                    let n = f.solo.len();
+                    format!("{n} branch{} soloed", if n == 1 { "" } else { "es" })
+                };
+                if icons::tool_button(ui, "eye-off", &text, true)
+                    .on_hover_text("Show every branch in the graph again")
+                    .clicked()
+                {
+                    acts.push(Action::BranchFilter(branch_filter::Change::Clear));
                 }
             }
 
@@ -2570,9 +2907,9 @@ pub(crate) fn reveal_label() -> &'static str {
     }
 }
 
-/// Runs the user's editor command with `path` (through `cmd` on Windows, where editors are
-/// usually `.cmd` scripts).
-pub(crate) fn open_in_editor(editor: &str, path: &Path) -> Result<(), String> {
+/// Runs the user's editor command with `path`, at `line` when the editor is one that can be
+/// told (through `cmd` on Windows, where editors are usually `.cmd` scripts).
+pub(crate) fn open_in_editor(editor: &str, path: &Path, line: Option<u32>) -> Result<(), String> {
     let editor = if editor.trim().is_empty() {
         "code"
     } else {
@@ -2580,11 +2917,13 @@ pub(crate) fn open_in_editor(editor: &str, path: &Path) -> Result<(), String> {
     };
     let mut cmd = if cfg!(windows) {
         let mut c = std::process::Command::new("cmd");
-        c.arg("/C").arg(editor).arg(path);
+        c.arg("/C")
+            .arg(editor)
+            .args(editor_args(editor, path, line));
         c
     } else {
         let mut c = std::process::Command::new(editor);
-        c.arg(path);
+        c.args(editor_args(editor, path, line));
         crate::shell_path::apply(&mut c);
         c
     };
@@ -2598,12 +2937,98 @@ pub(crate) fn open_in_editor(editor: &str, path: &Path) -> Result<(), String> {
         .map_err(|e| format!("Could not run {editor}: {e}"))
 }
 
+/// The arguments that open `path` at `line` in `editor`, by the editor's family; just the path
+/// for an editor that isn't known.
+fn editor_args(editor: &str, path: &Path, line: Option<u32>) -> Vec<std::ffi::OsString> {
+    let Some(line) = line else {
+        return vec![path.into()];
+    };
+    let program = editor.split_whitespace().next().unwrap_or(editor);
+    let name = Path::new(program)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let at = |sep: &str| {
+        let mut s = path.as_os_str().to_owned();
+        s.push(format!("{sep}{line}"));
+        s
+    };
+    match name.as_str() {
+        "code" | "code-insiders" | "codium" | "vscodium" | "cursor" | "windsurf" => {
+            vec!["-g".into(), at(":")]
+        }
+        "subl" | "sublime_text" | "zed" | "zeditor" | "atom" | "pulsar" | "lapce" => vec![at(":")],
+        "idea" | "idea64" | "pycharm" | "pycharm64" | "webstorm" | "webstorm64" | "phpstorm"
+        | "phpstorm64" | "rider" | "rider64" | "clion" | "clion64" | "goland" | "goland64"
+        | "rubymine" | "rubymine64" | "rustrover" | "rustrover64" | "studio" | "studio64" => {
+            vec!["--line".into(), line.to_string().into(), path.into()]
+        }
+        "vim" | "nvim" | "gvim" | "mvim" | "emacs" | "emacsclient" | "nano" | "micro" | "kak" => {
+            vec![format!("+{line}").into(), path.into()]
+        }
+        _ => vec![path.into()],
+    }
+}
+
 fn short_duration(d: Duration) -> String {
     let s = d.as_secs();
     match s {
         0..60 => format!("{s} s"),
         60..3600 => format!("{} min", s / 60),
         _ => format!("{} h", s / 3600),
+    }
+}
+
+impl RepoTab {
+    /// A question in place of the toolbar: what happened, the choices, and a close button
+    /// (Esc) that puts the toolbar back.
+    fn prompt_bar(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
+        let t = Tokens::get(ui.ctx());
+        let mut chosen = None;
+        let mut close = ui.input(|i| i.key_pressed(egui::Key::Escape)) && !self.keys_blocked;
+        if let Some(prompt) = &self.prompt {
+            ui.horizontal(|ui| {
+                ui.set_min_height(ui.spacing().interact_size.y + 4.0);
+                ui.add_space(4.0);
+                icons::inline(ui, "circle-alert", 16.0, t.warning);
+                ui.label(egui::RichText::new(&prompt.text).color(t.text));
+                ui.add_space(6.0);
+                let idle = self.busy_op.is_none();
+                for (i, (label, tip, _, danger)) in prompt.options.iter().enumerate() {
+                    let text = if *danger {
+                        egui::RichText::new(label).color(t.danger)
+                    } else if i == 0 {
+                        egui::RichText::new(label).color(t.accent_text)
+                    } else {
+                        egui::RichText::new(label)
+                    };
+                    let mut button = egui::Button::new(text);
+                    if i == 0 && !*danger {
+                        button = button.fill(t.accent);
+                    }
+                    if ui
+                        .add_enabled(idle, button)
+                        .on_hover_text(tip.as_str())
+                        .clicked()
+                    {
+                        chosen = Some(i);
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if icons::small_button(ui, "x", "Close (Esc)").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        }
+        if let Some(i) = chosen
+            && let Some(prompt) = self.prompt.take()
+            && let Some((_, _, action, _)) = prompt.options.into_iter().nth(i)
+        {
+            acts.push(action);
+        } else if close {
+            self.prompt = None;
+        }
     }
 }
 
@@ -2652,6 +3077,24 @@ fn spawn(tx: &Sender<Msg>, ctx: &egui::Context, job: impl FnOnce() -> Msg + Send
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn editors_open_at_a_line_their_own_way() {
+        use std::ffi::OsString;
+        let p = std::path::Path::new("src/a.rs");
+        let args = |e: &str, l| super::editor_args(e, p, l);
+        let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(args("code", Some(12)), os(&["-g", "src/a.rs:12"]));
+        assert_eq!(
+            args("C:/Tools/Cursor.exe", Some(3)),
+            os(&["-g", "src/a.rs:3"])
+        );
+        assert_eq!(args("subl", Some(4)), os(&["src/a.rs:4"]));
+        assert_eq!(args("idea64", Some(5)), os(&["--line", "5", "src/a.rs"]));
+        assert_eq!(args("nvim", Some(6)), os(&["+6", "src/a.rs"]));
+        assert_eq!(args("notepad++", Some(7)), os(&["src/a.rs"]));
+        assert_eq!(args("code", None), os(&["src/a.rs"]));
+    }
+
     use super::{DiffKey, DiffView, headline};
 
     #[test]

@@ -3,6 +3,7 @@
 
 use egui::{Align2, Rect, Response, Sense, Ui, pos2, vec2};
 
+use super::branch_filter::{Change, local_ref, remote_ref};
 use super::widgets;
 use super::{
     Action, Dialog, Refresh, RepoTab, Undo, compare_action, fast_forward_action, merge_action, ops,
@@ -44,12 +45,13 @@ impl RepoTab {
                 ui.spacing_mut().item_spacing.y = 0.0;
 
                 let local: Vec<&Branch> = self.refs.local.iter().filter(matches).collect();
+                let count = self.visible_count(local.iter().map(|b| local_ref(&b.name)));
                 let (open, add) = widgets::section_with_button(
                     ui,
                     "local",
                     "laptop",
                     "LOCAL",
-                    local.len(),
+                    count,
                     true,
                     Some(("plus", "New branch at HEAD…")),
                 );
@@ -159,7 +161,10 @@ impl RepoTab {
             .iter()
             .find(|w| !w.current && w.branch.as_deref() == Some(b.name.as_str()));
         let has_pr = self.prs.iter().any(|p| p.branch == b.name);
-        let r = branch_row(
+        let full = local_ref(&b.name);
+        // The checked-out branch is always drawn.
+        let eye = (!b.is_head).then(|| self.graph_filter.shows(&full));
+        let (r, eye_clicked) = branch_row(
             ui,
             &b.name,
             b.is_head,
@@ -168,7 +173,11 @@ impl RepoTab {
             b.upstream_gone(),
             elsewhere.is_some(),
             has_pr,
+            eye,
         );
+        if eye_clicked {
+            acts.push(Action::BranchFilter(Change::Toggle(full)));
+        }
         let tip = match (b.upstream.is_empty(), b.upstream_gone()) {
             (true, _) => "Not tracking a remote branch".to_owned(),
             (false, true) => format!("{} was deleted on the remote", b.upstream),
@@ -193,6 +202,51 @@ impl RepoTab {
         egui::Popup::context_menu(&r)
             .style(crate::theme::menu_style)
             .show(|ui| self.branch_menu_items(ui, acts, b, idle));
+    }
+
+    /// Hide, show or solo a branch in the graph (`full`: its ref name), at the end of its menus.
+    pub(super) fn filter_items(&self, ui: &mut Ui, acts: &mut Vec<Action>, full: &str, head: bool) {
+        ui.separator();
+        let f = &self.graph_filter;
+        if f.shows(full) || head {
+            if ui
+                .add_enabled(!head, egui::Button::new("Hide in the graph"))
+                .on_disabled_hover_text("The checked-out branch is always shown")
+                .clicked()
+            {
+                acts.push(Action::BranchFilter(Change::Toggle(full.to_owned())));
+            }
+        } else if ui.button("Show in the graph").clicked() {
+            acts.push(Action::BranchFilter(Change::Toggle(full.to_owned())));
+        }
+        if f.soloed(full) {
+            if ui.button("Stop soloing").clicked() {
+                acts.push(Action::BranchFilter(Change::Unsolo(full.to_owned())));
+            }
+        } else if ui
+            .button("Solo")
+            .on_hover_text("Show only this branch in the graph (and any others soloed)")
+            .clicked()
+        {
+            acts.push(Action::BranchFilter(Change::Solo(full.to_owned())));
+        }
+        if f.is_active() && ui.button("Show all branches").clicked() {
+            acts.push(Action::BranchFilter(Change::Clear));
+        }
+    }
+
+    /// `shown/total` while the graph hides or solos branches, else the total.
+    fn visible_count(&self, refs: impl Iterator<Item = String>) -> String {
+        let refs: Vec<String> = refs.collect();
+        if !self.graph_filter.is_active() {
+            return refs.len().to_string();
+        }
+        let current = self.refs.current.as_deref().map(local_ref);
+        let shown = refs
+            .iter()
+            .filter(|r| self.graph_filter.shows(r) || current.as_ref() == Some(*r))
+            .count();
+        format!("{shown}/{}", refs.len())
     }
 
     /// The menu of a local branch: in the sidebar and in the graph's commit menu.
@@ -354,6 +408,7 @@ impl RepoTab {
         if ui.button("Copy name").clicked() {
             ui.ctx().copy_text(b.name.clone());
         }
+        self.filter_items(ui, acts, &local_ref(&b.name), b.is_head);
         ui.separator();
         if ui
             .add_enabled(!b.is_head && idle, egui::Button::new("Delete…"))
@@ -481,7 +536,7 @@ impl RepoTab {
             p.text(
                 pos2(rect.right() - 10.0, y),
                 Align2::RIGHT_CENTER,
-                branches.len().to_string(),
+                self.visible_count(branches.iter().map(|b| remote_ref(&b.name))),
                 theme::medium(11.0),
                 t.text_faint,
             );
@@ -523,8 +578,13 @@ impl RepoTab {
                     .strip_prefix(&format!("{}/", remote.name))
                     .unwrap_or(&b.name);
                 let has_pr = self.prs.iter().any(|p| p.branch == short);
-                let r = branch_row_indented(ui, short, has_pr)
-                    .on_hover_text(format!("{}\nDouble-click to check out", b.name));
+                let full = remote_ref(&b.name);
+                let (r, eye_clicked) =
+                    branch_row_indented(ui, short, has_pr, self.graph_filter.shows(&full));
+                if eye_clicked {
+                    acts.push(Action::BranchFilter(Change::Toggle(full.clone())));
+                }
+                let r = r.on_hover_text(format!("{}\nDouble-click to check out", b.name));
                 if r.double_clicked() && idle {
                     acts.push(Action::CheckoutRemote(b.name.clone()));
                 } else if r.clicked() {
@@ -578,6 +638,7 @@ impl RepoTab {
                         if ui.button("Copy name").clicked() {
                             ui.ctx().copy_text(b.name.clone());
                         }
+                        self.filter_items(ui, acts, &full, false);
                         ui.separator();
                         if ui
                             .add_enabled(idle, egui::Button::new("Delete from remote…"))
@@ -979,7 +1040,8 @@ fn branch_row(
     gone: bool,
     in_worktree: bool,
     has_pr: bool,
-) -> Response {
+    eye: Option<bool>,
+) -> (Response, bool) {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     let painter = ui.painter_at(rect);
@@ -990,6 +1052,11 @@ fn branch_row(
         painter.rect_filled(rect, 0.0, t.hover);
     }
     let y = rect.center().y;
+    let (mut right, eye_clicked) = match eye {
+        Some(shown) => eye_button(ui, &resp, rect, shown),
+        None => (rect.right() - 8.0, false),
+    };
+    let shown = eye.unwrap_or(true);
     let icon_rect = Rect::from_center_size(pos2(rect.left() + 34.0, y), vec2(16.0, 16.0));
     if is_head {
         icons::paint(ui, icon_rect, "check", 14.0, t.accent);
@@ -997,7 +1064,6 @@ fn branch_row(
         icons::paint(ui, icon_rect, "git-branch", 13.0, t.text_faint);
     }
 
-    let mut right = rect.right() - 8.0;
     let small = theme::mono(11.0);
     if has_pr {
         let ir = Rect::from_center_size(pos2(right - 6.0, y), vec2(12.0, 12.0));
@@ -1048,19 +1114,42 @@ fn branch_row(
             Align2::LEFT_CENTER,
             name,
             font,
-            t.text,
+            if shown { t.text } else { t.text_faint },
         );
-    resp
+    (resp, eye_clicked)
 }
 
-/// A remote's branch, one level in under its remote.
-fn branch_row_indented(ui: &mut Ui, name: &str, has_pr: bool) -> Response {
+/// The eye at a branch row's right end: on hover, or always while the branch is hidden.
+/// Returns where the row's other things end, and whether it was clicked.
+fn eye_button(ui: &mut Ui, row: &Response, rect: Rect, shown: bool) -> (f32, bool) {
+    let t = Tokens::get(ui.ctx());
+    let r = Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y), vec2(20.0, 20.0));
+    let b = ui
+        .interact(r, row.id.with("eye"), Sense::click())
+        .on_hover_text(if shown {
+            "Hide in the graph"
+        } else {
+            "Show in the graph"
+        });
+    if row.hovered() || b.hovered() || !shown {
+        if b.hovered() {
+            ui.painter().rect_filled(r, t.radius_sm, t.pressed);
+        }
+        let color = if b.hovered() { t.text } else { t.text_faint };
+        icons::paint(ui, r, if shown { "eye" } else { "eye-off" }, 13.0, color);
+    }
+    (r.left() - 4.0, b.clicked())
+}
+
+/// A remote's branch, one level in under its remote, with its eye (see [`eye_button`]).
+fn branch_row_indented(ui: &mut Ui, name: &str, has_pr: bool, shown: bool) -> (Response, bool) {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect, 0.0, t.hover);
     }
     let y = rect.center().y;
+    let (mut right, eye_clicked) = eye_button(ui, &resp, rect, shown);
     icons::paint(
         ui,
         Rect::from_center_size(pos2(rect.left() + 52.0, y), vec2(16.0, 16.0)),
@@ -1068,7 +1157,6 @@ fn branch_row_indented(ui: &mut Ui, name: &str, has_pr: bool) -> Response {
         13.0,
         t.text_faint,
     );
-    let mut right = rect.right() - 8.0;
     if has_pr {
         let ir = Rect::from_center_size(pos2(right - 6.0, y), vec2(12.0, 12.0));
         icons::paint(ui, ir, "git-pull-request", 12.0, t.success);
@@ -1079,9 +1167,9 @@ fn branch_row_indented(ui: &mut Ui, name: &str, has_pr: bool) -> Response {
         Align2::LEFT_CENTER,
         name,
         egui::FontId::proportional(12.5),
-        t.text,
+        if shown { t.text } else { t.text_faint },
     );
-    resp
+    (resp, eye_clicked)
 }
 
 /// An icon, a name and optional faint text after it.

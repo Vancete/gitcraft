@@ -5,10 +5,11 @@ use egui::{
     Align2, Color32, CornerRadius, FontId, Key, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2,
 };
 
+use super::branch_filter::{local_ref, remote_ref};
 use super::widgets;
 use super::{
-    Action, Dialog, Refresh, RepoTab, Undo, WIP_HASH, compare_action, fast_forward_action,
-    merge_action, ops, rebase_action,
+    Action, Dialog, QuickEdit, Refresh, RepoTab, Undo, WIP_HASH, compare_action,
+    fast_forward_action, merge_action, ops, rebase_action,
 };
 use crate::git::{self, Refs};
 use crate::icons;
@@ -430,6 +431,52 @@ impl RepoTab {
             });
         }
         ui.separator();
+        // Quick edits of a commit of the checked-out branch; the rebase they run says when one
+        // can't be done (a commit elsewhere, merges after it).
+        let in_branch = self.refs.current.is_some();
+        let has_parent = !commit.parents.is_empty();
+        if ui
+            .add_enabled(idle && in_branch, egui::Button::new("Edit message…"))
+            .clicked()
+        {
+            acts.push(Action::EditMessage(hash.clone()));
+        }
+        if ui
+            .add_enabled(idle && in_branch && !is_head, egui::Button::new("Move up"))
+            .on_hover_text("Swap it with the commit after it")
+            .clicked()
+        {
+            acts.push(Action::QuickEdit(hash.clone(), QuickEdit::MoveUp));
+        }
+        let grandparent = commit
+            .parents
+            .first()
+            .and_then(|p| self.index.get(p))
+            .and_then(|&row| self.commits.get(row))
+            .is_some_and(|p| !p.parents.is_empty());
+        if ui
+            .add_enabled(
+                idle && in_branch && grandparent,
+                egui::Button::new("Move down"),
+            )
+            .on_hover_text("Swap it with the commit before it")
+            .clicked()
+        {
+            acts.push(Action::QuickEdit(hash.clone(), QuickEdit::MoveDown));
+        }
+        if ui
+            .add_enabled(
+                idle && in_branch && has_parent,
+                egui::Button::new("Drop commit"),
+            )
+            .on_hover_text(
+                "Remove the commit and its changes from the branch (Undo brings it back)",
+            )
+            .clicked()
+        {
+            acts.push(Action::QuickEdit(hash.clone(), QuickEdit::Drop));
+        }
+        ui.separator();
         if ui
             .add_enabled(
                 idle && !is_head,
@@ -508,39 +555,54 @@ impl RepoTab {
     /// a remote, and pulling a local one behind its upstream) or tag; pull when it is the
     /// checked-out branch's remote, further on. Nothing for the checked-out one or while an
     /// operation runs.
+    /// The pills of branches the graph shows: hidden branches (and those left out of a solo)
+    /// lose theirs, even on commits other branches still bring into the graph.
+    fn shown_badges(&self, badges: Vec<Badge>) -> Vec<Badge> {
+        let f = &self.graph_filter;
+        if !f.is_active() {
+            return badges;
+        }
+        badges
+            .into_iter()
+            .filter_map(|mut b| {
+                if b.kind != BadgeKind::Branch {
+                    return Some(b);
+                }
+                let label = b.label.clone();
+                b.remotes
+                    .retain(|r| f.shows(&remote_ref(&format!("{r}/{label}"))));
+                b.local = b.local && (b.head || f.shows(&local_ref(&label)));
+                (b.head || b.local || !b.remotes.is_empty()).then_some(b)
+            })
+            .collect()
+    }
+
     fn pill_checkout(&self, badge: &Badge) -> Option<Action> {
         if badge.head || self.busy_op.is_some() {
             return None;
         }
-        // The checked-out branch's remote pill, further on than the branch: pull.
-        let current = self.refs.current.as_deref() == Some(badge.label.as_str());
-        if badge.kind == BadgeKind::Branch && !badge.local && current {
-            let behind = self
-                .refs
-                .local
-                .iter()
-                .find(|b| b.name == badge.label)
-                .is_some_and(|b| b.ahead_behind().1 > 0);
-            return behind.then_some(Action::Pull);
-        }
+        let local = self.refs.local.iter().find(|b| b.name == badge.label);
+        let behind = local.is_some_and(|b| b.ahead_behind().1 > 0);
         match badge.kind {
-            BadgeKind::Branch if badge.local => {
-                let behind = self
-                    .refs
-                    .local
-                    .iter()
-                    .find(|b| b.name == badge.label)
-                    .is_some_and(|b| matches!(b.ahead_behind(), (0, behind) if behind > 0));
-                Some(if behind {
-                    Action::CheckoutPull(badge.label.clone())
-                } else {
-                    Action::Checkout(badge.label.clone())
+            // A local branch its remote is further on than: there, with the changes kept.
+            BadgeKind::Branch if badge.local => Some(match local {
+                Some(b) if behind && !b.upstream.is_empty() => Action::MoveBranch {
+                    branch: b.name.clone(),
+                    target: b.upstream.clone(),
+                },
+                _ => Action::Checkout(badge.label.clone()),
+            }),
+            // A remote pill further on than its local branch: the local branch moves here.
+            BadgeKind::Branch => {
+                let remote = format!("{}/{}", badge.remotes.first()?, badge.label);
+                Some(match local {
+                    Some(b) if behind && b.upstream == remote => Action::MoveBranch {
+                        branch: b.name.clone(),
+                        target: remote,
+                    },
+                    _ => Action::CheckoutRemote(remote),
                 })
             }
-            BadgeKind::Branch => badge
-                .remotes
-                .first()
-                .map(|remote| Action::CheckoutRemote(format!("{remote}/{}", badge.label))),
             BadgeKind::Tag => Some(Action::Checkout(format!("refs/tags/{}", badge.label))),
             BadgeKind::DetachedHead => None,
         }
@@ -603,7 +665,9 @@ impl RepoTab {
                             ref_pill(ui, ui.painter(), slot.left_center(), b, lane, slot_w, pr);
                             let hint = match self.pill_checkout(b) {
                                 _ if b.head => "checked out",
-                                Some(Action::Pull) => "double-click to pull",
+                                Some(Action::MoveBranch { .. }) => {
+                                    "double-click to move the branch here"
+                                }
                                 _ => "double-click to check out",
                             };
                             let resp = resp.on_hover_text(format!("{} ({hint})", b.describe()));
@@ -791,7 +855,7 @@ impl RepoTab {
 
         // Branch and tag pills, left of the graph, joined to the commit's dot, with the tip's
         // author and how long ago it was made.
-        let badges = badges(&commit.refs, &self.refs);
+        let badges = self.shown_badges(badges(&commit.refs, &self.refs));
         let mut resp = resp;
         if let (Some(first), Some(node_x)) = (badges.first(), node_x) {
             let refs_clip = Rect::from_min_max(rect.min, pos2(gx - 4.0, bottom));
@@ -994,6 +1058,17 @@ impl RepoTab {
         } else {
             FontId::proportional(12.5)
         };
+        // A stash is marked before its message, to tell it from the commits around it.
+        if stash.is_some() {
+            icons::paint(
+                ui,
+                Rect::from_center_size(pos2(x + 9.0, mid), vec2(14.0, 14.0)),
+                "archive",
+                13.0,
+                t.text_dim,
+            );
+            x += 20.0;
+        }
         // The summary, then the rest of the message faded, cut with an ellipsis.
         let text_clip = painter.with_clip_rect(Rect::from_min_max(
             pos2(x, rect.top()),

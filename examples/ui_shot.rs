@@ -4,7 +4,7 @@
 //! `cargo run --example ui_shot -- <repo> <out-prefix> [step]...`
 //!
 //! Steps (coordinates in points, window is 1400×860):
-//! `click:x,y`, `dclick:x,y`, `rclick:x,y`, `hover:x,y`, `drag:x1,y1,x2,y2`, `press:x,y` / `move:x,y` / `release:x,y` (a drag in parts), `leave` (pointer off the window), `open:path` (a repository in a new tab), `key:Escape`, `ckey:P` (Ctrl/Cmd+key), `type:text`, `wait:ms`, `shot`.
+//! `click:x,y`, `dclick:x,y`, `rclick:x,y`, `hover:x,y`, `drag:x1,y1,x2,y2`, `press:x,y` / `move:x,y` / `release:x,y` (a drag in parts), `leave` (pointer off the window), `open:path` (a repository in a new tab), `askpass:prompt` (ssh asking, `|` for a new line), `key:Escape`, `ckey:P` (Ctrl/Cmd+key), `cskey:T` (Ctrl/Cmd+Shift+key), `type:text`, `wait:ms`, `shot`.
 //! Each `shot` writes `<out-prefix>-<n>.png`.
 
 use std::time::{Duration, Instant};
@@ -87,6 +87,11 @@ fn main() {
                     .state_mut()
                     .open_tab(std::path::Path::new(arg), &ctx);
                 settle(&mut harness, 1500);
+            }
+            "askpass" => {
+                let prompt = arg.replace('|', "\n");
+                std::thread::spawn(move || gitcraft::askpass::ask_window(&prompt));
+                settle(&mut harness, 600);
             }
             "leave" => {
                 harness.remove_cursor();
@@ -182,6 +187,12 @@ fn main() {
                     harness.key_press_modifiers(Modifiers::COMMAND, key);
                 }
                 settle(&mut harness, 300);
+            }
+            "cskey" => {
+                if let Some(key) = Key::from_name(arg) {
+                    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, key);
+                }
+                settle(&mut harness, 600);
             }
             "type" => {
                 harness.event(Event::Text(arg.to_owned()));

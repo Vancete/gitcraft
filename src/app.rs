@@ -8,13 +8,16 @@ use std::sync::mpsc::{Receiver, channel};
 use egui::{Align2, Key, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
+use crate::askpass;
+use crate::code_theme::{self, CodeColors, SyntaxStyle};
 use crate::git;
 use crate::icons;
-use crate::repo::RepoTab;
-use crate::settings::Settings;
+use crate::repo::{BranchFilter, RepoTab};
+use crate::settings::{CodeTheme, Settings};
 use crate::tab_look::{self, TabLook};
 use crate::theme::{self, ThemeKind, Tokens};
 use crate::update;
+use crate::vscode;
 
 const MAX_RECENT: usize = 12;
 const TAB_H: f32 = 40.0;
@@ -40,6 +43,8 @@ struct Saved {
     skipped_version: String,
     /// Repository tabs given their own icon or colour.
     tab_looks: BTreeMap<PathBuf, TabLook>,
+    /// Branches hidden from or soloed in each repository's graph.
+    branch_filters: BTreeMap<PathBuf, BranchFilter>,
 }
 
 enum Tab {
@@ -83,12 +88,26 @@ pub struct App {
     update_checked: i64,
     skipped_version: String,
     tab_looks: BTreeMap<PathBuf, TabLook>,
+    branch_filters: BTreeMap<PathBuf, BranchFilter>,
     settings: Settings,
     manual_open: bool,
     palette: Option<Palette>,
     toasts: Vec<Toast>,
     tab_drag: Option<TabDrag>,
+    /// A question from ssh on screen, with what is typed in answer.
+    askpass: Option<(askpass::Request, String)>,
+    /// Tabs closed, latest last, with where they were: Ctrl+Shift+T opens them again.
+    closed: Vec<(Closed, usize)>,
 }
+
+/// A tab closed, as it can be opened again.
+enum Closed {
+    Repo(PathBuf),
+    Settings,
+}
+
+/// How many closed tabs are remembered.
+const MAX_CLOSED: usize = 20;
 
 /// A tab being dragged along the strip.
 #[derive(Clone, Copy)]
@@ -118,6 +137,7 @@ struct Toast {
 /// What a palette entry does outside the open repository.
 enum AppCommand {
     NewTab,
+    ReopenTab,
     Open,
     Create,
     Clone,
@@ -141,8 +161,8 @@ impl App {
             .unwrap_or_default();
         let ctx = &cc.egui_ctx;
         egui_extras::install_image_loaders(ctx);
+        askpass::init(ctx);
         theme::install_fonts(ctx);
-        theme::apply(ctx, saved.theme);
         saved.settings.set(ctx);
         crate::desktop_entry::refresh();
 
@@ -158,6 +178,8 @@ impl App {
             palette: None,
             toasts: Vec::new(),
             tab_drag: None,
+            askpass: None,
+            closed: Vec::new(),
             error: None,
             was_focused: true,
             clone_form: None,
@@ -168,7 +190,9 @@ impl App {
             update_checked: saved.update_checked,
             skipped_version: saved.skipped_version,
             tab_looks: saved.tab_looks,
+            branch_filters: saved.branch_filters,
         };
+        app.apply_theme(ctx);
         if saved.settings.check_updates && git::now() - saved.update_checked > update::INTERVAL {
             let (tx, rx) = channel();
             let ctx2 = ctx.clone();
@@ -181,7 +205,9 @@ impl App {
         if app.git_version.is_ok() {
             for path in saved.open {
                 if path.is_dir() {
-                    app.tabs.push(Tab::Repo(Box::new(RepoTab::new(path, ctx))));
+                    let filter = app.branch_filters.get(&path).cloned().unwrap_or_default();
+                    app.tabs
+                        .push(Tab::Repo(Box::new(RepoTab::with_filter(path, filter, ctx))));
                 }
             }
         }
@@ -224,7 +250,8 @@ impl App {
             self.active = i;
             return;
         }
-        let tab = Tab::Repo(Box::new(RepoTab::new(root, ctx)));
+        let filter = self.branch_filters.get(&root).cloned().unwrap_or_default();
+        let tab = Tab::Repo(Box::new(RepoTab::with_filter(root, filter, ctx)));
         if matches!(self.tabs.get(self.active), Some(Tab::Home)) {
             self.tabs[self.active] = tab;
         } else {
@@ -294,11 +321,68 @@ impl App {
         });
     }
 
+    /// Opens the tab closed last again, where it was (Ctrl+Shift+T).
+    fn reopen_tab(&mut self, ctx: &egui::Context) {
+        let Some((closed, at)) = self.closed.pop() else {
+            return;
+        };
+        let tab = match closed {
+            Closed::Settings => {
+                if let Some(i) = self.tabs.iter().position(|t| matches!(t, Tab::Settings)) {
+                    self.active = i;
+                    return;
+                }
+                Tab::Settings
+            }
+            Closed::Repo(path) => {
+                if let Some(i) = self
+                    .tabs
+                    .iter()
+                    .position(|t| matches!(t, Tab::Repo(r) if r.path == path))
+                {
+                    self.active = i;
+                    return;
+                }
+                if !path.is_dir() {
+                    return self.reopen_tab(ctx);
+                }
+                let filter = self.branch_filters.get(&path).cloned().unwrap_or_default();
+                Tab::Repo(Box::new(RepoTab::with_filter(path, filter, ctx)))
+            }
+        };
+        // A lone start page gives its place up.
+        if self.tabs.len() == 1 && matches!(self.tabs.first(), Some(Tab::Home)) {
+            self.tabs.clear();
+        }
+        let at = at.min(self.tabs.len());
+        self.tabs.insert(at, tab);
+        self.active = at;
+    }
+
     fn close_tab(&mut self, i: usize) {
         if i >= self.tabs.len() {
             return;
         }
-        self.tabs.remove(i);
+        let closed = match self.tabs.remove(i) {
+            Tab::Repo(r) => {
+                // Its graph filter outlives the tab.
+                if r.graph_filter.is_active() {
+                    self.branch_filters
+                        .insert(r.path.clone(), r.graph_filter.clone());
+                } else {
+                    self.branch_filters.remove(&r.path);
+                }
+                Some(Closed::Repo(r.path.clone()))
+            }
+            Tab::Settings => Some(Closed::Settings),
+            Tab::Home => None,
+        };
+        if let Some(closed) = closed {
+            self.closed.push((closed, i));
+            if self.closed.len() > MAX_CLOSED {
+                self.closed.remove(0);
+            }
+        }
         if self.tabs.is_empty() {
             self.tabs.push(Tab::Home);
         }
@@ -332,7 +416,31 @@ impl App {
 
     fn set_theme(&mut self, ctx: &egui::Context, kind: ThemeKind) {
         self.theme = kind;
-        theme::apply(ctx, kind);
+        self.apply_theme(ctx);
+    }
+
+    /// Applies the themes chosen: a VS Code one colours the whole window and the code; with
+    /// gitcraft's own, the window takes the look picked in the theme menu and code the style
+    /// picked in the settings. Open diffs are coloured again.
+    fn apply_theme(&mut self, ctx: &egui::Context) {
+        let vs = self.settings.vscode_theme().and_then(vscode::color_theme);
+        let (tokens, colors) = match vs {
+            Some(vs) => (Tokens::with_vscode(&vs), CodeColors::VsCode(vs)),
+            None => (
+                Tokens::for_kind(self.theme),
+                CodeColors::Builtin(match &self.settings.theme {
+                    CodeTheme::Builtin(style) => *style,
+                    CodeTheme::VsCode(_) => SyntaxStyle::default(),
+                }),
+            ),
+        };
+        code_theme::set_current(colors);
+        theme::apply(ctx, tokens);
+        for tab in &mut self.tabs {
+            if let Tab::Repo(r) = tab {
+                r.recolor(ctx);
+            }
+        }
     }
 
     /// PhotoCraft-style document tabs on a dark strip, `+` after them, the theme menu at the end.
@@ -582,9 +690,29 @@ impl App {
                                 .font(theme::semibold(10.5))
                                 .color(t.text_faint),
                         );
-                        for kind in ThemeKind::ALL {
-                            if ui.radio(self.theme == kind, kind.label()).clicked() {
-                                self.set_theme(ui.ctx(), kind);
+                        let following = self.settings.vscode_theme().map(|vs| vs.name.clone());
+                        ui.add_enabled_ui(following.is_none(), |ui| {
+                            for kind in ThemeKind::ALL {
+                                if ui.radio(self.theme == kind, kind.label()).clicked() {
+                                    self.set_theme(ui.ctx(), kind);
+                                }
+                            }
+                        });
+                        if let Some(name) = following {
+                            ui.separator();
+                            egui::Frame::new()
+                                .inner_margin(egui::Margin::symmetric(16, 2))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(format!("VS Code theme: {name}"))
+                                            .color(t.text_faint)
+                                            .small(),
+                                    );
+                                });
+                            if ui.button("Use gitcraft's themes").clicked() {
+                                self.settings.theme = CodeTheme::default();
+                                self.settings.set(ui.ctx());
+                                self.apply_theme(ui.ctx());
                             }
                         }
                     });
@@ -1015,12 +1143,14 @@ impl eframe::App for App {
         // Shortcuts.
         // A focused text field or the terminal keeps these keys for itself.
         let modal_open = self.clone_form.is_some()
+            || self.askpass.is_some()
             || self.palette.is_some()
             || self.manual_open
             || ctx.egui_wants_keyboard_input();
-        let (new_tab, close, refresh, focused, palette, manual) = ctx.input(|i| {
+        let (new_tab, reopen, close, refresh, focused, palette, manual) = ctx.input(|i| {
             (
-                i.modifiers.command && i.key_pressed(Key::T),
+                i.modifiers.command && !i.modifiers.shift && i.key_pressed(Key::T),
+                i.modifiers.command && i.modifiers.shift && i.key_pressed(Key::T),
                 i.modifiers.command && i.key_pressed(Key::W),
                 i.key_pressed(Key::F5),
                 i.focused,
@@ -1040,6 +1170,9 @@ impl eframe::App for App {
         }
         if new_tab && !modal_open {
             self.new_tab();
+        }
+        if reopen && !modal_open {
+            self.reopen_tab(&ctx);
         }
         if close && !modal_open {
             self.close_tab(self.active);
@@ -1078,8 +1211,10 @@ impl eframe::App for App {
         let active = self.active;
         match self.tabs.get_mut(active) {
             Some(Tab::Repo(repo)) => {
-                repo.keys_blocked =
-                    self.palette.is_some() || self.manual_open || self.clone_form.is_some();
+                repo.keys_blocked = self.palette.is_some()
+                    || self.manual_open
+                    || self.clone_form.is_some()
+                    || self.askpass.is_some();
                 repo.ui(ui);
                 // A worktree asked to be opened in its own tab.
                 if let Some(path) = repo.open_request.take() {
@@ -1100,6 +1235,7 @@ impl eframe::App for App {
         self.clone_dialog(&ctx);
         self.palette_ui(&ctx);
         self.manual_ui(&ctx);
+        self.askpass_ui(&ctx);
 
         // Long operations that ended: a toast, and a desktop notification when away.
         for tab in &mut self.tabs {
@@ -1120,6 +1256,17 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // Each open repository's graph filter; one emptied is forgotten.
+        for tab in &self.tabs {
+            if let Tab::Repo(r) = tab {
+                if r.graph_filter.is_active() {
+                    self.branch_filters
+                        .insert(r.path.clone(), r.graph_filter.clone());
+                } else {
+                    self.branch_filters.remove(&r.path);
+                }
+            }
+        }
         let open: Vec<PathBuf> = self
             .tabs
             .iter()
@@ -1146,6 +1293,7 @@ impl eframe::App for App {
             update_checked: self.update_checked,
             skipped_version: self.skipped_version.clone(),
             tab_looks: self.tab_looks.clone(),
+            branch_filters: self.branch_filters.clone(),
         };
         eframe::set_value(storage, eframe::APP_KEY, &saved);
     }
@@ -1300,6 +1448,11 @@ impl App {
                 Entry::App(AppCommand::NewTab),
             ),
             (
+                "Reopen closed tab".to_owned(),
+                "Ctrl+Shift+T".to_owned(),
+                Entry::App(AppCommand::ReopenTab),
+            ),
+            (
                 "Open repository…".to_owned(),
                 "app".to_owned(),
                 Entry::App(AppCommand::Open),
@@ -1343,6 +1496,7 @@ impl App {
     fn run_entry(&mut self, entry: Entry, ctx: &egui::Context) {
         match entry {
             Entry::App(AppCommand::NewTab) => self.new_tab(),
+            Entry::App(AppCommand::ReopenTab) => self.reopen_tab(ctx),
             Entry::App(AppCommand::Open) => self.pick_existing(ctx),
             Entry::App(AppCommand::Create) => self.pick_new(ctx),
             Entry::App(AppCommand::Clone) => self.start_clone(),
@@ -1502,13 +1656,95 @@ impl App {
                         ui.add_space(32.0);
                         ui.label(RichText::new("Settings").font(theme::semibold(22.0)));
                         ui.add_space(4.0);
+                        let before = self.settings.clone();
                         if self.settings.ui(ui) {
                             self.settings.set(ui.ctx());
+                            if self.settings.theme != before.theme
+                                || self.settings.imported_themes != before.imported_themes
+                            {
+                                self.apply_theme(ui.ctx());
+                            }
                         }
                         ui.add_space(32.0);
                     });
                 });
             });
+    }
+
+    /// ssh asking for a password or passphrase, or whether to trust a host it hasn't seen.
+    fn askpass_ui(&mut self, ctx: &egui::Context) {
+        if self.askpass.is_none() {
+            self.askpass = askpass::take().map(|r| (r, String::new()));
+        }
+        let Some((request, typed)) = &mut self.askpass else {
+            return;
+        };
+        let t = Tokens::get(ctx);
+        let frame = egui::Frame::new()
+            .fill(t.card)
+            .stroke(Stroke::new(1.0, t.field_border))
+            .corner_radius(t.radius_lg)
+            .inner_margin(egui::Margin::same(18))
+            .shadow(ctx.global_style().visuals.window_shadow);
+        let confirm = request.is_confirmation();
+        let mut answer: Option<Option<String>> = None;
+        let resp = egui::Modal::new(egui::Id::new("askpass"))
+            .frame(frame)
+            .backdrop_color(egui::Color32::from_black_alpha(110))
+            .show(ctx, |ui| {
+                ui.set_width(460.0);
+                ui.horizontal(|ui| {
+                    icons::inline(ui, "server", 16.0, t.icon);
+                    let title = if confirm {
+                        "Trust this host?"
+                    } else if request.prompt.to_lowercase().contains("passphrase") {
+                        "SSH asks for your key's passphrase"
+                    } else {
+                        "SSH asks for a password"
+                    };
+                    ui.label(RichText::new(title).font(theme::semibold(15.0)));
+                });
+                ui.add_space(8.0);
+                ui.label(RichText::new(&request.prompt).color(t.text_dim));
+                ui.add_space(10.0);
+                if !confirm {
+                    let field = ui.add(
+                        egui::TextEdit::singleline(typed)
+                            .password(true)
+                            .desired_width(f32::INFINITY),
+                    );
+                    if !field.has_focus() {
+                        field.request_focus();
+                    }
+                    if field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        answer = Some(Some(typed.clone()));
+                    }
+                    ui.add_space(10.0);
+                }
+                ui.horizontal(|ui| {
+                    let ok = if confirm { "Trust and connect" } else { "OK" };
+                    let primary =
+                        egui::Button::new(RichText::new(ok).color(t.accent_text)).fill(t.accent);
+                    if ui.add(primary).clicked() {
+                        answer = Some(Some(if confirm {
+                            "yes".to_owned()
+                        } else {
+                            typed.clone()
+                        }));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        answer = Some(None);
+                    }
+                });
+            });
+        if resp.should_close() && answer.is_none() {
+            answer = Some(None);
+        }
+        if let Some(answer) = answer
+            && let Some((request, _)) = self.askpass.take()
+        {
+            request.answer(answer);
+        }
     }
 
     fn manual_ui(&mut self, ctx: &egui::Context) {
