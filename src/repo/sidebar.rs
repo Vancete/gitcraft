@@ -10,6 +10,7 @@ use super::{
     rebase_action,
 };
 use crate::git::{self, Branch};
+use crate::gitflow::{self, Kind};
 use crate::icons;
 use crate::theme::{self, Tokens};
 
@@ -67,6 +68,7 @@ impl RepoTab {
                     }
                 }
 
+                self.gitflow_section(ui, acts, idle, &filter);
                 self.remotes_section(ui, acts, idle, &filter);
                 self.worktree_section(ui, acts, idle);
                 self.stash_section(ui, acts, idle);
@@ -257,6 +259,18 @@ impl RepoTab {
         b: &Branch,
         idle: bool,
     ) {
+        if let Some((kind, name)) = self.gitflow.classify(&b.name) {
+            if ui
+                .add_enabled(
+                    idle,
+                    egui::Button::new(format!("Finish {} {name}…", kind.label())),
+                )
+                .clicked()
+            {
+                acts.push(Action::Dialog(self.gitflow_finish(kind, name)));
+            }
+            ui.separator();
+        }
         let elsewhere = self
             .worktrees
             .iter()
@@ -1205,4 +1219,189 @@ fn plain_row(ui: &mut Ui, icon: &str, name: &str, sub: &str) -> Response {
         );
     }
     resp
+}
+
+impl RepoTab {
+    /// GIT FLOW: set it up, start feature / release / hotfix branches, and the ones open.
+    fn gitflow_section(&self, ui: &mut Ui, acts: &mut Vec<Action>, idle: bool, filter: &str) {
+        let flow = &self.gitflow;
+        let open_branches: Vec<(&Branch, Kind)> = self
+            .refs
+            .local
+            .iter()
+            .filter_map(|b| flow.classify(&b.name).map(|(k, _)| (b, k)))
+            .filter(|(b, _)| filter.is_empty() || b.name.to_lowercase().contains(filter))
+            .collect();
+        let count = if flow.initialized {
+            open_branches.len().to_string()
+        } else {
+            String::new()
+        };
+        if !widgets::section(
+            ui,
+            "gitflow",
+            "git-merge",
+            "GIT FLOW",
+            count,
+            flow.initialized,
+        ) {
+            return;
+        }
+        if !flow.initialized {
+            let r = plain_row(
+                ui,
+                "settings",
+                "Set up git flow…",
+                "develop, feature/, release/…",
+            );
+            if r.clicked() && idle {
+                acts.push(Action::Dialog(Dialog::GitflowInit {
+                    config: flow.clone(),
+                }));
+            }
+            return;
+        }
+        for kind in Kind::ALL {
+            let r = plain_row(
+                ui,
+                "plus",
+                &format!("Start {}…", kind.label()),
+                &format!("from {}", kind.base(flow)),
+            );
+            if r.clicked() && idle {
+                acts.push(Action::Dialog(Dialog::gitflow_start(kind)));
+            }
+        }
+        for (b, kind) in open_branches {
+            let sub = if b.is_head {
+                "checked out"
+            } else {
+                kind.label()
+            };
+            let r =
+                plain_row(ui, kind.icon(), &b.name, sub).on_hover_text("Double-click to check out");
+            // A Finish button at the row's end while the pointer is on it.
+            let mut finish = false;
+            if ui.rect_contains_pointer(r.rect) {
+                let t = Tokens::get(ui.ctx());
+                let bt = Rect::from_center_size(
+                    pos2(r.rect.right() - 36.0, r.rect.center().y),
+                    vec2(56.0, 20.0),
+                );
+                let br = ui
+                    .interact(bt, r.id.with("finish"), Sense::click())
+                    .on_hover_text(format!("Finish {} {}", kind.label(), b.name));
+                let fill = if br.hovered() { t.accent } else { t.pressed };
+                ui.painter().rect_filled(bt, t.radius_sm, fill);
+                ui.painter().text(
+                    bt.center(),
+                    Align2::CENTER_CENTER,
+                    "Finish",
+                    egui::FontId::proportional(11.5),
+                    if br.hovered() { t.accent_text } else { t.text },
+                );
+                finish = br.clicked();
+            }
+            if finish {
+                if idle && let Some((kind, name)) = flow.classify(&b.name) {
+                    acts.push(Action::Dialog(self.gitflow_finish(kind, name)));
+                }
+            } else if r.double_clicked() && !b.is_head && idle {
+                acts.push(Action::Checkout(b.name.clone()));
+            } else if r.clicked() {
+                acts.push(Action::SelectHash(b.target.clone()));
+            }
+            egui::Popup::context_menu(&r)
+                .style(crate::theme::menu_style)
+                .show(|ui| self.branch_menu_items(ui, acts, b, idle));
+        }
+        let r = plain_row(ui, "settings", "Git flow settings…", "");
+        if r.clicked() && idle {
+            acts.push(Action::Dialog(Dialog::GitflowInit {
+                config: flow.clone(),
+            }));
+        }
+    }
+
+    /// Confirms finishing `kind` `name`, listing the commands it runs.
+    pub(super) fn gitflow_finish(&self, kind: Kind, name: &str) -> Dialog {
+        let flow = &self.gitflow;
+        let tag = gitflow::tag_name(flow, name);
+        let tag_exists = self.refs.tags.iter().any(|t| t.name == tag);
+        let ops = gitflow::finish_ops(flow, kind, name, tag_exists, true);
+        let keep = gitflow::finish_ops(flow, kind, name, tag_exists, false);
+        let into = match kind {
+            Kind::Feature => format!("into {}", flow.develop),
+            Kind::Release | Kind::Hotfix => {
+                format!("into {} (tagged {tag}) and {}", flow.main, flow.develop)
+            }
+        };
+        let mut body = format!(
+            "Merges {}{name} {into}, then deletes it.\n\n{}",
+            kind.prefix(flow),
+            gitflow::describe(&ops)
+        );
+        if !self.work.is_clean() {
+            body.push_str("\n\nYou have uncommitted changes: commit or stash them first.");
+        }
+        body.push_str(
+            "\n\nOn a conflict it stops there: resolve it, commit, and finish again to run the rest.",
+        );
+        Dialog::confirm(
+            &format!("Finish {} {name}", kind.label()),
+            body,
+            "Finish",
+            ops,
+            Some(("Keep the branch".to_owned(), keep)),
+        )
+    }
+}
+
+impl RepoTab {
+    /// The toolbar's Flow menu: start a feature / release / hotfix, finish the current one.
+    pub(super) fn flow_menu(&self, ui: &mut Ui, acts: &mut Vec<Action>, idle: bool) {
+        let flow = &self.gitflow;
+        let b = icons::tool_button(ui, "git-merge", "Flow", idle)
+            .on_hover_text("Git flow: start or finish feature, release and hotfix branches");
+        egui::Popup::menu(&b)
+            .style(crate::theme::menu_style)
+            .show(|ui| {
+                if !flow.initialized {
+                    if ui.button("Set up git flow…").clicked() {
+                        acts.push(Action::Dialog(Dialog::GitflowInit {
+                            config: flow.clone(),
+                        }));
+                    }
+                    return;
+                }
+                for kind in Kind::ALL {
+                    if ui.button(format!("Start {}…", kind.label())).clicked() {
+                        acts.push(Action::Dialog(Dialog::gitflow_start(kind)));
+                    }
+                }
+                let open: Vec<(Kind, &str)> = self
+                    .refs
+                    .local
+                    .iter()
+                    .filter_map(|b| flow.classify(&b.name))
+                    .collect();
+                if !open.is_empty() {
+                    ui.separator();
+                    for (kind, name) in open {
+                        if ui
+                            .button(format!("Finish {} {name}…", kind.label()))
+                            .clicked()
+                        {
+                            acts.push(Action::Dialog(self.gitflow_finish(kind, name)));
+                        }
+                    }
+                }
+                ui.separator();
+                if ui.button("Git flow settings…").clicked() {
+                    acts.push(Action::Dialog(Dialog::GitflowInit {
+                        config: flow.clone(),
+                    }));
+                }
+            });
+    }
 }

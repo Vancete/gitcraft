@@ -66,6 +66,7 @@ const FEATURES: &[(&str, &[&str])] = &[
             "Conflicts open in a three-pane editor with Ours, Theirs and Both for each conflict.",
             "Right-click a file for its history and blame.",
             "A terminal panel with tabs, in the repository's folder.",
+            "Git flow: the Flow button in the toolbar (or GIT FLOW on the left) sets it up, starts feature, release and hotfix branches and finishes them; on such a branch, Finish sits next to its name.",
             "When ssh needs a password, a key's passphrase or to trust a new host, gitcraft asks in a dialog (macOS and Linux).",
         ],
     ),

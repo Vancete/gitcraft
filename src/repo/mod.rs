@@ -25,6 +25,7 @@ use crate::git::{
     self, Commit, CommitDetail, Identity, InProgress, Refs, Remote, Stash, StatusFile, WorkStatus,
     Worktree,
 };
+use crate::gitflow;
 use crate::graph::{self, Graph};
 use crate::icons;
 use crate::settings::Settings;
@@ -84,6 +85,7 @@ struct Loaded {
     stashes: Vec<Stash>,
     remotes: Vec<Remote>,
     identity: Identity,
+    gitflow: gitflow::Config,
     /// How many commits were asked for (more exist when that many came back).
     requested: usize,
 }
@@ -439,6 +441,7 @@ pub struct RepoTab {
     stashes: Vec<Stash>,
     remotes: Vec<Remote>,
     identity: Identity,
+    gitflow: gitflow::Config,
     forge: Option<Forge>,
     prs: Vec<PullRequest>,
     pr_error: Option<String>,
@@ -543,6 +546,7 @@ impl RepoTab {
             stashes: Vec::new(),
             remotes: Vec::new(),
             identity: Identity::default(),
+            gitflow: gitflow::Config::default(),
             forge: None,
             prs: Vec::new(),
             pr_error: None,
@@ -628,6 +632,8 @@ impl RepoTab {
                 let stashes = git::stashes(&path).unwrap_or_default();
                 let remotes = git::remotes(&path).unwrap_or_default();
                 let identity = git::identity(&path);
+                let locals: Vec<String> = refs.local.iter().map(|b| b.name.clone()).collect();
+                let gitflow = gitflow::config(&path, &locals);
                 Ok(Box::new(Loaded {
                     refs,
                     history,
@@ -636,6 +642,7 @@ impl RepoTab {
                     stashes,
                     remotes,
                     identity,
+                    gitflow,
                     requested: count,
                 }))
             })())
@@ -1759,6 +1766,7 @@ impl RepoTab {
                         self.stash_view =
                             viewed.and_then(|h| self.stashes.iter().position(|s| s.hash == h));
                         self.identity = loaded.identity;
+                        self.gitflow = loaded.gitflow;
                         let forge = forge::detect(&loaded.remotes);
                         self.remotes = loaded.remotes;
                         if forge != self.forge {
@@ -2604,6 +2612,7 @@ impl RepoTab {
             {
                 acts.push(Action::Dialog(Dialog::stash()));
             }
+            self.flow_menu(ui, acts, idle);
             let terminal = icons::tool_button(ui, "square-terminal", "Terminal", true)
                 .on_hover_text("Terminal in the repository folder");
             if self.terminal_open {
@@ -2648,6 +2657,23 @@ impl RepoTab {
                 Some(branch) => {
                     icons::inline(ui, "git-branch", 14.0, t.text_dim);
                     ui.label(egui::RichText::new(branch).font(crate::theme::medium(12.5)));
+                    // On a flow branch: finishing it is one click away.
+                    if let Some((kind, name)) = self.gitflow.classify(branch) {
+                        ui.add_space(6.0);
+                        if widgets::primary_button(
+                            ui,
+                            &format!("Finish {}", kind.label()),
+                            idle,
+                            0.0,
+                        )
+                        .on_hover_text(format!(
+                            "Merge {branch} where git flow puts it, and delete it"
+                        ))
+                        .clicked()
+                        {
+                            acts.push(Action::Dialog(self.gitflow_finish(kind, name)));
+                        }
+                    }
                 }
                 None if self.refs.head.is_empty() => {
                     ui.label(egui::RichText::new("No commits yet").color(t.text_dim));
