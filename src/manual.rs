@@ -23,6 +23,7 @@ const FEATURES: &[(&str, &[&str])] = &[
             "Right-click a tab to give it its own icon and highlight colour.",
             "Settings › Themes: four code styles, or a VS Code theme imported from your VS Code, which colours the whole window. The palette icon switches between Dark, Medium Gray and Light.",
             "Drag a tab along the strip to reorder the tabs.",
+            "Profiles: the button left of the tabs switches between sets of tabs and recent repositories (work, personal…). Each can have a projects folder, a commit identity, a GitHub account and environment variables; set them up in Settings.",
         ],
     ),
     (

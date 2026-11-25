@@ -139,6 +139,9 @@ impl Terminal {
         if let Some(path) = crate::shell_path::path() {
             cmd.env("PATH", path);
         }
+        for (k, v) in crate::workspace::terminal_vars(Some(cwd)) {
+            cmd.env(k, v);
+        }
         let child = pair
             .slave
             .spawn_command(cmd)

@@ -18,6 +18,7 @@ use crate::tab_look::{self, TabLook};
 use crate::theme::{self, ThemeKind, Tokens};
 use crate::update;
 use crate::vscode;
+use crate::workspace::{self, DEFAULT_ID, Workspace};
 
 const MAX_RECENT: usize = 12;
 const TAB_H: f32 = 40.0;
@@ -45,6 +46,20 @@ struct Saved {
     tab_looks: BTreeMap<PathBuf, TabLook>,
     /// Branches hidden from or soloed in each repository's graph.
     branch_filters: BTreeMap<PathBuf, BranchFilter>,
+    /// The profile in use; `open`, `active`, `recent` and `clone_parent` above are the default
+    /// profile's, the others' are in `workspace_states`.
+    workspace: u64,
+    workspace_states: BTreeMap<u64, WsState>,
+}
+
+/// A profile's tabs and recent list, kept while another profile is in use.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct WsState {
+    open: Vec<PathBuf>,
+    active: usize,
+    recent: Vec<PathBuf>,
+    clone_parent: Option<PathBuf>,
 }
 
 enum Tab {
@@ -98,6 +113,12 @@ pub struct App {
     askpass: Option<(askpass::Request, String)>,
     /// Tabs closed, latest last, with where they were: Ctrl+Shift+T opens them again.
     closed: Vec<(Closed, usize)>,
+    /// The profile in use, and the others' tabs and recent lists.
+    workspace: u64,
+    ws_states: BTreeMap<u64, WsState>,
+    /// The repositories in the profile's projects folder, and the folder they were read from.
+    folder_repos: Vec<PathBuf>,
+    folder_scanned: Option<PathBuf>,
 }
 
 /// A tab closed, as it can be opened again.
@@ -144,6 +165,7 @@ enum AppCommand {
     Settings,
     Manual,
     Theme(ThemeKind),
+    Workspace(u64),
 }
 
 enum Entry {
@@ -166,13 +188,40 @@ impl App {
         saved.settings.set(ctx);
         crate::desktop_entry::refresh();
 
+        // The default profile's state is stored where it was before profiles existed.
+        let mut ws_states = saved.workspace_states;
+        ws_states.insert(
+            DEFAULT_ID,
+            WsState {
+                open: saved.open,
+                active: saved.active,
+                recent: saved.recent,
+                clone_parent: saved.clone_parent,
+            },
+        );
+        let workspaces = &saved.settings.workspaces;
+        // A repository given on the command line opens in the profile whose folder holds it.
+        let mut current = open_arg
+            .as_deref()
+            .and_then(|p| std::fs::canonicalize(p).ok())
+            .and_then(|p| workspace::owning(workspaces, &p))
+            .unwrap_or(saved.workspace);
+        if !workspaces.iter().any(|w| w.id == current) {
+            current = DEFAULT_ID;
+        }
+        let state = ws_states.remove(&current).unwrap_or_default();
+
         let mut app = Self {
             git_version: git::version(),
             tabs: Vec::new(),
             active: 0,
-            recent: saved.recent,
+            recent: state.recent,
             theme: saved.theme,
-            clone_parent: saved.clone_parent,
+            clone_parent: state.clone_parent,
+            workspace: current,
+            ws_states,
+            folder_repos: Vec::new(),
+            folder_scanned: None,
             settings: saved.settings.clone(),
             manual_open: false,
             palette: None,
@@ -193,6 +242,8 @@ impl App {
             branch_filters: saved.branch_filters,
         };
         app.apply_theme(ctx);
+        app.activate_workspace();
+        app.refresh_folder_repos();
         if saved.settings.check_updates && git::now() - saved.update_checked > update::INTERVAL {
             let (tx, rx) = channel();
             let ctx2 = ctx.clone();
@@ -202,25 +253,123 @@ impl App {
             });
             app.update_rx = Some(rx);
         }
-        if app.git_version.is_ok() {
-            for path in saved.open {
-                if path.is_dir() {
-                    let filter = app.branch_filters.get(&path).cloned().unwrap_or_default();
-                    app.tabs
-                        .push(Tab::Repo(Box::new(RepoTab::with_filter(path, filter, ctx))));
-                }
-            }
-        }
-        if app.tabs.is_empty() {
-            app.tabs.push(Tab::Home);
-        }
-        app.active = saved.active.min(app.tabs.len() - 1);
+        app.open_state(state.open, state.active, ctx);
         if let Some(path) = open_arg
             && app.git_version.is_ok()
         {
             app.open_repo(&path, ctx);
         }
         app
+    }
+
+    /// Opens the saved tabs `open` (folders gone are skipped), `active` the one shown.
+    fn open_state(&mut self, open: Vec<PathBuf>, active: usize, ctx: &egui::Context) {
+        if self.git_version.is_ok() {
+            for path in open {
+                if path.is_dir() {
+                    let filter = self.branch_filters.get(&path).cloned().unwrap_or_default();
+                    self.tabs
+                        .push(Tab::Repo(Box::new(RepoTab::with_filter(path, filter, ctx))));
+                }
+            }
+        }
+        if self.tabs.is_empty() {
+            self.tabs.push(Tab::Home);
+        }
+        self.active = active.min(self.tabs.len() - 1);
+    }
+
+    fn current_workspace(&self) -> Option<&Workspace> {
+        self.settings
+            .workspaces
+            .iter()
+            .find(|w| w.id == self.workspace)
+    }
+
+    fn workspace_name(&self) -> String {
+        match self.current_workspace() {
+            Some(w) if !w.name.trim().is_empty() => w.name.trim().to_owned(),
+            Some(_) => "Unnamed profile".to_owned(),
+            None => "Default".to_owned(),
+        }
+    }
+
+    /// Tells the processes started from now on which profile they belong to.
+    fn activate_workspace(&self) {
+        workspace::activate(self.current_workspace());
+    }
+
+    /// Lists the repositories of the profile's folder again when the folder changed.
+    fn refresh_folder_repos(&mut self) {
+        let folder = self.current_workspace().and_then(Workspace::folder_path);
+        if folder != self.folder_scanned {
+            self.folder_repos = folder
+                .as_deref()
+                .map(workspace::repos_in)
+                .unwrap_or_default();
+            self.folder_scanned = folder;
+        }
+    }
+
+    /// The open tabs and recent list as saved (each tab's graph filter is kept as well).
+    fn current_state(&mut self) -> WsState {
+        for tab in &self.tabs {
+            if let Tab::Repo(r) = tab {
+                if r.graph_filter.is_active() {
+                    self.branch_filters
+                        .insert(r.path.clone(), r.graph_filter.clone());
+                } else {
+                    self.branch_filters.remove(&r.path);
+                }
+            }
+        }
+        let open: Vec<PathBuf> = self
+            .tabs
+            .iter()
+            .filter_map(|t| match t {
+                Tab::Repo(r) => Some(r.path.clone()),
+                Tab::Home | Tab::Settings => None,
+            })
+            .collect();
+        // Index of the active tab among the saved (repo) tabs.
+        let active = self
+            .tabs
+            .iter()
+            .take(self.active + 1)
+            .filter(|t| matches!(t, Tab::Repo(_)))
+            .count()
+            .saturating_sub(1);
+        WsState {
+            open,
+            active,
+            recent: self.recent.clone(),
+            clone_parent: self.clone_parent.clone(),
+        }
+    }
+
+    /// Puts the profile in use away (tabs, recent list) and brings profile `id`'s back.
+    fn switch_workspace(&mut self, id: u64, ctx: &egui::Context) {
+        if id == self.workspace {
+            return;
+        }
+        let keep_settings = self.tabs.iter().any(|t| matches!(t, Tab::Settings))
+            && matches!(self.tabs.get(self.active), Some(Tab::Settings));
+        let state = self.current_state();
+        self.ws_states.insert(self.workspace, state);
+        let next = self.ws_states.remove(&id).unwrap_or_default();
+        self.workspace = id;
+        self.activate_workspace();
+        self.refresh_folder_repos();
+        self.recent = next.recent;
+        self.clone_parent = next.clone_parent;
+        self.tabs.clear();
+        self.closed.clear();
+        self.error = None;
+        self.open_state(next.open, next.active, ctx);
+        // Switched from the settings page: stay on it.
+        if keep_settings {
+            self.open_settings();
+        }
     }
 
     /// Opens `path` as the start page's "Open" button does (for `examples/ui_shot.rs`).
@@ -267,7 +416,8 @@ impl App {
     }
 
     fn pick_existing(&mut self, ctx: &egui::Context) {
-        if let Some(dir) = rfd::FileDialog::new()
+        if let Some(dir) = self
+            .start_dialog()
             .set_title("Open a git repository")
             .pick_folder()
         {
@@ -276,7 +426,8 @@ impl App {
     }
 
     fn pick_new(&mut self, ctx: &egui::Context) {
-        let Some(dir) = rfd::FileDialog::new()
+        let Some(dir) = self
+            .start_dialog()
             .set_title("Choose a folder for the new repository")
             .pick_folder()
         else {
@@ -295,10 +446,24 @@ impl App {
         }
     }
 
+    /// A folder picker opening in the profile's projects folder, if it has one.
+    fn start_dialog(&self) -> rfd::FileDialog {
+        let dialog = rfd::FileDialog::new();
+        match self.current_workspace().and_then(Workspace::folder_path) {
+            Some(dir) if dir.is_dir() => dialog.set_directory(dir),
+            _ => dialog,
+        }
+    }
+
     fn start_clone(&mut self) {
         let parent = self
             .clone_parent
             .clone()
+            .or_else(|| {
+                self.current_workspace()
+                    .and_then(Workspace::folder_path)
+                    .filter(|d| d.is_dir())
+            })
             .or_else(|| {
                 self.recent
                     .first()
@@ -453,7 +618,19 @@ impl App {
         let mut restyle = None;
         let default_look = TabLook::default();
         let mut moved = None;
+        let mut switch_to = None;
+        let mut manage = false;
         ui.horizontal(|ui| {
+            {
+                ui.allocate_ui_with_layout(
+                    vec2(240.0, TAB_H),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_min_height(TAB_H);
+                        self.workspace_button(ui, &mut switch_to, &mut manage);
+                    },
+                );
+            }
             const GAP: f32 = 1.0;
             ui.spacing_mut().item_spacing.x = GAP;
             let ctx = ui.ctx().clone();
@@ -766,6 +943,25 @@ impl App {
                 }
             });
         });
+        if let Some(id) = switch_to {
+            self.switch_workspace(id, &ui.ctx().clone());
+            return;
+        }
+        if manage {
+            let ctx = ui.ctx().clone();
+            if self.settings.workspaces.is_empty() {
+                let id = workspace::next_id(&self.settings.workspaces);
+                self.settings.workspaces.push(Workspace {
+                    id,
+                    name: "Work".to_owned(),
+                    ..Default::default()
+                });
+                self.settings.set(&ctx);
+            }
+            crate::settings::show_profiles(&ctx);
+            self.open_settings();
+            return;
+        }
         if let Some(i) = select {
             self.active = i;
         }
@@ -785,6 +981,47 @@ impl App {
         if add {
             self.new_tab();
         }
+    }
+
+    /// The profile in use, at the left of the tabs; its menu switches to another.
+    fn workspace_button(&self, ui: &mut Ui, switch_to: &mut Option<u64>, manage: &mut bool) {
+        let t = Tokens::get(ui.ctx());
+        let b = ui
+            .add(
+                egui::Button::new(
+                    RichText::new(self.workspace_name())
+                        .font(theme::medium(12.0))
+                        .color(t.text),
+                )
+                .min_size(vec2(0.0, 28.0))
+                .corner_radius(t.radius),
+            )
+            .on_hover_text("Profile: its own tabs, recent repositories, identity and accounts");
+        egui::Popup::menu(&b)
+            .style(crate::theme::menu_style)
+            .show(|ui| {
+                let entries = std::iter::once((DEFAULT_ID, "Default".to_owned())).chain(
+                    self.settings
+                        .workspaces
+                        .iter()
+                        .map(|w| (w.id, w.name.clone())),
+                );
+                for (id, name) in entries {
+                    if ui.selectable_label(id == self.workspace, name).clicked() {
+                        *switch_to = Some(id);
+                    }
+                }
+                ui.separator();
+                let label = if self.settings.workspaces.is_empty() {
+                    "Create a profile…"
+                } else {
+                    "Manage profiles…"
+                };
+                if ui.button(label).clicked() {
+                    *manage = true;
+                }
+            });
+        ui.add_space(8.0);
     }
 
     fn home(&mut self, ui: &mut Ui) {
@@ -856,18 +1093,48 @@ impl App {
                     if !self.recent.is_empty() {
                         ui.add_space(30.0);
                         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            let heading = if self.settings.workspaces.is_empty() {
+                                "RECENT".to_owned()
+                            } else {
+                                format!("RECENT · {}", self.workspace_name().to_uppercase())
+                            };
                             ui.label(
-                                RichText::new("RECENT")
+                                RichText::new(heading)
                                     .font(theme::semibold(10.5))
                                     .color(t.text_faint),
                             );
                             ui.add_space(4.0);
                             ui.spacing_mut().item_spacing.y = 2.0;
                             for (i, path) in self.recent.iter().enumerate() {
-                                match recent_row(ui, path) {
+                                match recent_row(ui, path, true) {
                                     Some(RecentClick::Open) => open = Some(path.clone()),
                                     Some(RecentClick::Forget) => forget = Some(i),
                                     None => {}
+                                }
+                            }
+                        });
+                    }
+                    // The profile's projects folder: its repositories not in the recent list.
+                    let others: Vec<&PathBuf> = self
+                        .folder_repos
+                        .iter()
+                        .filter(|p| !self.recent.iter().any(|r| same_path(r, p)))
+                        .collect();
+                    if let Some(folder) = &self.folder_scanned
+                        && !others.is_empty()
+                    {
+                        ui.add_space(24.0);
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.label(
+                                RichText::new(format!("IN {}", folder.display()))
+                                    .font(theme::semibold(10.5))
+                                    .color(t.text_faint),
+                            );
+                            ui.add_space(4.0);
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            for path in others {
+                                if let Some(RecentClick::Open) = recent_row(ui, path, false) {
+                                    open = Some(path.clone());
                                 }
                             }
                         });
@@ -1120,6 +1387,13 @@ impl eframe::App for App {
         // Settings changed outside the Settings tab (the diff view's side by side and whole file)
         // live in the context; keep them for saving.
         self.settings = Settings::get(&ctx);
+        // The profile in use was removed in the settings: back to the default one. Edited:
+        // processes started from now on use what it says now.
+        if self.workspace != DEFAULT_ID && self.current_workspace().is_none() {
+            self.switch_workspace(DEFAULT_ID, &ctx);
+        }
+        self.activate_workspace();
+        self.refresh_folder_repos();
 
         // eframe shows the window after the first frame; maximize it on the next one.
         if MAXIMIZE_WHEN_SHOWN.load(Ordering::Relaxed) {
@@ -1256,39 +1530,21 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        // Each open repository's graph filter; one emptied is forgotten.
-        for tab in &self.tabs {
-            if let Tab::Repo(r) = tab {
-                if r.graph_filter.is_active() {
-                    self.branch_filters
-                        .insert(r.path.clone(), r.graph_filter.clone());
-                } else {
-                    self.branch_filters.remove(&r.path);
-                }
-            }
-        }
-        let open: Vec<PathBuf> = self
-            .tabs
-            .iter()
-            .filter_map(|t| match t {
-                Tab::Repo(r) => Some(r.path.clone()),
-                Tab::Home | Tab::Settings => None,
-            })
-            .collect();
-        // Index of the active tab among the saved (repo) tabs.
-        let active = self
-            .tabs
-            .iter()
-            .take(self.active + 1)
-            .filter(|t| matches!(t, Tab::Repo(_)))
-            .count()
-            .saturating_sub(1);
+        let mut states = self.ws_states.clone();
+        states.insert(self.workspace, self.current_state());
+        // Profiles removed in the settings take their tabs with them.
+        states.retain(|id, _| {
+            *id == DEFAULT_ID || self.settings.workspaces.iter().any(|w| w.id == *id)
+        });
+        let default = states.remove(&DEFAULT_ID).unwrap_or_default();
         let saved = Saved {
-            open,
-            active,
-            recent: self.recent.clone(),
+            open: default.open,
+            active: default.active,
+            recent: default.recent,
             theme: self.theme,
-            clone_parent: self.clone_parent.clone(),
+            clone_parent: default.clone_parent,
+            workspace: self.workspace,
+            workspace_states: states,
             settings: self.settings.clone(),
             update_checked: self.update_checked,
             skipped_version: self.skipped_version.clone(),
@@ -1352,7 +1608,8 @@ enum RecentClick {
     Forget,
 }
 
-fn recent_row(ui: &mut Ui, path: &Path) -> Option<RecentClick> {
+/// A repository row of the start page; `forgettable`: with a button removing it from the list.
+fn recent_row(ui: &mut Ui, path: &Path, forgettable: bool) -> Option<RecentClick> {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
     let hovered = resp.hovered();
@@ -1388,7 +1645,7 @@ fn recent_row(ui: &mut Ui, path: &Path) -> Option<RecentClick> {
         t.text_faint,
     );
     let mut forget = false;
-    if hovered || ui.rect_contains_pointer(rect) {
+    if forgettable && (hovered || ui.rect_contains_pointer(rect)) {
         let x_rect = Rect::from_center_size(pos2(rect.right() - 18.0, y), vec2(20.0, 20.0));
         let x = ui
             .interact(x_rect, resp.id.with("forget"), Sense::click())
@@ -1478,6 +1735,22 @@ impl App {
                 Entry::App(AppCommand::Manual),
             ),
         ];
+        for ws in &self.settings.workspaces {
+            if ws.id != self.workspace {
+                list.push((
+                    format!("Profile: {}", ws.name),
+                    "profile".to_owned(),
+                    Entry::App(AppCommand::Workspace(ws.id)),
+                ));
+            }
+        }
+        if self.workspace != DEFAULT_ID {
+            list.push((
+                "Profile: Default".to_owned(),
+                "profile".to_owned(),
+                Entry::App(AppCommand::Workspace(DEFAULT_ID)),
+            ));
+        }
         for kind in ThemeKind::ALL {
             list.push((
                 format!("Theme: {}", kind.label()),
@@ -1503,6 +1776,7 @@ impl App {
             Entry::App(AppCommand::Settings) => self.open_settings(),
             Entry::App(AppCommand::Manual) => self.manual_open = true,
             Entry::App(AppCommand::Theme(kind)) => self.set_theme(ctx, kind),
+            Entry::App(AppCommand::Workspace(id)) => self.switch_workspace(id, ctx),
             Entry::Repo(i) => {
                 if let Some(Tab::Repo(repo)) = self.tabs.get_mut(self.active)
                     && let Some((_, _, action)) = repo.palette_items().into_iter().nth(i)

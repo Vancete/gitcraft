@@ -62,6 +62,7 @@ fn tool(forge: Forge, repo: &Path, args: &[&str]) -> Result<String, String> {
     cmd.current_dir(repo).args(args);
     cmd.env("GH_PROMPT_DISABLED", "1").env("NO_PROMPT", "1");
     crate::shell_path::apply(&mut cmd);
+    crate::workspace::apply_tool(&mut cmd);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
