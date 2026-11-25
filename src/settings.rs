@@ -3,6 +3,7 @@
 use egui::{RichText, Ui};
 use serde::{Deserialize, Serialize};
 
+use crate::ai::{self, Assistant};
 use crate::code_theme::SyntaxStyle;
 use crate::repo::widgets::{SliderUnit, slider};
 use crate::theme::{self, Tokens};
@@ -64,6 +65,12 @@ pub struct Settings {
     pub profiles: Vec<Profile>,
     /// Profiles with their own tabs, folder, identity and accounts (see [`workspace`]).
     pub workspaces: Vec<Workspace>,
+    /// The coding assistant that writes commit messages and explains commits.
+    pub ai: Assistant,
+    /// Its model (`--model` / `-m`); empty for the tool's default.
+    pub ai_model: String,
+    pub ai_commit_rules: String,
+    pub ai_explain_rules: String,
 }
 
 impl Default for Settings {
@@ -88,6 +95,10 @@ impl Default for Settings {
             imported_themes: Vec::new(),
             profiles: Vec::new(),
             workspaces: Vec::new(),
+            ai: Assistant::Off,
+            ai_model: String::new(),
+            ai_commit_rules: ai::DEFAULT_COMMIT_RULES.to_owned(),
+            ai_explain_rules: ai::DEFAULT_EXPLAIN_RULES.to_owned(),
         }
     }
 }
@@ -253,6 +264,7 @@ impl Settings {
                 ui.end_row();
             });
 
+        self.ai_ui(ui, &section);
         self.workspaces_ui(ui, &section);
 
         section(ui, "IDENTITIES");
@@ -297,6 +309,99 @@ impl Settings {
 }
 
 impl Settings {
+    /// AI: the assistant (detected on the PATH), its model and the rules it follows.
+    fn ai_ui(&mut self, ui: &mut Ui, section: &dyn Fn(&mut Ui, &str)) {
+        let t = Tokens::get(ui.ctx());
+        section(ui, "AI");
+        ui.label(
+            RichText::new(
+                "Write commit messages and explain commits with a coding assistant installed on this machine, signed in with its own account. Only the diff and these rules are sent to it.",
+            )
+            .color(t.text_dim)
+            .small(),
+        );
+        ui.add_space(4.0);
+        egui::Grid::new("settings-ai")
+            .num_columns(2)
+            .spacing([16.0, 8.0])
+            .show(ui, |ui| {
+                ui.label("Assistant");
+                // Asked once per session: looking through the PATH every frame would be waste.
+                let found_id = egui::Id::new("gitcraft-ai-found");
+                let found: Vec<Assistant> = ui
+                    .data(|d| d.get_temp::<Vec<Assistant>>(found_id))
+                    .unwrap_or_else(|| {
+                        let f: Vec<Assistant> = Assistant::ALL
+                            .into_iter()
+                            .filter(|a| a.installed())
+                            .collect();
+                        ui.data_mut(|d| d.insert_temp(found_id, f.clone()));
+                        f
+                    });
+                let name = |a: Assistant| {
+                    if a == Assistant::Off || found.contains(&a) {
+                        a.label().to_owned()
+                    } else {
+                        format!("{} (not found)", a.label())
+                    }
+                };
+                egui::ComboBox::from_id_salt("ai-assistant")
+                    .selected_text(name(self.ai))
+                    .show_ui(ui, |ui| {
+                        for a in Assistant::ALL {
+                            ui.selectable_value(&mut self.ai, a, name(a));
+                        }
+                    });
+                ui.end_row();
+                if self.ai != Assistant::Off {
+                    ui.label("Model");
+                    let hint = match self.ai {
+                        Assistant::Claude => "default (e.g. haiku, sonnet, opus)",
+                        _ => "default (e.g. gpt-5-codex)",
+                    };
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.ai_model)
+                            .hint_text(hint)
+                            .desired_width(240.0),
+                    );
+                    ui.end_row();
+                }
+            });
+        if self.ai == Assistant::Off {
+            return;
+        }
+        for (title, rules, default) in [
+            (
+                "Commit message rules",
+                &mut self.ai_commit_rules,
+                ai::DEFAULT_COMMIT_RULES,
+            ),
+            (
+                "Explain commit rules",
+                &mut self.ai_explain_rules,
+                ai::DEFAULT_EXPLAIN_RULES,
+            ),
+        ] {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(title);
+                if *rules != default && ui.small_button("Reset").clicked() {
+                    *rules = default.to_owned();
+                }
+            });
+            ui.add(
+                egui::TextEdit::multiline(rules)
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY),
+            );
+        }
+        ui.label(
+            RichText::new("A profile's own commit rules (below) replace the first ones.")
+                .color(t.text_faint)
+                .small(),
+        );
+    }
+
     /// PROFILES: each with its tabs and recent list (kept by the app), folder, identity,
     /// GitHub account and environment.
     fn workspaces_ui(&mut self, ui: &mut Ui, section: &dyn Fn(&mut Ui, &str)) {
@@ -403,6 +508,17 @@ impl Settings {
                                     };
                                 }
                             });
+                            ui.end_row();
+
+                            ui.label("Commit rules").on_hover_text(
+                                "For commit messages the assistant writes in this profile",
+                            );
+                            ui.add(
+                                egui::TextEdit::multiline(&mut ws.commit_rules)
+                                    .hint_text("Empty: the rules in AI above")
+                                    .desired_rows(2)
+                                    .desired_width(360.0),
+                            );
                             ui.end_row();
 
                             ui.label("Environment").on_hover_text(

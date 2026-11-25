@@ -89,6 +89,10 @@ so your config, credentials and hooks apply as usual.
 - Commit box (Ctrl+Enter; with nothing staged it stages everything), _Amend last commit_
   (warns when the commit is already pushed), the identity you commit as, and saved identities to
   switch a repository to.
+- Commit messages by a coding assistant installed on your machine (Claude Code or Codex,
+  signed in with their own account): _AI message_ in the commit box writes one for the staged
+  changes, following the rules you give in Settings › AI (a profile can have its own). A
+  commit's details have _Explain with…_ for a short explanation of what it changes.
 - Undo / redo (Ctrl+Z / Ctrl+Y) of commits, amends, merges, rebases, pulls, resets,
   cherry-picks, reverts, checkouts, branch create / rename / delete, tags and stashes.
 
@@ -225,6 +229,7 @@ was made this way, on a demo repository.
 | `src/repo/dialogs.rs`    | branch, tag, stash, remote, worktree, pull request and confirm dialogs             |
 | `src/repo/widgets.rs`    | shared painted widgets (panel headers, file rows, avatars, tabs)                   |
 | `src/workspace.rs`       | profiles: their settings, and what the processes they start are given              |
+| `src/ai.rs`              | commit messages and explanations by `claude` or `codex`                            |
 | `src/app.rs`             | window shell: tabs, start page, cloning, palette, settings, toasts                 |
 
 Assets and their licences: [ATTRIBUTION.md](ATTRIBUTION.md).

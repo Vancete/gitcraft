@@ -56,6 +56,7 @@ const FEATURES: &[(&str, &[&str])] = &[
             "A commit's files as a list of paths or a tree of folders: the switch above them.",
             "Double-click a line of a diff (or right-click it) to open the file in your editor at that line; the <> button opens it at the first change. The editor is set in Settings.",
             "Write the summary and description and commit; amend the last commit; pick the identity you commit as.",
+            "With an assistant chosen in Settings › AI (Claude Code or Codex), AI message writes the commit message from your changes and your rules, and a commit's details offer Explain.",
             "Double-click a commit's message in the right pane to edit it (any commit of the checked-out branch with no merges after it).",
             "Undo and redo commits, merges, rebases, resets, checkouts, branches, tags and stashes.",
         ],

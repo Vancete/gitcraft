@@ -35,6 +35,8 @@ pub struct Workspace {
     /// `KEY=VALUE` per line, set for git, gh and terminals: `GIT_SSH_COMMAND`,
     /// `AZURE_CONFIG_DIR`, `AZURE_DEVOPS_EXT_PAT`… Lines starting with `#` are ignored.
     pub env: String,
+    /// Rules for commit messages written by the assistant; empty uses the ones in the settings.
+    pub commit_rules: String,
 }
 
 impl Workspace {
@@ -275,6 +277,14 @@ pub fn apply_git(cmd: &mut Command, dir: Option<&Path>, args: &[&str]) {
     for (k, v) in vars(dir, !config) {
         cmd.env(k, v);
     }
+}
+
+/// The active profile's own commit-message rules, if it has some.
+pub fn commit_rules() -> Option<String> {
+    lock()
+        .as_ref()
+        .map(|a| a.ws.commit_rules.trim().to_owned())
+        .filter(|r| !r.is_empty())
 }
 
 /// For `gh` / `glab`.
