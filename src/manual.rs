@@ -30,6 +30,8 @@ const FEATURES: &[(&str, &[&str])] = &[
         &[
             "Every branch with its pill on its latest commit: solid for the checked-out one, a laptop when it is local, a cloud when a remote has it.",
             "Double-click a pill to check that branch out; hover +N to see every branch of the commit, and right-click any of them.",
+            "A pill too narrow for its name shows it whole while the pointer is on it.",
+            "Drag the bars between the column headers to resize the columns; double-click the graph's bar to fit it to its lanes again.",
             "Double-click a branch's pill further on than the branch (its remote, say) to move the branch there: your uncommitted changes are stashed and brought back on top. When the two have diverged, the toolbar offers to rebase, merge or reset instead.",
             "Hover a branch in the left pane for its eye: hide it from the graph, or right-click it and Solo to draw only that one. The headers count the branches shown; the toolbar shows them all again.",
             "Right-click a commit or a pill for branches, tags, merge, rebase, cherry-pick, revert, reset and more.",
@@ -49,7 +51,7 @@ const FEATURES: &[(&str, &[&str])] = &[
     (
         "Changes and commits",
         &[
-            "Stage, unstage or discard whole files from the right pane.",
+            "Stage, unstage or discard whole files from the right pane; double-click a file to stage or unstage it.",
             "In a file's diff, stage, unstage or discard one hunk, or click the lines you want and act on only those.",
             "A diff shows only the changes or the whole file, unified or side by side, and remembers both. Drag over its lines to select text and Ctrl+C to copy it; the strip by the scrollbar marks where the changes are, and the arrows (Alt+Up / Alt+Down) jump between them.",
             "A commit's files as a list of paths or a tree of folders: the switch above them.",

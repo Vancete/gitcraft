@@ -973,6 +973,30 @@ impl RepoTab {
                 max_w.max(40.0),
                 has_pr,
             );
+            // A name cut short shows whole, over everything else, while the pointer is on it.
+            let pointer_on = ui
+                .ctx()
+                .pointer_hover_pos()
+                .is_some_and(|p| pill.contains(p) && ui.clip_rect().contains(p));
+            if pointer_on && pill_width(&rp, first, has_pr) > pill.width() + 0.5 {
+                let layer = egui::LayerId::new(
+                    egui::Order::Foreground,
+                    ui.id().with(("pill-whole", &commit.hash)),
+                );
+                let screen = ui.ctx().content_rect();
+                let mut top = ui.new_child(egui::UiBuilder::new().layer_id(layer).max_rect(screen));
+                top.set_clip_rect(screen);
+                let painter = top.painter().clone();
+                ref_pill(
+                    &top,
+                    &painter,
+                    pos2(rect.left() + 8.0, mid),
+                    first,
+                    row_color,
+                    f32::INFINITY,
+                    has_pr,
+                );
+            }
             // Right-clicking a branch pill puts that branch's actions on top of the menu.
             if resp.secondary_clicked() {
                 let on_pill = ui
@@ -1384,31 +1408,15 @@ fn badges(decorations: &[String], refs: &Refs) -> Vec<Badge> {
 }
 
 /// Paints a pill with white text and icons, at most `max_w` wide; returns its rect.
-fn ref_pill(
-    ui: &Ui,
-    painter: &egui::Painter,
-    left_center: Pos2,
-    badge: &Badge,
-    lane: Color32,
-    max_w: f32,
-    pr: bool,
-) -> Rect {
-    const ICON: f32 = 15.0;
-    let t = Tokens::get(ui.ctx());
-    let white = Color32::WHITE;
-    let fill = match badge.kind {
-        BadgeKind::Branch if badge.local => lane,
-        // Only on a remote: a darker shade of the lane.
-        BadgeKind::Branch => lane.lerp_to_gamma(Color32::BLACK, 0.35),
-        BadgeKind::Tag => Color32::from_rgb(104, 104, 112),
-        BadgeKind::DetachedHead => t.warning,
-    };
-    // Every pill but the checked-out one is a darker shade of its colour.
-    let fill = if badge.head {
-        fill
-    } else {
-        fill.lerp_to_gamma(Color32::BLACK, DIMMED)
-    };
+/// How wide `badge`'s pill is with its whole name.
+fn pill_width(painter: &egui::Painter, badge: &Badge, pr: bool) -> f32 {
+    let (lead, trail, font) = pill_parts(badge, pr);
+    let text = painter.layout_no_wrap(badge.label.clone(), font, Color32::WHITE);
+    text.size().x + 16.0 + (lead.len() + trail.len()) as f32 * PILL_ICON
+}
+
+/// A pill's icons before and after its name, and the name's font.
+fn pill_parts(badge: &Badge, pr: bool) -> (Vec<&'static str>, Vec<&'static str>, FontId) {
     let mut lead = Vec::new();
     let mut trail = Vec::new();
     match badge.kind {
@@ -1435,6 +1443,38 @@ fn ref_pill(
     } else {
         theme::medium(11.0)
     };
+    (lead, trail, font)
+}
+
+/// The room each icon of a pill takes.
+const PILL_ICON: f32 = 15.0;
+
+fn ref_pill(
+    ui: &Ui,
+    painter: &egui::Painter,
+    left_center: Pos2,
+    badge: &Badge,
+    lane: Color32,
+    max_w: f32,
+    pr: bool,
+) -> Rect {
+    const ICON: f32 = PILL_ICON;
+    let t = Tokens::get(ui.ctx());
+    let white = Color32::WHITE;
+    let fill = match badge.kind {
+        BadgeKind::Branch if badge.local => lane,
+        // Only on a remote: a darker shade of the lane.
+        BadgeKind::Branch => lane.lerp_to_gamma(Color32::BLACK, 0.35),
+        BadgeKind::Tag => Color32::from_rgb(104, 104, 112),
+        BadgeKind::DetachedHead => t.warning,
+    };
+    // Every pill but the checked-out one is a darker shade of its colour.
+    let fill = if badge.head {
+        fill
+    } else {
+        fill.lerp_to_gamma(Color32::BLACK, DIMMED)
+    };
+    let (lead, trail, font) = pill_parts(badge, pr);
     let icons_w = (lead.len() + trail.len()) as f32 * ICON;
     let text_room = (max_w - 16.0 - icons_w).max(16.0);
     let label = truncate(painter, &badge.label, &font, text_room);

@@ -490,6 +490,8 @@ pub struct RepoTab {
     prompt: Option<Prompt>,
     /// A commit whose message opens for editing once its details are shown.
     edit_message: Option<String>,
+    /// The file whose diff opens when the one shown leaves its list (staged, unstaged…).
+    diff_successor: Option<git::StatusFile>,
     /// Branches hidden from the graph or soloed in it.
     pub(crate) graph_filter: BranchFilter,
     last_fetch: Instant,
@@ -580,6 +582,7 @@ impl RepoTab {
             focus_wip: false,
             prompt: None,
             edit_message: None,
+            diff_successor: None,
             graph_filter: BranchFilter::default(),
             last_fetch: Instant::now(),
             terminals: Vec::new(),
@@ -827,13 +830,29 @@ impl RepoTab {
                 self.conflict = None;
                 if still {
                     self.open_diff(key, ctx);
+                } else if let Some(next) = self.diff_successor.take() {
+                    // Staged (or unstaged) away: on to the next file of the same list.
+                    self.open_diff(DiffKey::Work(next), ctx);
                 }
             }
         }
+        self.diff_successor = None;
 
         if let Some(hash) = self.pending_goto.clone() {
             self.goto(&hash, ctx);
         }
+    }
+
+    /// When the file whose diff is shown leaves its list in `new`: the one to show instead.
+    fn successor_in(&self, new: &git::WorkStatus) -> Option<git::StatusFile> {
+        let Some(DiffView {
+            key: DiffKey::Work(file),
+            ..
+        }) = &self.diff
+        else {
+            return None;
+        };
+        successor(&self.work, new, file)
     }
 
     fn select(&mut self, row: usize, ctx: &egui::Context) {
@@ -1749,6 +1768,7 @@ impl RepoTab {
                         self.refs = loaded.refs;
                         self.has_more = loaded.history.len() >= loaded.requested;
                         self.history = loaded.history;
+                        self.diff_successor = self.successor_in(&loaded.work);
                         self.work = loaded.work;
                         self.worktrees = loaded.worktrees;
                         // Stash numbers shift when one is pushed or dropped; follow the commit.
@@ -1800,6 +1820,7 @@ impl RepoTab {
             }
             Msg::Status(result) => match result {
                 Ok(work) => {
+                    self.diff_successor = self.successor_in(&work);
                     self.work = work;
                     self.rebuild(ctx);
                     if self.compare.as_ref().is_some_and(|c| c.target.is_none()) {
@@ -3033,6 +3054,37 @@ impl RepoTab {
     }
 }
 
+/// `file` left its list between `old` and `new`: the next file of that list still in it, or the
+/// one before when it was the last.
+fn successor(
+    old: &git::WorkStatus,
+    new: &git::WorkStatus,
+    file: &git::StatusFile,
+) -> Option<git::StatusFile> {
+    let list = |w: &'_ git::WorkStatus| -> Vec<git::StatusFile> {
+        match file.area {
+            git::Area::Staged => w.staged.clone(),
+            git::Area::Conflicted => w.conflicted.clone(),
+            _ => w.unstaged.clone(),
+        }
+    };
+    let (before, after) = (list(old), list(new));
+    if after.contains(file) {
+        return None;
+    }
+    let i = before.iter().position(|f| f == file)?;
+    let remains = |f: &&git::StatusFile| after.contains(f);
+    before
+        .get(i + 1..)
+        .and_then(|rest| rest.iter().find(remains))
+        .or_else(|| {
+            before
+                .get(..i)
+                .and_then(|rest| rest.iter().rev().find(remains))
+        })
+        .cloned()
+}
+
 /// The line of a git error worth showing in the toolbar: conflicts and `error:`/`fatal:` lines
 /// beat progress chatter like "Auto-merging x".
 fn headline(msg: &str) -> String {
@@ -3096,7 +3148,32 @@ mod tests {
         assert_eq!(args("code", None), os(&["src/a.rs"]));
     }
 
-    use super::{DiffKey, DiffView, headline};
+    use super::{DiffKey, DiffView, headline, successor};
+    use crate::git;
+
+    #[test]
+    fn the_next_file_follows_one_staged_away() {
+        let file = |p: &str, area| git::StatusFile {
+            path: p.to_owned(),
+            old_path: None,
+            code: 'M',
+            area,
+        };
+        let unstaged = |names: &[&str]| git::WorkStatus {
+            unstaged: names.iter().map(|n| file(n, git::Area::Unstaged)).collect(),
+            ..Default::default()
+        };
+        let old = unstaged(&["a", "b", "c"]);
+        let pick = |new: &git::WorkStatus, p: &str| {
+            successor(&old, new, &file(p, git::Area::Unstaged)).map(|f| f.path)
+        };
+        // The next one, or the one before when the last went.
+        assert_eq!(pick(&unstaged(&["a", "c"]), "b").as_deref(), Some("c"));
+        assert_eq!(pick(&unstaged(&["a", "b"]), "c").as_deref(), Some("b"));
+        // Still listed (lines staged, not all): nothing changes; the list emptied: nothing.
+        assert_eq!(pick(&unstaged(&["a", "b", "c"]), "b"), None);
+        assert_eq!(pick(&unstaged(&[]), "b"), None);
+    }
 
     #[test]
     fn an_older_diff_answer_does_not_replace_a_newer_one() {

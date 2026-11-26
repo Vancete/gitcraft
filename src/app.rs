@@ -559,7 +559,8 @@ impl App {
                 };
                 let rect = Rect::from_min_size(pos2(x, strip.top()), vec2(w, TAB_H));
                 let resp = ui.interact(rect, id, Sense::click_and_drag());
-                let hovered = resp.hovered() && dragging.is_none();
+                // By the pointer, not `hovered()`: over the close button, that one has the hover.
+                let hovered = dragging.is_none() && ui.rect_contains_pointer(rect);
                 let look = match tab {
                     Tab::Repo(r) => self.tab_looks.get(&r.path).unwrap_or(&default_look),
                     Tab::Home | Tab::Settings => &default_look,
@@ -617,19 +618,22 @@ impl App {
                     Rect::from_center_size(pos2(rect.right() - 15.0, y), vec2(18.0, 18.0));
                 if busy {
                     egui::Spinner::new().size(11.0).paint_at(ui, close_rect);
-                } else if active || hovered {
+                } else {
+                    // Always there to click; drawn on the active tab and the one under the pointer.
                     let c = ui.interact(close_rect, resp.id.with("close"), Sense::click());
-                    if c.hovered() {
-                        ui.painter().rect_filled(close_rect, t.radius_sm, t.pressed);
+                    if active || hovered {
+                        if c.hovered() {
+                            ui.painter().rect_filled(close_rect, t.radius_sm, t.pressed);
+                        }
+                        icons::paint(
+                            ui,
+                            close_rect,
+                            "x",
+                            12.0,
+                            if c.hovered() { t.text } else { t.text_faint },
+                        );
                     }
-                    icons::paint(
-                        ui,
-                        close_rect,
-                        "x",
-                        12.0,
-                        if c.hovered() { t.text } else { t.text_faint },
-                    );
-                    if c.clicked() {
+                    if c.clicked() || c.middle_clicked() {
                         close = Some(i);
                     }
                     if dragging.is_none() {
@@ -1301,8 +1305,12 @@ impl eframe::App for App {
 
 /// The window and taskbar icon (the `.exe` gets the same picture from `build.rs`).
 pub fn window_icon() -> egui::IconData {
-    eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon/gitcraft-256.png"))
-        .unwrap_or_default()
+    // On macOS this is the Dock's icon too, which Apple's grid draws with a margin around it.
+    #[cfg(target_os = "macos")]
+    let png: &[u8] = include_bytes!("../assets/app-icon/gitcraft-macos-1024.png");
+    #[cfg(not(target_os = "macos"))]
+    let png: &[u8] = include_bytes!("../assets/app-icon/gitcraft-256.png");
+    eframe::icon_data::from_png_bytes(png).unwrap_or_default()
 }
 
 /// A large clickable card on the start page.

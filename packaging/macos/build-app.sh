@@ -19,13 +19,14 @@ strip -x "$app/Contents/MacOS/gitcraft"
 sed "s/@VERSION@/$version/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
 printf 'APPL????' > "$app/Contents/PkgInfo"
 
-# The icon, from the 256 px PNG (the larger sizes are left to macOS to scale).
+# The icon, every size from the 1024 px macOS one: drawn inside Apple's icon grid, with the
+# margin and shadow other apps have (the full-bleed picture looks oversized in the Dock).
 iconset="$work/gitcraft.iconset"
 mkdir "$iconset"
-for entry in 16x16:16 16x16@2x:32 32x32:32 32x32@2x:64 128x128:128 128x128@2x:256 256x256:256; do
+for entry in 16x16:16 16x16@2x:32 32x32:32 32x32@2x:64 128x128:128 128x128@2x:256   256x256:256 256x256@2x:512 512x512:512 512x512@2x:1024; do
   name="${entry%%:*}"
   px="${entry##*:}"
-  sips -z "$px" "$px" assets/app-icon/gitcraft-256.png --out "$iconset/icon_$name.png" >/dev/null
+  sips -z "$px" "$px" assets/app-icon/gitcraft-macos-1024.png --out "$iconset/icon_$name.png" >/dev/null
 done
 iconutil -c icns -o "$app/Contents/Resources/gitcraft.icns" "$iconset"
 

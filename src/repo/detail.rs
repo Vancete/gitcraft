@@ -560,7 +560,14 @@ impl RepoTab {
                 if !self.work.conflicted.is_empty() {
                     list_header(ui, "CONFLICTED", self.work.conflicted.len(), None);
                     for f in &self.work.conflicted {
-                        match self.work_row(ui, acts, f, &[("check", "Mark resolved (stage)")]) {
+                        // No double-click here: marking a file resolved should be meant.
+                        match self.work_row(
+                            ui,
+                            acts,
+                            f,
+                            &[("check", "Mark resolved (stage)")],
+                            false,
+                        ) {
                             RowClick::Open => acts.push(Action::OpenDiff(DiffKey::Work(f.clone()))),
                             RowClick::Button(_) => acts.push(stage_action(
                                 "Mark resolved",
@@ -586,6 +593,7 @@ impl RepoTab {
                         acts,
                         f,
                         &[("undo-2", "Discard changes…"), ("plus", "Stage")],
+                        true,
                     ) {
                         RowClick::Open => acts.push(Action::OpenDiff(DiffKey::Work(f.clone()))),
                         RowClick::Button(0) => acts.push(Action::Dialog(discard_dialog(f))),
@@ -614,7 +622,7 @@ impl RepoTab {
                     acts.push(stage_action("Unstage all", vec![all]));
                 }
                 for f in staged {
-                    match self.work_row(ui, acts, f, &[("minus", "Unstage")]) {
+                    match self.work_row(ui, acts, f, &[("minus", "Unstage")], true) {
                         RowClick::Open => acts.push(Action::OpenDiff(DiffKey::Work(f.clone()))),
                         RowClick::Button(_) => {
                             acts.push(stage_action("Unstage", vec![unstage_args(&head, &f.path)]))
@@ -628,13 +636,15 @@ impl RepoTab {
             });
     }
 
-    /// One working-tree file with hover buttons (hidden while an operation runs).
+    /// One working-tree file with hover buttons (hidden while an operation runs). With
+    /// `double_stages`, a double-click does what the last button does (stage / unstage).
     fn work_row(
         &self,
         ui: &mut Ui,
         acts: &mut Vec<Action>,
         f: &StatusFile,
         buttons: &[(&str, &str)],
+        double_stages: bool,
     ) -> RowClick {
         let key = DiffKey::Work(f.clone());
         let selected = self.open_key() == Some(&key);
@@ -652,6 +662,9 @@ impl RepoTab {
         }
         match r.button {
             Some(i) => RowClick::Button(i),
+            None if double_stages && r.row.double_clicked() && !buttons.is_empty() => {
+                RowClick::Button(buttons.len() - 1)
+            }
             None if r.row.clicked() => RowClick::Open,
             None => RowClick::None,
         }

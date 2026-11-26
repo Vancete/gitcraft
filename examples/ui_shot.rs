@@ -4,7 +4,7 @@
 //! `cargo run --example ui_shot -- <repo> <out-prefix> [step]...`
 //!
 //! Steps (coordinates in points, window is 1400×860):
-//! `click:x,y`, `dclick:x,y`, `rclick:x,y`, `hover:x,y`, `drag:x1,y1,x2,y2`, `press:x,y` / `move:x,y` / `release:x,y` (a drag in parts), `leave` (pointer off the window), `open:path` (a repository in a new tab), `askpass:prompt` (ssh asking, `|` for a new line), `key:Escape`, `ckey:P` (Ctrl/Cmd+key), `cskey:T` (Ctrl/Cmd+Shift+key), `type:text`, `wait:ms`, `shot`.
+//! `click:x,y`, `dclick:x,y`, `rclick:x,y`, `mclick:x,y` (middle button), `hover:x,y`, `drag:x1,y1,x2,y2`, `press:x,y` / `move:x,y` / `release:x,y` (a drag in parts), `leave` (pointer off the window), `open:path` (a repository in a new tab), `askpass:prompt` (ssh asking, `|` for a new line), `key:Escape`, `ckey:P` (Ctrl/Cmd+key), `cskey:T` (Ctrl/Cmd+Shift+key), `type:text`, `wait:ms`, `shot`.
 //! Each `shot` writes `<out-prefix>-<n>.png`.
 
 use std::time::{Duration, Instant};
@@ -33,12 +33,12 @@ fn main() {
     for step in steps {
         let (cmd, arg) = step.split_once(':').unwrap_or((step.as_str(), ""));
         match cmd {
-            "click" | "rclick" | "cclick" | "sclick" => {
+            "click" | "rclick" | "mclick" | "cclick" | "sclick" => {
                 let pos = point(arg);
-                let button = if cmd == "rclick" {
-                    PointerButton::Secondary
-                } else {
-                    PointerButton::Primary
+                let button = match cmd {
+                    "rclick" => PointerButton::Secondary,
+                    "mclick" => PointerButton::Middle,
+                    _ => PointerButton::Primary,
                 };
                 let modifiers = match cmd {
                     "cclick" => Modifiers::COMMAND,

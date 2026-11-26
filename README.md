@@ -26,7 +26,10 @@ so your config, credentials and hooks apply as usual.
   to their commit: white text, a laptop icon when the branch is local, a cloud when a remote has
   it at that commit (`x` and `origin/x` make one pill), a pull-request icon when one is open,
   `+N` when more refs share the commit, the author's avatar and how long ago it was ("2 hours
-  ago"). Author, date and hash columns are optional (Settings).
+  ago"). Author, date and hash columns are optional (Settings). Drag the bars between the column
+  headers to resize the columns (they make room for each other instead of overlapping);
+  double-click the graph's bar to fit it to its lanes. A pill too narrow for its name shows it
+  whole under the pointer.
 - The checked-out branch's pill is solid, the others a darker shade. Double-click a pill to
   check that branch (or tag) out; hover `+N` to list every pill of the commit and double-click
   the one you want.
