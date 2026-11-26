@@ -36,6 +36,16 @@ pub struct Settings {
     pub shell: String,
     /// Width of the branch/tag column of the graph.
     pub refs_width: f32,
+    /// Width of the graph column; 0 = fit the lanes of the repository.
+    pub graph_width: f32,
+    /// Widths of the author, date and hash columns (dragged in the graph header).
+    pub author_width: f32,
+    pub date_width: f32,
+    pub hash_width: f32,
+    /// The column bar dragged last: that column keeps its width while the others make room.
+    pub last_resized: Option<crate::repo::columns::Bar>,
+    /// How far that bar was pulled past its column's minimum, shrinking the columns right of it.
+    pub column_push: f32,
     pub show_author: bool,
     /// An absolute date column (tips show a relative date either way).
     pub show_date: bool,
@@ -70,6 +80,12 @@ impl Default for Settings {
             terminal_font: 12.5,
             shell: String::new(),
             refs_width: 270.0,
+            graph_width: 0.0,
+            author_width: 150.0,
+            date_width: 118.0,
+            hash_width: 70.0,
+            last_resized: None,
+            column_push: 0.0,
             show_author: true,
             show_date: false,
             show_hash: false,
@@ -145,7 +161,7 @@ impl Settings {
             self.zoom(ui);
             ui.end_row();
             ui.label("Branch column width");
-            slider(ui, &mut self.refs_width, 180.0..=480.0, 10.0, SliderUnit::Suffix(" px"));
+            slider(ui, &mut self.refs_width, 150.0..=2000.0, 10.0, SliderUnit::Suffix(" px"));
             ui.end_row();
             ui.label("Graph columns");
             ui.horizontal(|ui| {
