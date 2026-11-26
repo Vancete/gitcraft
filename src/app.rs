@@ -1899,7 +1899,9 @@ mod tests {
     #[test]
     fn window_icon_decodes() {
         let icon = window_icon();
-        assert_eq!((icon.width, icon.height), (256, 256));
+        // macOS gets the 1024 px picture drawn in Apple's grid.
+        let size = if cfg!(target_os = "macos") { 1024 } else { 256 };
+        assert_eq!((icon.width, icon.height), (size, size));
         assert!(
             icon.rgba.chunks(4).any(|p| p[3] > 0),
             "the icon isn't blank"
