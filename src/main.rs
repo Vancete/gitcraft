@@ -17,6 +17,8 @@ fn main() -> eframe::Result {
             .with_app_id("gitcraft")
             .with_inner_size([1400.0, 860.0])
             .with_min_inner_size([800.0, 500.0])
+            // On GNOME (Wayland) the window buttons are in the tab strip instead.
+            .with_decorations(gitcraft::window_controls::layout().is_none())
             .with_icon(app::window_icon()),
         // Runs after eframe restored the last session's size and position.
         window_builder: Some(Box::new(|builder| {
