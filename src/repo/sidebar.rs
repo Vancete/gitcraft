@@ -164,7 +164,20 @@ impl RepoTab {
         let full = local_ref(&b.name);
         // The checked-out branch is always drawn.
         let eye = (!b.is_head).then(|| self.graph_filter.shows(&full));
-        let (r, eye_clicked) = branch_row(
+        // Updating it in place: not the checked-out one (Pull does that), nor one another
+        // worktree has (git won't move it there).
+        let update_tip = (!b.is_head
+            && elsewhere.is_none()
+            && !b.upstream.is_empty()
+            && !b.upstream_gone()
+            && idle)
+            .then(|| {
+                format!(
+                    "Update {} from {} without switching to it",
+                    b.name, b.upstream
+                )
+            });
+        let (r, eye_clicked, update_clicked) = branch_row(
             ui,
             &b.name,
             b.is_head,
@@ -174,9 +187,16 @@ impl RepoTab {
             elsewhere.is_some(),
             has_pr,
             eye,
+            update_tip.as_deref(),
         );
         if eye_clicked {
             acts.push(Action::BranchFilter(Change::Toggle(full)));
+        }
+        if update_clicked {
+            acts.push(Action::UpdateBranch {
+                branch: b.name.clone(),
+                merge: false,
+            });
         }
         let tip = match (b.upstream.is_empty(), b.upstream_gone()) {
             (true, _) => "Not tracking a remote branch".to_owned(),
@@ -284,6 +304,40 @@ impl RepoTab {
                     Some(&b.name),
                     &self.refs.head,
                 )));
+            }
+        }
+        let updatable = !b.upstream.is_empty() && !b.upstream_gone() && elsewhere.is_none();
+        if updatable && !b.is_head {
+            ui.separator();
+            if ui
+                .add_enabled(
+                    idle,
+                    egui::Button::new(format!("Update from {}", b.upstream)),
+                )
+                .on_hover_text("Fetch it and fast-forward it, without switching to it")
+                .clicked()
+            {
+                acts.push(Action::UpdateBranch {
+                    branch: b.name.clone(),
+                    merge: false,
+                });
+            }
+            if let Some(current) = self.refs.current.as_deref()
+                && ui
+                    .add_enabled(
+                        idle,
+                        egui::Button::new(format!("Update and merge into {current}")),
+                    )
+                    .on_hover_text(format!(
+                        "Bring {} up to date from {}, then merge it into {current}",
+                        b.name, b.upstream
+                    ))
+                    .clicked()
+            {
+                acts.push(Action::UpdateBranch {
+                    branch: b.name.clone(),
+                    merge: true,
+                });
             }
         }
         if let Some(current) = self.refs.current.as_deref()
@@ -1041,7 +1095,8 @@ fn branch_row(
     in_worktree: bool,
     has_pr: bool,
     eye: Option<bool>,
-) -> (Response, bool) {
+    update: Option<&str>,
+) -> (Response, bool, bool) {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     let painter = ui.painter_at(rect);
@@ -1056,6 +1111,22 @@ fn branch_row(
         Some(shown) => eye_button(ui, &resp, rect, shown),
         None => (rect.right() - 8.0, false),
     };
+    let mut update_clicked = false;
+    if let Some(tip) = update {
+        let r = Rect::from_center_size(pos2(right - 10.0, y), vec2(20.0, 20.0));
+        let b = ui
+            .interact(r, resp.id.with("update"), Sense::click())
+            .on_hover_text(tip);
+        if resp.hovered() || b.hovered() {
+            if b.hovered() {
+                ui.painter().rect_filled(r, t.radius_sm, t.pressed);
+            }
+            let color = if b.hovered() { t.text } else { t.text_faint };
+            icons::paint(ui, r, "refresh-cw", 12.0, color);
+        }
+        update_clicked = b.clicked();
+        right = r.left() - 4.0;
+    }
     let shown = eye.unwrap_or(true);
     let icon_rect = Rect::from_center_size(pos2(rect.left() + 34.0, y), vec2(16.0, 16.0));
     if is_head {
@@ -1085,18 +1156,27 @@ fn branch_row(
         );
         right = r.left() - 6.0;
     }
+    // Commits waiting to be pulled or pushed: a red pill with an arrow and the count.
     for (n, icon) in [(behind, "arrow-down"), (ahead, "arrow-up")] {
         if n > 0 {
-            let r = painter.text(
-                pos2(right, y),
-                Align2::RIGHT_CENTER,
-                n.to_string(),
-                small.clone(),
-                t.text_dim,
+            const H: f32 = 16.0;
+            let text = if n > 99 {
+                "99+".to_owned()
+            } else {
+                n.to_string()
+            };
+            let galley = painter.layout_no_wrap(text, small.clone(), egui::Color32::WHITE);
+            let w = 5.0 + 10.0 + 2.0 + galley.size().x + 6.0;
+            let pill = Rect::from_min_max(pos2(right - w, y - H / 2.0), pos2(right, y + H / 2.0));
+            painter.rect_filled(pill, H / 2.0, t.danger);
+            let ir = Rect::from_center_size(pos2(pill.left() + 10.0, y), vec2(10.0, 10.0));
+            icons::paint(ui, ir, icon, 10.0, egui::Color32::WHITE);
+            painter.galley(
+                pos2(ir.right() + 2.0, y - galley.size().y / 2.0),
+                galley,
+                egui::Color32::WHITE,
             );
-            let ir = Rect::from_center_size(pos2(r.left() - 7.0, y), vec2(12.0, 12.0));
-            icons::paint(ui, ir, icon, 11.0, t.text_dim);
-            right = ir.left() - 6.0;
+            right = pill.left() - 4.0;
         }
     }
     let font = if is_head {
@@ -1116,7 +1196,7 @@ fn branch_row(
             font,
             if shown { t.text } else { t.text_faint },
         );
-    (resp, eye_clicked)
+    (resp, eye_clicked, update_clicked)
 }
 
 /// The eye at a branch row's right end: on hover, or always while the branch is hidden.

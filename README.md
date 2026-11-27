@@ -65,9 +65,11 @@ so your config, credentials and hooks apply as usual.
 
 **Branches, remotes, worktrees, stashes, tags** (left)
 
-- Local branches with ahead/behind; right-click: check out (or in a new worktree), fast-forward,
-  merge into / (interactively) rebase onto the current branch, push, create a pull request,
-  rename, delete…
+- Local branches with commits to pull / push as red badges; right-click: check out (or in a new
+  worktree), fast-forward, merge into / (interactively) rebase onto the current branch, push,
+  create a pull request, rename, delete…
+- Update a branch you're not on in one click (the ⟳ on its row, or Update and merge into the
+  current branch from its menu): it's fetched and fast-forwarded without switching to it.
 - Remotes: add, edit (name and URL), fetch one, remove; their branches below each.
 - Worktrees: add (existing or new branch), open in a tab, open a terminal there, lock, remove,
   prune.

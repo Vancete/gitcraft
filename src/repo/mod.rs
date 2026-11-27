@@ -323,6 +323,13 @@ pub(crate) enum Action {
         branch: String,
         target: String,
     },
+    /// Brings local `branch` (not the checked-out one) up to date with its upstream without
+    /// switching to it (`git fetch <remote> <branch>:<branch>`, fast-forward only); with `merge`,
+    /// then merges it into the current branch.
+    UpdateBranch {
+        branch: String,
+        merge: bool,
+    },
     CheckoutRemote(String),
     Dialog(Dialog),
     Commit,
@@ -1284,6 +1291,72 @@ impl RepoTab {
         self.run_undoable_autostash(&label, run, undo, ctx);
     }
 
+    /// Fast-forwards a local branch that isn't checked out to its upstream, fetched fresh,
+    /// without touching the working tree; `merge` then merges it into the current branch.
+    fn update_branch(&mut self, branch: &str, merge: bool, ctx: &egui::Context) {
+        let Some(b) = self.refs.local.iter().find(|b| b.name == branch).cloned() else {
+            return;
+        };
+        if b.is_head {
+            return self.apply_pull(ctx);
+        }
+        let Some((remote, remote_branch)) = self.split_upstream(&b.upstream) else {
+            self.status = Some((format!("{branch} doesn't track a remote branch"), true));
+            return;
+        };
+        // `+` is left off on purpose: git refuses anything but a fast-forward.
+        let refspec = format!("refs/heads/{remote_branch}:refs/heads/{branch}");
+        let mut run = ops(&[&["fetch", &remote, &refspec]]);
+        let mut undo = vec![vec![
+            "branch".to_owned(),
+            "-f".to_owned(),
+            branch.to_owned(),
+            b.target.clone(),
+        ]];
+        let label = match (merge, self.refs.current.clone()) {
+            (true, Some(current)) => {
+                run.push(vec!["merge".into(), "--no-edit".into(), branch.to_owned()]);
+                undo.insert(
+                    0,
+                    vec!["reset".into(), "--keep".into(), self.refs.head.clone()],
+                );
+                format!("Update {branch} and merge it into {current}")
+            }
+            _ => format!("Update {branch} from {}", b.upstream),
+        };
+        let undo = Undo::Custom {
+            undo,
+            redo: run.clone(),
+        };
+        if merge {
+            self.run_undoable_autostash(&label, run, undo, ctx);
+        } else {
+            self.run_undoable(&label, run, Refresh::All, undo, ctx);
+        }
+    }
+
+    fn apply_pull(&mut self, ctx: &egui::Context) {
+        self.run_undoable(
+            "Pull",
+            ops(&[&["pull", "--ff-only", "--autostash"]]),
+            Refresh::All,
+            Undo::HeadMove { mode: "--keep" },
+            ctx,
+        )
+    }
+
+    /// `origin/feature/x` → (`origin`, `feature/x`), against the known remotes (whose names
+    /// can hold slashes too); the longest matching remote wins.
+    pub(super) fn split_upstream(&self, upstream: &str) -> Option<(String, String)> {
+        self.remotes
+            .iter()
+            .filter_map(|r| {
+                let rest = upstream.strip_prefix(&r.name)?.strip_prefix('/')?;
+                (!rest.is_empty()).then(|| (r.name.clone(), rest.to_owned()))
+            })
+            .max_by_key(|(r, _)| r.len())
+    }
+
     /// Undoing a move of `branch` that checked it out: back to the branch before, and
     /// `branch` back at `was`.
     fn back_to_previous(&self, branch: &str, was: &str, redo: Vec<Vec<String>>) -> Undo {
@@ -2125,6 +2198,7 @@ impl RepoTab {
                 self.graph_filter.apply(change);
                 self.reload(ctx);
             }
+            Action::UpdateBranch { branch, merge } => self.update_branch(&branch, merge, ctx),
             Action::CheckoutRemote(name) => self.checkout_remote(&name, ctx),
             Action::Dialog(dialog) => self.dialog = Some(dialog),
             Action::Commit => self.commit(ctx),
@@ -2138,13 +2212,7 @@ impl RepoTab {
                     ctx,
                 )
             }
-            Action::Pull => self.run_undoable(
-                "Pull",
-                ops(&[&["pull", "--ff-only", "--autostash"]]),
-                Refresh::All,
-                Undo::HeadMove { mode: "--keep" },
-                ctx,
-            ),
+            Action::Pull => self.apply_pull(ctx),
             Action::Push => self.push(ctx),
             Action::Reload => self.reload(ctx),
             Action::LoadMore => self.load_more(ctx),

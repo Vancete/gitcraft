@@ -66,7 +66,8 @@ const FEATURES: &[(&str, &[&str])] = &[
     (
         "Branches, remotes and more",
         &[
-            "Left pane: local branches with ahead / behind counts, remotes, worktrees, stashes, pull requests and tags.",
+            "Left pane: local branches with red badges for the commits to pull or push, remotes, worktrees, stashes, pull requests and tags.",
+            "Hover a branch you're not on for ⟳: it's brought up to date from its remote without switching to it. Its menu also has Update and merge into the current branch.",
             "Conflicts open in a three-pane editor with Ours, Theirs and Both for each conflict.",
             "Right-click a file for its history and blame.",
             "A terminal panel with tabs, in the repository's folder.",
