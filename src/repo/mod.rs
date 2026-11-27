@@ -62,6 +62,10 @@ enum Msg {
     /// A comparison's files, for the request numbered so.
     Compare(u64, Result<CompareData, String>),
     Prs(Result<Vec<PullRequest>, String>),
+    /// A commit message the assistant wrote.
+    AiMessage(Result<String, String>),
+    /// The assistant's explanation of a commit.
+    Explained(String, Result<String, String>),
     /// The commits to replay for a quick edit of `hash`.
     QuickEditCommits {
         hash: String,
@@ -359,6 +363,10 @@ pub(crate) enum Action {
     /// A file in the editor, at a line (1-based).
     OpenInEditorAt(PathBuf, u32),
     SetIdentity(String, String),
+    /// Have the assistant write the commit message for the changes.
+    AiCommitMessage,
+    /// Have the assistant explain a commit.
+    Explain(String),
     /// How diffs show: side by side, without whitespace changes, the whole file.
     SetDiffOptions {
         split: bool,
@@ -471,6 +479,10 @@ pub struct RepoTab {
 
     commit_summary: String,
     commit_body: String,
+    /// The assistant is writing the commit message.
+    ai_writing: bool,
+    /// A commit's explanation by the assistant: its hash, and the answer once it came.
+    explain: Option<(String, Option<Result<String, String>>)>,
     amend: bool,
     dialog: Option<Dialog>,
     search: Search,
@@ -569,6 +581,8 @@ impl RepoTab {
             conflict: None,
             commit_summary: String::new(),
             commit_body: String::new(),
+            ai_writing: false,
+            explain: None,
             amend: false,
             dialog: None,
             search: Search::default(),
@@ -1958,6 +1972,24 @@ impl RepoTab {
                     }
                 }
             }
+            Msg::AiMessage(result) => {
+                self.ai_writing = false;
+                match result {
+                    Ok(msg) => {
+                        let (summary, body) = crate::ai::split_message(&msg);
+                        self.commit_summary = summary;
+                        self.commit_body = body;
+                    }
+                    Err(e) => self.status = Some((e, true)),
+                }
+            }
+            Msg::Explained(hash, result) => {
+                if let Some((h, answer)) = &mut self.explain
+                    && *h == hash
+                {
+                    *answer = Some(result);
+                }
+            }
             Msg::Prs(result) => match result {
                 Ok(prs) => {
                     self.prs = prs;
@@ -2224,6 +2256,8 @@ impl RepoTab {
                     self.status = Some((e, true));
                 }
             }
+            Action::AiCommitMessage => self.ai_commit_message(ctx),
+            Action::Explain(hash) => self.explain_commit(hash, ctx),
             Action::SetIdentity(name, email) => self.run_ops(
                 "Set identity",
                 ops(&[
@@ -3119,6 +3153,47 @@ pub(crate) fn ops(list: &[&[&str]]) -> Vec<Vec<String>> {
 }
 
 /// Runs `job` on a background thread and wakes the UI when its message is sent.
+impl RepoTab {
+    /// Asks the assistant chosen in the settings for a commit message of the staged changes
+    /// (all of them when none are staged), following the profile's or the settings' rules.
+    fn ai_commit_message(&mut self, ctx: &egui::Context) {
+        if self.ai_writing {
+            return;
+        }
+        let settings = Settings::get(ctx);
+        let rules = crate::workspace::commit_rules().unwrap_or(settings.ai_commit_rules);
+        self.ai_writing = true;
+        let path = self.path.clone();
+        spawn(&self.tx, ctx, move || {
+            Msg::AiMessage((|| {
+                let (branch, recent, stat, diff) = crate::ai::commit_context(&path)?;
+                let prompt = crate::ai::commit_prompt(&rules, &branch, &recent, &stat, &diff);
+                crate::ai::run(settings.ai, &settings.ai_model, &path, &prompt)
+            })())
+        });
+    }
+
+    fn explain_commit(&mut self, hash: String, ctx: &egui::Context) {
+        if matches!(&self.explain, Some((h, None)) if *h == hash) {
+            return;
+        }
+        let settings = Settings::get(ctx);
+        self.explain = Some((hash.clone(), None));
+        let path = self.path.clone();
+        spawn(&self.tx, ctx, move || {
+            let result = git::run(
+                Some(&path),
+                &["show", "--stat", "--patch", "--format=fuller", &hash],
+            )
+            .and_then(|show| {
+                let prompt = crate::ai::explain_prompt(&settings.ai_explain_rules, &show);
+                crate::ai::run(settings.ai, &settings.ai_model, &path, &prompt)
+            });
+            Msg::Explained(hash, result)
+        });
+    }
+}
+
 fn spawn(tx: &Sender<Msg>, ctx: &egui::Context, job: impl FnOnce() -> Msg + Send + 'static) {
     let tx = tx.clone();
     let ctx = ctx.clone();

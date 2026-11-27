@@ -247,6 +247,7 @@ impl RepoTab {
                             });
                     });
 
+                self.explain_box(ui, acts, &detail.hash);
                 let note = (detail.parents.len() > 1).then_some("vs. first parent");
                 files_header(ui, &detail.files, note);
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -685,6 +686,25 @@ impl RepoTab {
                 .color(t.text_faint),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let assistant = Settings::get(ui.ctx()).ai;
+                if assistant != crate::ai::Assistant::Off {
+                    if self.ai_writing {
+                        ui.spinner();
+                    } else if ui
+                        .add_enabled(
+                            !rebasing && (!self.work.is_clean() || self.amend),
+                            egui::Button::new("AI message").small(),
+                        )
+                        .on_hover_text(format!(
+                            "{} writes the message for the staged changes (all changes when none are staged), following your rules",
+                            assistant.label()
+                        ))
+                        .clicked()
+                    {
+                        acts.push(Action::AiCommitMessage);
+                    }
+                    ui.add_space(6.0);
+                }
                 let amend = ui
                     .add_enabled(
                         !rebasing && !self.refs.head.is_empty(),
@@ -1065,4 +1085,83 @@ fn reword_editor(ui: &mut Ui, reword: &mut Reword) -> Option<bool> {
         out = Some(false);
     }
     out
+}
+
+impl RepoTab {
+    /// "Explain with …" under a commit's details, and the assistant's answer once it came.
+    fn explain_box(&self, ui: &mut Ui, acts: &mut Vec<Action>, hash: &str) {
+        let assistant = Settings::get(ui.ctx()).ai;
+        if assistant == crate::ai::Assistant::Off || hash == super::WIP_HASH {
+            return;
+        }
+        let t = Tokens::get(ui.ctx());
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: 14,
+                right: 14,
+                top: 0,
+                bottom: 10,
+            })
+            .show(ui, |ui| match &self.explain {
+                Some((h, None)) if h == hash => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new(format!("{} is reading the commit…", assistant.label()))
+                                .color(t.text_dim),
+                        );
+                    });
+                }
+                Some((h, Some(result))) if h == hash => {
+                    egui::Frame::new()
+                        .fill(t.accent.gamma_multiply(0.08))
+                        .stroke(egui::Stroke::new(1.0, t.accent.gamma_multiply(0.35)))
+                        .corner_radius(t.radius)
+                        .inner_margin(egui::Margin::same(10))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("EXPLAINED BY {}", assistant.label().to_uppercase()))
+                                        .font(theme::semibold(10.0))
+                                        .color(t.text_faint),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if icons::small_button(ui, "refresh-cw", "Explain again")
+                                            .clicked()
+                                        {
+                                            acts.push(Action::Explain(hash.to_owned()));
+                                        }
+                                        if let Ok(text) = result
+                                            && icons::small_button(ui, "copy", "Copy").clicked()
+                                        {
+                                            ui.ctx().copy_text(text.clone());
+                                        }
+                                    },
+                                );
+                            });
+                            ui.add_space(4.0);
+                            match result {
+                                Ok(text) => {
+                                    ui.add(egui::Label::new(RichText::new(text)).wrap().selectable(true));
+                                }
+                                Err(e) => {
+                                    ui.colored_label(t.danger, e);
+                                }
+                            }
+                        });
+                }
+                _ => {
+                    if ui
+                        .button(format!("Explain with {}", assistant.label()))
+                        .on_hover_text("Sends this commit's diff to the assistant and shows its explanation here")
+                        .clicked()
+                    {
+                        acts.push(Action::Explain(hash.to_owned()));
+                    }
+                }
+            });
+    }
 }

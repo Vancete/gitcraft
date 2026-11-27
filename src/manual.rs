@@ -23,6 +23,7 @@ const FEATURES: &[(&str, &[&str])] = &[
             "Right-click a tab to give it its own icon and highlight colour.",
             "Settings › Themes: four code styles, or a VS Code theme imported from your VS Code, which colours the whole window. The palette icon switches between Dark, Medium Gray and Light.",
             "Drag a tab along the strip to reorder the tabs.",
+            "Profiles: the button left of the tabs switches between sets of tabs and recent repositories (work, personal…). Each can have a projects folder, a commit identity, a GitHub account and environment variables; set them up in Settings.",
         ],
     ),
     (
@@ -57,6 +58,7 @@ const FEATURES: &[(&str, &[&str])] = &[
             "A commit's files as a list of paths or a tree of folders: the switch above them.",
             "Double-click a line of a diff (or right-click it) to open the file in your editor at that line; the <> button opens it at the first change. The editor is set in Settings.",
             "Write the summary and description and commit; amend the last commit; pick the identity you commit as.",
+            "With an assistant chosen in Settings › AI (Claude Code or Codex), AI message writes the commit message from your changes and your rules, and a commit's details offer Explain.",
             "Double-click a commit's message in the right pane to edit it (any commit of the checked-out branch with no merges after it).",
             "Undo and redo commits, merges, rebases, resets, checkouts, branches, tags and stashes.",
         ],
