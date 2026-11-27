@@ -147,7 +147,8 @@ so your config, credentials and hooks apply as usual.
   off).
 - Toasts, and a desktop notification when a long operation ends while the window is in the
   background.
-- Themes: Dark, Medium Gray and Light, from PhotoCraft's Pro palettes.
+- Themes: Dark, Medium Gray and Light, from PhotoCraft's Pro palettes, and Classic (warm grey
+  panels, a navy accent), from the Classic theme of CyfrowyNomada's raylib bootstrap (raystrap).
 
 ## Download
 

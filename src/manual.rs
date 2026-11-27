@@ -21,7 +21,7 @@ const FEATURES: &[(&str, &[&str])] = &[
             "Open, create or clone a repository from the start page; recent ones are listed there.",
             "One tab per repository. Changes made elsewhere (editor, terminal) show up by themselves.",
             "Right-click a tab to give it its own icon and highlight colour.",
-            "Settings › Themes: four code styles, or a VS Code theme imported from your VS Code, which colours the whole window. The palette icon switches between Dark, Medium Gray and Light.",
+            "Settings › Themes: four code styles, or a VS Code theme imported from your VS Code, which colours the whole window. The palette icon switches between Dark, Medium Gray, Light and Classic.",
             "Drag a tab along the strip to reorder the tabs.",
         ],
     ),
