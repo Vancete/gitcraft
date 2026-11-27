@@ -7,6 +7,7 @@ mod code_theme;
 mod desktop_entry;
 mod forge;
 mod git;
+mod gitflow;
 mod graph;
 mod icons;
 mod manual;

@@ -6,6 +6,7 @@ use egui::{Key, RichText};
 
 use super::widgets;
 use super::{Action, Refresh, RepoTab, Undo};
+use crate::gitflow::{self, Kind};
 use crate::theme::{self, Tokens};
 
 pub enum Dialog {
@@ -78,6 +79,16 @@ pub enum Dialog {
         password: String,
         focus: bool,
     },
+    /// Set git flow up: the branch names and prefixes, prefilled with git-flow's defaults.
+    GitflowInit {
+        config: gitflow::Config,
+    },
+    /// Start a feature, release or hotfix branch.
+    GitflowStart {
+        kind: Kind,
+        name: String,
+        focus: bool,
+    },
     CreatePr {
         noun: String,
         branch: String,
@@ -90,6 +101,14 @@ pub enum Dialog {
 }
 
 impl Dialog {
+    pub fn gitflow_start(kind: Kind) -> Self {
+        Dialog::GitflowStart {
+            kind,
+            name: String::new(),
+            focus: true,
+        }
+    }
+
     pub fn create_branch(at: &str, at_label: &str) -> Self {
         Dialog::CreateBranch {
             at: at.to_owned(),
@@ -266,6 +285,7 @@ impl RepoTab {
             .backdrop_color(egui::Color32::from_black_alpha(110));
 
         let local = &self.refs.local;
+        let flow = &self.gitflow;
         let worktrees = &self.worktrees;
         // What a new branch's undo checks out again.
         let previous = self
@@ -491,6 +511,95 @@ impl RepoTab {
                         };
                     }
                     outcome
+                }
+                Dialog::GitflowInit { config } => {
+                    title(ui, "Set up git flow", "Saved in the repository's git config, as git-flow does.", &t);
+                    egui::Grid::new("gitflow-init")
+                        .num_columns(2)
+                        .spacing([10.0, 6.0])
+                        .show(ui, |ui| {
+                            for (label, value) in [
+                                ("Production branch", &mut config.main),
+                                ("Development branch", &mut config.develop),
+                                ("Feature prefix", &mut config.feature),
+                                ("Release prefix", &mut config.release),
+                                ("Hotfix prefix", &mut config.hotfix),
+                                ("Version tag prefix", &mut config.tag),
+                            ] {
+                                ui.label(RichText::new(label).color(t.text_dim));
+                                ui.add(
+                                    egui::TextEdit::singleline(value)
+                                        .desired_width(200.0)
+                                        .margin(egui::Margin::symmetric(8, 4)),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                    let names: Vec<String> = local.iter().map(|b| b.name.clone()).collect();
+                    let has_main = names.contains(&config.main);
+                    let has_develop = names.contains(&config.develop);
+                    ui.add_space(6.0);
+                    if !has_main {
+                        ui.colored_label(t.danger, format!("There is no local branch “{}”.", config.main));
+                    } else if !has_develop {
+                        ui.label(
+                            RichText::new(format!("“{}” will be created from “{}”.", config.develop, config.main))
+                                .color(t.text_faint)
+                                .small(),
+                        );
+                    }
+                    ui.add_space(8.0);
+                    let valid = has_main
+                        && !config.develop.trim().is_empty()
+                        && config.develop != config.main;
+                    buttons(ui, "Set up", valid, enter, || {
+                        let mut c = config.clone();
+                        for v in [&mut c.main, &mut c.develop, &mut c.feature, &mut c.release, &mut c.hotfix, &mut c.tag] {
+                            *v = v.trim().to_owned();
+                        }
+                        Action::Ops {
+                            label: "Set up git flow".to_owned(),
+                            ops: gitflow::init_ops(&c, &names),
+                            refresh: Refresh::All,
+                        }
+                    })
+                }
+                Dialog::GitflowStart { kind, name, focus } => {
+                    let kind = *kind;
+                    let base = kind.base(flow).to_owned();
+                    let prefix = kind.prefix(flow).to_owned();
+                    title(ui, &format!("Start {}", kind.label()), &format!("A new branch {prefix}… from {base}, checked out"), &t);
+                    field(ui, name, kind.hint(), focus);
+                    if name.contains(' ') {
+                        *name = name.replace(' ', "-");
+                    }
+                    let branch = format!("{prefix}{}", name.trim());
+                    let exists = local.iter().any(|b| b.name == branch);
+                    let base_exists = local.iter().any(|b| b.name == base);
+                    ui.add_space(6.0);
+                    if exists {
+                        ui.colored_label(t.danger, format!("“{branch}” already exists."));
+                    } else if !base_exists {
+                        ui.colored_label(t.danger, format!("There is no local branch “{base}”."));
+                    } else {
+                        ui.label(RichText::new(format!("git switch -c {branch} {base}")).color(t.text_faint).small());
+                    }
+                    ui.add_space(8.0);
+                    let valid = !name.trim().is_empty() && !exists && base_exists;
+                    buttons(ui, "Start", valid, enter, || {
+                        let ops = gitflow::start_ops(flow, kind, name.trim());
+                        let mut undo = Vec::new();
+                        if !previous.is_empty() {
+                            undo.push(vec!["checkout".to_owned(), previous.clone()]);
+                        }
+                        undo.push(vec!["branch".to_owned(), "-D".to_owned(), branch.clone()]);
+                        Action::UndoableOps {
+                            label: format!("Start {} {}", kind.label(), name.trim()),
+                            ops: ops.clone(),
+                            refresh: Refresh::All,
+                            undo: Undo::Custom { undo, redo: ops },
+                        }
+                    })
                 }
                 Dialog::Stash { message, focus } => {
                     title(ui, "Stash changes", "Puts every change, untracked files included, aside and cleans the working tree.", &t);

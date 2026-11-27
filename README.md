@@ -75,6 +75,10 @@ so your config, credentials and hooks apply as usual.
 - Pull / merge requests of GitHub (through `gh`) or GitLab (through `glab`): list, open in the
   browser, check out, create from a branch.
 - Tags: create (light or annotated, optionally pushed), push, delete locally or on the remote.
+- Git flow, without git-flow installed: set it up (the same `gitflow.*` config git-flow uses, so
+  both work on a repository), then start and finish feature, release and hotfix branches from
+  the _Flow_ menu in the toolbar, the GIT FLOW section on the left or a branch's menu. Finishing
+  lists the git commands it will run before running them.
 
 **Changes and commits** (right)
 
@@ -224,6 +228,7 @@ was made this way, on a demo repository.
 | `src/repo/file_view.rs`  | a file's history and blame                                                         |
 | `src/repo/dialogs.rs`    | branch, tag, stash, remote, worktree, pull request and confirm dialogs             |
 | `src/repo/widgets.rs`    | shared painted widgets (panel headers, file rows, avatars, tabs)                   |
+| `src/gitflow.rs`         | git flow: its config, and the commands that start and finish branches              |
 | `src/app.rs`             | window shell: tabs, start page, cloning, palette, settings, toasts                 |
 
 Assets and their licences: [ATTRIBUTION.md](ATTRIBUTION.md).
