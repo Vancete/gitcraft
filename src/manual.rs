@@ -52,7 +52,7 @@ const FEATURES: &[(&str, &[&str])] = &[
         "Changes and commits",
         &[
             "Stage, unstage or discard whole files from the right pane; double-click a file to stage or unstage it.",
-            "Tick files (their checkboxes, Ctrl+click, Shift+click for a range, or a folder's checkbox) to stage, unstage or discard only those; the changes row of the graph has Stage all and Unstage all on right-click.",
+            "Tick files (their checkboxes, Ctrl+click, Shift+click for a range, or a folder's checkbox) to stage, unstage or discard only those; the changes row of the graph has Stage all and Unstage all on right-click, and stays pinned on top while you scroll the history.",
             "The changes show as a list of paths or a tree of folders: the switch at the top of the pane.",
             "In a file's diff, stage, unstage or discard one hunk, or click the lines you want and act on only those.",
             "A diff shows only the changes or the whole file, unified or side by side, and remembers both. Drag over its lines to select text and Ctrl+C to copy it; the strip by the scrollbar marks where the changes are, and the arrows (Alt+Up / Alt+Down) jump between them.",

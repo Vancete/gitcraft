@@ -43,7 +43,8 @@ so your config, credentials and hooks apply as usual.
   click. Kept per repository.
 - Stashes in the graph, above the commit they were made on, marked with their icon.
 - Each commit's summary, followed by the rest of its message, faded and cut to fit.
-- An _Uncommitted changes_ row on top while the working tree is dirty.
+- An _Uncommitted changes_ row on top while the working tree is dirty; it stays pinned there
+  while you scroll down the history.
 - Search (Ctrl+F) through messages, authors and hashes of all history, or switch to _Code_ to
   find the commits that added or removed a piece of text in a file (`git log -S`); Enter /
   Shift+Enter jump between results, loading older history when needed.
