@@ -301,6 +301,21 @@ impl RepoTab {
                                     refresh: Refresh::Status,
                                 });
                             }
+                            let staged = !self.work.staged.is_empty();
+                            if ui
+                                .add_enabled(
+                                    idle && staged,
+                                    egui::Button::new("Unstage all changes"),
+                                )
+                                .clicked()
+                            {
+                                let all = super::detail::unstage_all_args(&self.refs.head);
+                                acts.push(Action::Ops {
+                                    label: "Unstage all".into(),
+                                    ops: ops(&[&all]),
+                                    refresh: Refresh::Status,
+                                });
+                            }
                             if ui
                                 .add_enabled(idle, egui::Button::new("Stash changes…"))
                                 .clicked()

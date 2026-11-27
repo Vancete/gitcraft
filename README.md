@@ -79,7 +79,10 @@ so your config, credentials and hooks apply as usual.
 **Changes and commits** (right)
 
 - Conflicted / unstaged / staged lists with stage, unstage, discard and mark-resolved buttons,
-  _Stage all_ / _Unstage all_; right-click a file to open it, open it in your editor, show it in
+  _Stage all_ / _Unstage all_ (also on the changes row of the graph). Tick files to stage or
+  unstage just those (_Stage selected_), or discard them (_Discard…_): their checkboxes, Ctrl+click, Shift+click for a range, a
+  folder's checkbox for all its files, the list's for every file. The lists show as paths or a
+  tree of folders (the switch at the top of the pane). Right-click a file to open it, open it in your editor, show it in
   its folder, see its history or blame, or ignore it (the file, its extension or its folder go
   into `.gitignore`; a tracked file stops being tracked).
 - Part of a file: _Stage hunk_, _Discard hunk_ and _Unstage hunk_ on each hunk of its diff, or

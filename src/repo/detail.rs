@@ -2,8 +2,7 @@
 
 use egui::{Align2, Key, Rect, RichText, Sense, Ui, pos2, vec2};
 
-use super::diff::unstage_args;
-use super::widgets::{self, RowExtra};
+use super::widgets::{self, Check, RowExtra};
 use super::{Action, Dialog, DiffKey, DiffView, Refresh, RepoTab, Reword, abort_action, ops};
 use crate::git::{Area, ChangedFile, StatusFile};
 use crate::icons;
@@ -271,7 +270,7 @@ impl RepoTab {
         key: impl Fn(&str) -> DiffKey,
     ) {
         if Settings::get(ui.ctx()).files_as_tree {
-            let tree = FileTree::build(files);
+            let tree = FileTree::build(files, |f| &f.path);
             return self.file_tree(ui, acts, &tree, "", 0, rev, &key);
         }
         for f in files {
@@ -298,67 +297,23 @@ impl RepoTab {
         &self,
         ui: &mut Ui,
         acts: &mut Vec<Action>,
-        folder: &FileTree<'_>,
+        folder: &FileTree<'_, ChangedFile>,
         parent: &str,
         depth: usize,
         rev: Option<&str>,
         key: &dyn Fn(&str) -> DiffKey,
     ) {
-        let t = Tokens::get(ui.ctx());
         let indent = depth as f32 * TREE_INDENT;
         for (name, sub) in &folder.folders {
-            // A folder holding only one folder reads as one row: `src/repo`.
-            let (mut name, mut sub) = (name.clone(), sub);
-            while sub.files.is_empty() && sub.folders.len() == 1 {
-                let Some((next, inner)) = sub.folders.iter().next() else {
-                    break;
-                };
-                name = format!("{name}/{next}");
-                sub = inner;
-            }
-            let path = if parent.is_empty() {
-                name.clone()
-            } else {
-                format!("{parent}/{name}")
-            };
+            let (name, sub) = sub.compact(name);
+            let path = join_path(parent, &name);
             let id = ui.id().with(("files-folder", &path));
             let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(true);
-            let (rect, r) =
-                ui.allocate_exact_size(vec2(ui.available_width(), widgets::ROW_H), Sense::click());
-            if r.hovered() {
-                ui.painter().rect_filled(rect, 0.0, t.hover);
-            }
+            let (r, _) = folder_row(ui, id, indent, &name, open, None);
             if r.clicked() {
                 open = !open;
                 ui.data_mut(|d| d.insert_temp(id, open));
             }
-            let y = rect.center().y;
-            let x = rect.left() + indent;
-            icons::paint(
-                ui,
-                Rect::from_center_size(pos2(x + 12.0, y), vec2(12.0, 12.0)),
-                if open {
-                    "chevron-down"
-                } else {
-                    "chevron-right"
-                },
-                11.0,
-                t.text_faint,
-            );
-            icons::paint(
-                ui,
-                Rect::from_center_size(pos2(x + 28.0, y), vec2(14.0, 14.0)),
-                "folder-open",
-                13.0,
-                t.text_dim,
-            );
-            ui.painter_at(rect).text(
-                pos2(x + 42.0, y),
-                Align2::LEFT_CENTER,
-                &name,
-                egui::FontId::proportional(12.5),
-                t.text_dim,
-            );
             if open {
                 self.file_tree(ui, acts, sub, &path, depth + 1, rev, key);
             }
@@ -372,6 +327,7 @@ impl RepoTab {
                 &f.path,
                 f.old_path.as_deref(),
                 Some(indent + 16.0),
+                None,
                 selected,
                 RowExtra::Stats(f.added, f.removed),
             );
@@ -505,7 +461,21 @@ impl RepoTab {
     fn changes_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
         let t = Tokens::get(ui.ctx());
         let idle = self.busy_op.is_none();
-        widgets::panel_header(ui, "Changes", |_| {});
+        widgets::panel_header(ui, "Changes", |ui| {
+            let mut settings = Settings::get(ui.ctx());
+            let (icon, tip) = if settings.files_as_tree {
+                ("list", "Show the files as a list of paths")
+            } else {
+                ("folder-tree", "Show the files in a tree of their folders")
+            };
+            if icons::small_button(ui, icon, tip).clicked() {
+                settings.files_as_tree = !settings.files_as_tree;
+                settings.set(ui.ctx());
+            }
+        });
+        // Ticks on files that are gone (staged, committed, discarded) go too.
+        self.picks_unstaged.keep(&self.work.unstaged);
+        self.picks_staged.keep(&self.work.staged);
 
         // The commit box stays at the bottom.
         egui::Panel::bottom("commit_box")
@@ -558,115 +528,272 @@ impl RepoTab {
 
                 let head = self.refs.head.clone();
                 if !self.work.conflicted.is_empty() {
-                    list_header(ui, "CONFLICTED", self.work.conflicted.len(), None);
+                    list_header(ui, "CONFLICTED", self.work.conflicted.len(), None, &[]);
                     for f in &self.work.conflicted {
                         // No double-click here: marking a file resolved should be meant.
-                        match self.work_row(
+                        let buttons: &[(&str, &str)] = if idle {
+                            &[("check", "Mark resolved (stage)")]
+                        } else {
+                            &[]
+                        };
+                        let key = DiffKey::Work(f.clone());
+                        let r = widgets::file_row(
                             ui,
-                            acts,
-                            f,
-                            &[("check", "Mark resolved (stage)")],
-                            false,
-                        ) {
-                            RowClick::Open => acts.push(Action::OpenDiff(DiffKey::Work(f.clone()))),
-                            RowClick::Button(_) => acts.push(stage_action(
+                            f.code,
+                            &f.path,
+                            f.old_path.as_deref(),
+                            self.open_key() == Some(&key),
+                            RowExtra::Buttons(buttons),
+                        );
+                        if f.code != 'D' {
+                            widgets::file_menu(&r.row, &f.path, None, true, acts);
+                        }
+                        if r.button.is_some() {
+                            acts.push(stage_action(
                                 "Mark resolved",
                                 vec![vec!["add", "--", &f.path]],
-                            )),
-                            RowClick::None => {}
+                            ));
+                        } else if r.row.clicked() {
+                            acts.push(Action::OpenDiff(key));
                         }
                     }
                 }
 
-                let unstaged = &self.work.unstaged;
-                if list_header(
-                    ui,
-                    "UNSTAGED",
-                    unstaged.len(),
-                    (!unstaged.is_empty() && idle).then_some("Stage all"),
-                ) {
-                    acts.push(stage_action("Stage all", vec![vec!["add", "-A"]]));
-                }
-                for f in unstaged {
-                    match self.work_row(
-                        ui,
-                        acts,
-                        f,
-                        &[("undo-2", "Discard changes…"), ("plus", "Stage")],
-                        true,
-                    ) {
-                        RowClick::Open => acts.push(Action::OpenDiff(DiffKey::Work(f.clone()))),
-                        RowClick::Button(0) => acts.push(Action::Dialog(discard_dialog(f))),
-                        RowClick::Button(_) => {
-                            acts.push(stage_action("Stage", vec![vec!["add", "--", &f.path]]))
-                        }
-                        RowClick::None => {}
-                    }
-                }
-                if unstaged.is_empty() {
-                    empty_hint(ui, "Nothing to stage");
-                }
-
-                let staged = &self.work.staged;
-                if list_header(
-                    ui,
-                    "STAGED",
-                    staged.len(),
-                    (!staged.is_empty() && idle).then_some("Unstage all"),
-                ) {
-                    let all: Vec<&str> = if head.is_empty() {
-                        vec!["rm", "--cached", "-r", "-q", "--", "."]
-                    } else {
-                        vec!["reset", "-q"]
+                let mut events = Vec::new();
+                for list in [WorkList::Unstaged, WorkList::Staged] {
+                    let files = match list {
+                        WorkList::Unstaged => &self.work.unstaged,
+                        WorkList::Staged => &self.work.staged,
                     };
-                    acts.push(stage_action("Unstage all", vec![all]));
-                }
-                for f in staged {
-                    match self.work_row(ui, acts, f, &[("minus", "Unstage")], true) {
-                        RowClick::Open => acts.push(Action::OpenDiff(DiffKey::Work(f.clone()))),
-                        RowClick::Button(_) => {
-                            acts.push(stage_action("Unstage", vec![unstage_args(&head, &f.path)]))
-                        }
-                        RowClick::None => {}
+                    let mut order = Vec::new();
+                    self.work_list(ui, acts, list, files, &head, &mut events, &mut order);
+                    let picks = match list {
+                        WorkList::Unstaged => &mut self.picks_unstaged,
+                        WorkList::Staged => &mut self.picks_staged,
+                    };
+                    for e in events.drain(..) {
+                        picks.apply(e, &order, files);
                     }
-                }
-                if staged.is_empty() {
-                    empty_hint(ui, "Stage files to choose what goes in the commit");
                 }
             });
     }
 
-    /// One working-tree file with hover buttons (hidden while an operation runs). With
-    /// `double_stages`, a double-click does what the last button does (stage / unstage).
+    /// The Unstaged or Staged list: a header with its buttons, then the files (as a list or a
+    /// folder tree), each with a checkbox. Clicks come back as `events`; `order` gets the
+    /// paths in the order shown, for Shift+click ranges.
+    #[allow(clippy::too_many_arguments)]
+    fn work_list(
+        &self,
+        ui: &mut Ui,
+        acts: &mut Vec<Action>,
+        list: WorkList,
+        files: &[StatusFile],
+        head: &str,
+        events: &mut Vec<PickEvent>,
+        order: &mut Vec<String>,
+    ) {
+        let idle = self.busy_op.is_none();
+        let picks = match list {
+            WorkList::Unstaged => &self.picks_unstaged,
+            WorkList::Staged => &self.picks_staged,
+        };
+        let picked: Vec<&str> = files
+            .iter()
+            .map(|f| f.path.as_str())
+            .filter(|p| picks.paths.contains(*p))
+            .collect();
+        let (title, empty) = match list {
+            WorkList::Unstaged => ("UNSTAGED", "Nothing to stage"),
+            WorkList::Staged => ("STAGED", "Stage files to choose what goes in the commit"),
+        };
+        let verb = list.verb();
+        let picked_files: Vec<&StatusFile> = files
+            .iter()
+            .filter(|f| picks.paths.contains(&f.path))
+            .collect();
+        let selected_label = format!("{verb} selected ({})", picked.len());
+        let all_label = format!("{verb} all");
+        let discard_label = "Discard…";
+        let mut buttons: Vec<&str> = Vec::new();
+        if idle && !picked.is_empty() {
+            if list == WorkList::Unstaged {
+                buttons.push(discard_label);
+            }
+            buttons.push(&selected_label);
+        }
+        if idle && !files.is_empty() {
+            buttons.push(&all_label);
+        }
+        let check = (!files.is_empty()).then(|| Check::of(picked.len(), files.len()));
+        let (checked, button) = list_header(ui, title, files.len(), check, &buttons);
+        if checked {
+            events.push(PickEvent::All(picked.is_empty()));
+        }
+        match button.map(|i| buttons[i]) {
+            Some(b) if b == discard_label => {
+                acts.push(Action::Dialog(discard_files_dialog(&picked_files)));
+            }
+            Some(b) if b == selected_label => acts.push(list.action(head, &picked)),
+            Some(_) => acts.push(list.all_action(head)),
+            None => {}
+        }
+        if files.is_empty() {
+            empty_hint(ui, empty);
+            return;
+        }
+        let ctx = RowCtx {
+            list,
+            head,
+            picked: &picked,
+            picked_files: &picked_files,
+            files: files.len(),
+        };
+        if Settings::get(ui.ctx()).files_as_tree {
+            let tree = FileTree::build(files, |f| &f.path);
+            self.work_tree(ui, acts, &ctx, &tree, "", 0, events, order);
+        } else {
+            for f in files {
+                self.work_row(ui, acts, &ctx, f, None, events);
+                order.push(f.path.clone());
+            }
+        }
+    }
+
+    /// One folder of the Changes tree: its subfolders (collapsible, with a checkbox for all
+    /// their files), then its files.
+    #[allow(clippy::too_many_arguments)]
+    fn work_tree(
+        &self,
+        ui: &mut Ui,
+        acts: &mut Vec<Action>,
+        ctx: &RowCtx<'_>,
+        folder: &FileTree<'_, StatusFile>,
+        parent: &str,
+        depth: usize,
+        events: &mut Vec<PickEvent>,
+        order: &mut Vec<String>,
+    ) {
+        let indent = depth as f32 * TREE_INDENT;
+        for (name, sub) in &folder.folders {
+            let (name, sub) = sub.compact(name);
+            let path = join_path(parent, &name);
+            let id = ui.id().with(("work-folder", ctx.list, &path));
+            let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(true);
+            let mut inside = Vec::new();
+            sub.paths(&|f| &f.path, &mut inside);
+            let n = inside.iter().filter(|p| ctx.picked.contains(p)).count();
+            let check = Check::of(n, inside.len());
+            let (r, checked) = folder_row(ui, id, indent, &name, open, Some(check));
+            if checked {
+                let all = inside.iter().map(|p| (*p).to_owned()).collect();
+                events.push(PickEvent::Set(all, check != Check::On));
+            } else if r.clicked() {
+                open = !open;
+                ui.data_mut(|d| d.insert_temp(id, open));
+            }
+            if open {
+                self.work_tree(ui, acts, ctx, sub, &path, depth + 1, events, order);
+            }
+        }
+        for f in &folder.files {
+            self.work_row(ui, acts, ctx, f, Some(indent + 16.0), events);
+            order.push(f.path.clone());
+        }
+    }
+
+    /// One working-tree file: checkbox, hover buttons (hidden while an operation runs) and
+    /// its menu. Click opens the diff, Ctrl+click ticks it, Shift+click ticks the files from
+    /// the last one clicked; a double-click stages / unstages it. Its Stage / Unstage button
+    /// and menu item work on all the ticked files when it is one of them.
     fn work_row(
         &self,
         ui: &mut Ui,
         acts: &mut Vec<Action>,
+        ctx: &RowCtx<'_>,
         f: &StatusFile,
-        buttons: &[(&str, &str)],
-        double_stages: bool,
-    ) -> RowClick {
+        indent: Option<f32>,
+        events: &mut Vec<PickEvent>,
+    ) {
+        let idle = self.busy_op.is_none();
         let key = DiffKey::Work(f.clone());
-        let selected = self.open_key() == Some(&key);
-        let buttons = if self.busy_op.is_none() { buttons } else { &[] };
-        let r = widgets::file_row(
+        let picked = ctx.picked.contains(&f.path.as_str());
+        // What its Stage / Unstage works on.
+        let these: Vec<&str> = if picked && ctx.picked.len() > 1 {
+            ctx.picked.to_vec()
+        } else {
+            vec![f.path.as_str()]
+        };
+        let verb = ctx.list.verb();
+        let label = if these.len() > 1 {
+            format!("{verb} {} selected", these.len())
+        } else {
+            verb.to_owned()
+        };
+        // What its Discard works on, likewise.
+        let discard: Vec<&StatusFile> = if these.len() > 1 {
+            ctx.picked_files.to_vec()
+        } else {
+            vec![f]
+        };
+        let discard_label = if discard.len() > 1 {
+            format!("Discard {} selected…", discard.len())
+        } else {
+            "Discard changes…".to_owned()
+        };
+        let mut buttons: Vec<(&str, &str)> = Vec::new();
+        if idle {
+            if ctx.list == WorkList::Unstaged {
+                buttons.push(("undo-2", &discard_label));
+            }
+            buttons.push((ctx.list.icon(), &label));
+        }
+        let r = widgets::file_row_in(
             ui,
             f.code,
             &f.path,
             f.old_path.as_deref(),
-            selected,
-            RowExtra::Buttons(buttons),
+            indent,
+            Some(if picked { Check::On } else { Check::Off }),
+            picked || self.open_key() == Some(&key),
+            RowExtra::Buttons(&buttons),
         );
         if f.code != 'D' {
-            widgets::file_menu(&r.row, &f.path, None, true, acts);
+            widgets::file_menu_with(&r.row, &f.path, None, true, acts, |ui, acts| {
+                if !idle {
+                    return false;
+                }
+                if ui.button(&label).clicked() {
+                    acts.push(ctx.list.action(ctx.head, &these));
+                }
+                if ctx.files > these.len() && ui.button(format!("{verb} all")).clicked() {
+                    acts.push(ctx.list.all_action(ctx.head));
+                }
+                if ctx.list == WorkList::Unstaged && ui.button(&discard_label).clicked() {
+                    acts.push(Action::Dialog(discard_files_dialog(&discard)));
+                }
+                true
+            });
         }
-        match r.button {
-            Some(i) => RowClick::Button(i),
-            None if double_stages && r.row.double_clicked() && !buttons.is_empty() => {
-                RowClick::Button(buttons.len() - 1)
+        if r.checked {
+            events.push(PickEvent::Toggle(f.path.clone(), false));
+        } else if let Some(i) = r.button {
+            if i + 1 < buttons.len() {
+                acts.push(Action::Dialog(discard_files_dialog(&discard)));
+            } else {
+                acts.push(ctx.list.action(ctx.head, &these));
             }
-            None if r.row.clicked() => RowClick::Open,
-            None => RowClick::None,
+        } else if r.row.double_clicked() && idle {
+            acts.push(ctx.list.action(ctx.head, &[f.path.as_str()]));
+        } else if r.row.clicked() {
+            let mods = ui.input(|i| i.modifiers);
+            if mods.shift {
+                events.push(PickEvent::Range(f.path.clone()));
+            } else if mods.command {
+                events.push(PickEvent::Toggle(f.path.clone(), true));
+            } else {
+                events.push(PickEvent::Click(f.path.clone()));
+                acts.push(Action::OpenDiff(key));
+            }
         }
     }
 
@@ -801,10 +928,165 @@ impl RepoTab {
     }
 }
 
-enum RowClick {
-    None,
-    Open,
-    Button(usize),
+/// One of the Changes panel's two lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum WorkList {
+    Unstaged,
+    Staged,
+}
+
+/// Paths per git command, so a long selection stays under the command-line limit.
+const PATHS_PER_OP: usize = 200;
+
+impl WorkList {
+    fn verb(self) -> &'static str {
+        match self {
+            WorkList::Unstaged => "Stage",
+            WorkList::Staged => "Unstage",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            WorkList::Unstaged => "plus",
+            WorkList::Staged => "minus",
+        }
+    }
+
+    /// Stages (or unstages) `paths`; `head` empty before the first commit.
+    fn action(self, head: &str, paths: &[&str]) -> Action {
+        let steps = paths
+            .chunks(PATHS_PER_OP)
+            .map(|chunk| {
+                let mut args: Vec<&str> = match self {
+                    WorkList::Unstaged => vec!["add", "--"],
+                    WorkList::Staged if head.is_empty() => vec!["rm", "--cached", "-q", "--"],
+                    WorkList::Staged => vec!["restore", "--staged", "--"],
+                };
+                args.extend_from_slice(chunk);
+                args
+            })
+            .collect();
+        let label = match paths.len() {
+            1 => self.verb().to_owned(),
+            n => format!("{} {n} files", self.verb()),
+        };
+        stage_action(&label, steps)
+    }
+
+    /// Stages (or unstages) everything.
+    fn all_action(self, head: &str) -> Action {
+        let label = format!("{} all", self.verb());
+        match self {
+            WorkList::Unstaged => stage_action(&label, vec![vec!["add", "-A"]]),
+            WorkList::Staged => stage_action(&label, vec![unstage_all_args(head)]),
+        }
+    }
+}
+
+/// Unstages everything; `head` empty before the first commit, when there is nothing to reset to.
+pub(super) fn unstage_all_args(head: &str) -> Vec<&'static str> {
+    if head.is_empty() {
+        vec!["rm", "--cached", "-r", "-q", "--", "."]
+    } else {
+        vec!["reset", "-q"]
+    }
+}
+
+/// What the rows of one list share while it is drawn.
+struct RowCtx<'a> {
+    list: WorkList,
+    head: &'a str,
+    /// The ticked paths, in the list's order.
+    picked: &'a [&'a str],
+    /// The same files.
+    picked_files: &'a [&'a StatusFile],
+    /// How many files the list has.
+    files: usize,
+}
+
+/// The files ticked in one list of the Changes panel.
+#[derive(Default)]
+pub(super) struct Picks {
+    paths: std::collections::BTreeSet<String>,
+    /// The file last clicked, where a Shift+click range starts.
+    anchor: Option<String>,
+}
+
+/// A click on a list's ticks, applied once the list is drawn.
+#[derive(Debug)]
+enum PickEvent {
+    /// A plain click (the diff opens): where the next range starts.
+    Click(String),
+    /// Tick or untick; `true` from Ctrl+click, which also ticks the file open before.
+    Toggle(String, bool),
+    /// Shift+click: tick every file from the last one clicked to this one.
+    Range(String),
+    /// Tick (`true`) or untick these, as a folder's checkbox does.
+    Set(Vec<String>, bool),
+    /// The header's checkbox: tick all, or none.
+    All(bool),
+}
+
+impl Picks {
+    /// Forgets paths no longer in the list.
+    fn keep(&mut self, files: &[StatusFile]) {
+        if self.paths.is_empty() && self.anchor.is_none() {
+            return;
+        }
+        let present: std::collections::HashSet<&str> =
+            files.iter().map(|f| f.path.as_str()).collect();
+        self.paths.retain(|p| present.contains(p.as_str()));
+        if self.anchor.as_deref().is_some_and(|a| !present.contains(a)) {
+            self.anchor = None;
+        }
+    }
+
+    /// `order`: the paths as shown (folded folders left out), for ranges.
+    fn apply(&mut self, event: PickEvent, order: &[String], files: &[StatusFile]) {
+        match event {
+            PickEvent::Click(path) => self.anchor = Some(path),
+            PickEvent::Toggle(path, ctrl) => {
+                if ctrl && self.paths.is_empty() {
+                    // Ctrl+click after a plain click: both files.
+                    if let Some(a) = self.anchor.take().filter(|a| order.contains(a)) {
+                        self.paths.insert(a);
+                    }
+                }
+                if !self.paths.remove(&path) {
+                    self.paths.insert(path.clone());
+                }
+                self.anchor = Some(path);
+            }
+            PickEvent::Range(path) => {
+                let at = |p: &str| order.iter().position(|o| o == p);
+                let to = at(&path);
+                let from = self.anchor.as_deref().and_then(at).or(to);
+                if let (Some(a), Some(b)) = (from, to) {
+                    let (a, b) = (a.min(b), a.max(b));
+                    self.paths.extend(order[a..=b].iter().cloned());
+                }
+                if self.anchor.is_none() {
+                    self.anchor = Some(path);
+                }
+            }
+            PickEvent::Set(paths, on) => {
+                for p in paths {
+                    if on {
+                        self.paths.insert(p);
+                    } else {
+                        self.paths.remove(&p);
+                    }
+                }
+            }
+            PickEvent::All(on) => {
+                self.paths.clear();
+                if on {
+                    self.paths.extend(files.iter().map(|f| f.path.clone()));
+                }
+            }
+        }
+    }
 }
 
 fn stage_action(label: &str, steps: Vec<Vec<&str>>) -> Action {
@@ -816,6 +1098,42 @@ fn stage_action(label: &str, steps: Vec<Vec<&str>>) -> Action {
             .collect(),
         refresh: Refresh::Status,
     }
+}
+
+/// Asks before throwing away the unstaged changes to `files` (deleting the untracked ones).
+fn discard_files_dialog(files: &[&StatusFile]) -> Dialog {
+    if let [f] = files {
+        return discard_dialog(f);
+    }
+    let (new, tracked): (Vec<&StatusFile>, Vec<&StatusFile>) =
+        files.iter().partition(|f| f.area == Area::Untracked);
+    let mut steps = Vec::new();
+    for (args, group) in [
+        (&["restore", "--"][..], &tracked),
+        (&["clean", "-f", "-q", "--"][..], &new),
+    ] {
+        for chunk in group.chunks(PATHS_PER_OP) {
+            let mut step: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+            step.extend(chunk.iter().map(|f| f.path.clone()));
+            steps.push(step);
+        }
+    }
+    let n = files.len();
+    let body = match new.len() {
+        0 => format!("Discard the unstaged changes to {n} files? This can't be undone."),
+        k if k == n => {
+            format!("Delete {n} new files? They aren't tracked by git, so this can't be undone.")
+        }
+        k => format!(
+            "Discard the unstaged changes to {n} files? {k} of them are new files git doesn't              track, and are deleted. This can't be undone."
+        ),
+    };
+    let button = if new.len() == n {
+        "Delete files"
+    } else {
+        "Discard"
+    };
+    Dialog::confirm("Discard changes", body, button, steps, None).refresh(Refresh::Status)
 }
 
 fn discard_dialog(f: &StatusFile) -> Dialog {
@@ -849,19 +1167,27 @@ fn discard_dialog(f: &StatusFile) -> Dialog {
 /// How much further in each level of a file tree is.
 const TREE_INDENT: f32 = 14.0;
 
-/// Changed files grouped by folder, for the tree view.
-#[derive(Default)]
-struct FileTree<'a> {
-    folders: std::collections::BTreeMap<String, FileTree<'a>>,
-    files: Vec<&'a ChangedFile>,
+/// Files grouped by folder, for the tree views.
+struct FileTree<'a, T> {
+    folders: std::collections::BTreeMap<String, FileTree<'a, T>>,
+    files: Vec<&'a T>,
 }
 
-impl<'a> FileTree<'a> {
-    fn build(files: &'a [ChangedFile]) -> Self {
+impl<T> Default for FileTree<'_, T> {
+    fn default() -> Self {
+        Self {
+            folders: Default::default(),
+            files: Vec::new(),
+        }
+    }
+}
+
+impl<'a, T> FileTree<'a, T> {
+    fn build(files: &'a [T], path: impl Fn(&'a T) -> &'a str) -> Self {
         let mut root = FileTree::default();
         for f in files {
             let mut node = &mut root;
-            let mut parts: Vec<&str> = f.path.split('/').collect();
+            let mut parts: Vec<&str> = path(f).split('/').collect();
             parts.pop();
             for part in parts {
                 node = node.folders.entry(part.to_owned()).or_default();
@@ -870,6 +1196,91 @@ impl<'a> FileTree<'a> {
         }
         root
     }
+
+    /// A folder holding only one folder reads as one row: `src/repo`. This folder (`name`)
+    /// and the ones it holds that way.
+    fn compact(&self, name: &str) -> (String, &Self) {
+        let (mut name, mut sub) = (name.to_owned(), self);
+        while sub.files.is_empty() && sub.folders.len() == 1 {
+            let Some((next, inner)) = sub.folders.iter().next() else {
+                break;
+            };
+            name = format!("{name}/{next}");
+            sub = inner;
+        }
+        (name, sub)
+    }
+
+    /// The paths of every file in here, subfolders too.
+    fn paths(&self, path: &dyn Fn(&'a T) -> &'a str, out: &mut Vec<&'a str>) {
+        for sub in self.folders.values() {
+            sub.paths(path, out);
+        }
+        out.extend(self.files.iter().map(|f| path(f)));
+    }
+}
+
+fn join_path(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{parent}/{name}")
+    }
+}
+
+/// A folder in a file tree, `indent` in: chevron, an optional checkbox, folder icon and name.
+/// Returns the row and whether the checkbox was clicked.
+fn folder_row(
+    ui: &mut Ui,
+    id: egui::Id,
+    indent: f32,
+    name: &str,
+    open: bool,
+    check: Option<Check>,
+) -> (egui::Response, bool) {
+    let t = Tokens::get(ui.ctx());
+    let (rect, r) =
+        ui.allocate_exact_size(vec2(ui.available_width(), widgets::ROW_H), Sense::click());
+    if r.hovered() {
+        ui.painter().rect_filled(rect, 0.0, t.hover);
+    }
+    let y = rect.center().y;
+    let x = rect.left() + indent;
+    icons::paint(
+        ui,
+        Rect::from_center_size(pos2(x + 12.0, y), vec2(12.0, 12.0)),
+        if open {
+            "chevron-down"
+        } else {
+            "chevron-right"
+        },
+        11.0,
+        t.text_faint,
+    );
+    let checked = check.is_some_and(|state| {
+        let center = pos2(x + 16.0 + widgets::CHECK_W - 2.0, y);
+        widgets::check_box(ui, center, id.with("check"), state).clicked()
+    });
+    let x = x + if check.is_some() {
+        widgets::CHECK_W + 6.0
+    } else {
+        0.0
+    };
+    icons::paint(
+        ui,
+        Rect::from_center_size(pos2(x + 28.0, y), vec2(14.0, 14.0)),
+        "folder-open",
+        13.0,
+        t.text_dim,
+    );
+    ui.painter_at(rect).text(
+        pos2(x + 42.0, y),
+        Align2::LEFT_CENTER,
+        name,
+        egui::FontId::proportional(12.5),
+        t.text_dim,
+    );
+    (r, checked)
 }
 
 /// "N files changed +a −d", an optional note, and the Path / Tree switch on the right.
@@ -953,15 +1364,34 @@ fn files_header(ui: &mut Ui, files: &[ChangedFile], note: Option<&str>) {
     }
 }
 
-/// A list title with a count and an optional text button on the right. Returns the click.
-fn list_header(ui: &mut Ui, title: &str, count: usize, button: Option<&str>) -> bool {
+/// A list title with a count, an optional checkbox before it, and text buttons on the right
+/// (in order, the last at the edge). Returns whether the checkbox was clicked, and which button.
+fn list_header(
+    ui: &mut Ui,
+    title: &str,
+    count: usize,
+    check: Option<Check>,
+    buttons: &[&str],
+) -> (bool, Option<usize>) {
     let t = Tokens::get(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect, 0.0, t.tab_strip);
+    ui.painter().rect_filled(rect, 0.0, t.tab_strip);
     let y = rect.center().y;
+    // Lined up with the rows' checkboxes.
+    let checked = check.is_some_and(|state| {
+        let center = pos2(rect.left() + 18.0, y);
+        widgets::check_box(ui, center, ui.id().with(("list_check", title)), state)
+            .on_hover_text(if state == Check::Off {
+                "Select all"
+            } else {
+                "Select none"
+            })
+            .clicked()
+    });
+    let left = rect.left() + if check.is_some() { 32.0 } else { 12.0 };
+    let p = ui.painter();
     let r = p.text(
-        pos2(rect.left() + 12.0, y),
+        pos2(left, y),
         Align2::LEFT_CENTER,
         title,
         theme::semibold(11.0),
@@ -974,22 +1404,31 @@ fn list_header(ui: &mut Ui, title: &str, count: usize, button: Option<&str>) -> 
         theme::medium(11.0),
         t.text_faint,
     );
-    let Some(label) = button else { return false };
-    let galley = p.layout_no_wrap(label.to_owned(), theme::medium(11.5), t.accent);
-    let b = egui::Rect::from_center_size(
-        pos2(rect.right() - 12.0 - galley.size().x / 2.0 - 6.0, y),
-        vec2(galley.size().x + 12.0, 22.0),
-    );
-    let resp = ui.interact(b, ui.id().with(("list_btn", title)), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(b, t.radius_sm, t.hover);
+    let mut clicked = None;
+    let mut right = rect.right() - 6.0;
+    for (i, label) in buttons.iter().enumerate().rev() {
+        let galley =
+            ui.painter()
+                .layout_no_wrap((*label).to_owned(), theme::medium(11.5), t.accent);
+        let b = egui::Rect::from_min_max(
+            pos2(right - galley.size().x - 12.0, y - 11.0),
+            pos2(right, y + 11.0),
+        );
+        let resp = ui.interact(b, ui.id().with(("list_btn", title, i)), Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(b, t.radius_sm, t.hover);
+        }
+        ui.painter().galley(
+            pos2(b.left() + 6.0, y - galley.size().y / 2.0),
+            galley,
+            t.accent,
+        );
+        if resp.clicked() {
+            clicked = Some(i);
+        }
+        right = b.left() - 2.0;
     }
-    ui.painter().galley(
-        pos2(b.left() + 6.0, y - galley.size().y / 2.0),
-        galley,
-        t.accent,
-    );
-    resp.clicked()
+    (checked, clicked)
 }
 
 fn empty_hint(ui: &mut Ui, text: &str) {
@@ -1065,4 +1504,78 @@ fn reword_editor(ui: &mut Ui, reword: &mut Reword) -> Option<bool> {
         out = Some(false);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn files(paths: &[&str]) -> Vec<StatusFile> {
+        paths
+            .iter()
+            .map(|p| StatusFile {
+                path: (*p).to_owned(),
+                old_path: None,
+                code: 'M',
+                area: Area::Unstaged,
+            })
+            .collect()
+    }
+
+    fn ticked(p: &Picks) -> Vec<&str> {
+        p.paths.iter().map(String::as_str).collect()
+    }
+
+    #[test]
+    fn ctrl_click_ticks_the_open_file_too() {
+        let fs = files(&["a", "b", "c"]);
+        let order: Vec<String> = fs.iter().map(|f| f.path.clone()).collect();
+        let mut p = Picks::default();
+        p.apply(PickEvent::Click("a".into()), &order, &fs);
+        assert!(p.paths.is_empty());
+        p.apply(PickEvent::Toggle("c".into(), true), &order, &fs);
+        assert_eq!(ticked(&p), ["a", "c"]);
+        p.apply(PickEvent::Toggle("a".into(), true), &order, &fs);
+        assert_eq!(ticked(&p), ["c"]);
+    }
+
+    #[test]
+    fn shift_click_ticks_the_range_shown() {
+        let fs = files(&["x/1", "x/2", "y", "z"]);
+        let order: Vec<String> = fs.iter().map(|f| f.path.clone()).collect();
+        let mut p = Picks::default();
+        p.apply(PickEvent::Click("z".into()), &order, &fs);
+        p.apply(PickEvent::Range("x/2".into()), &order, &fs);
+        assert_eq!(ticked(&p), ["x/2", "y", "z"]);
+        p.apply(PickEvent::All(false), &order, &fs);
+        assert!(p.paths.is_empty());
+    }
+
+    #[test]
+    fn ticks_go_with_the_files() {
+        let mut p = Picks::default();
+        let fs = files(&["a", "b"]);
+        p.apply(PickEvent::All(true), &[], &fs);
+        p.keep(&files(&["b"]));
+        assert_eq!(ticked(&p), ["b"]);
+    }
+
+    fn steps(a: Action) -> Option<(String, Vec<Vec<String>>)> {
+        match a {
+            Action::Ops { label, ops, .. } => Some((label, ops)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn long_selections_split_into_several_commands() {
+        let paths: Vec<String> = (0..450).map(|i| format!("f{i}")).collect();
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let (label, ops) = steps(WorkList::Unstaged.action("abc", &refs)).unwrap_or_default();
+        assert_eq!(label, "Stage 450 files");
+        assert_eq!(ops.len(), 3);
+        assert_eq!(ops[0][..2], ["add", "--"]);
+        let (_, ops) = steps(WorkList::Staged.action("", &refs[..1])).unwrap_or_default();
+        assert_eq!(ops, [["rm", "--cached", "-q", "--", "f0"]]);
+    }
 }
