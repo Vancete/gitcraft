@@ -18,6 +18,9 @@ so your config, credentials and hooks apply as usual.
 - Browser-like tabs, one per repository (Ctrl+T, Ctrl+W, middle-click; Ctrl+Shift+T reopens the
   one closed last). Open tabs, recents, theme and settings are remembered.
 - Changes made elsewhere (editor, terminal) show up by themselves: the folder is watched.
+- On GNOME (Wayland) the window buttons sit in the tab strip, on the side GNOME's
+  `button-layout` puts them (GNOME Tweaks › Window Titlebars); the strip moves the window.
+  `GITCRAFT_SYSTEM_TITLEBAR=1` keeps the plain title bar instead.
 
 **Graph**
 

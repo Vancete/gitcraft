@@ -18,6 +18,7 @@ use crate::tab_look::{self, TabLook};
 use crate::theme::{self, ThemeKind, Tokens};
 use crate::update;
 use crate::vscode;
+use crate::window_controls;
 
 const MAX_RECENT: usize = 12;
 const TAB_H: f32 = 40.0;
@@ -455,6 +456,12 @@ impl App {
         let mut moved = None;
         ui.horizontal(|ui| {
             const GAP: f32 = 1.0;
+            let window_buttons = window_controls::layout();
+            if let Some(layout) = window_buttons.filter(|l| !l.left.is_empty()) {
+                ui.add_space(4.0);
+                window_controls::buttons(ui, &layout.left, TAB_H);
+                ui.add_space(10.0);
+            }
             ui.spacing_mut().item_spacing.x = GAP;
             let ctx = ui.ctx().clone();
             let n = self.tabs.len();
@@ -678,6 +685,10 @@ impl App {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(4.0);
+                if let Some(layout) = window_buttons.filter(|l| !l.right.is_empty()) {
+                    window_controls::right_buttons(ui, layout, TAB_H);
+                    ui.add_space(10.0);
+                }
                 ui.spacing_mut().item_spacing.x = 6.0;
                 if icons::bar_button(ui, "settings", "Settings").clicked() {
                     self.open_settings();
@@ -767,6 +778,10 @@ impl App {
                                 self.update = None;
                             }
                         });
+                }
+                // What's left between the tabs and the icons moves the window.
+                if window_buttons.is_some() {
+                    window_controls::drag_area(ui, ui.available_rect_before_wrap());
                 }
             });
         });
@@ -1136,6 +1151,12 @@ impl eframe::App for App {
         }
 
         if let Err(err) = self.git_version.clone() {
+            if let Some(layout) = window_controls::layout() {
+                egui::Panel::top("window")
+                    .frame(egui::Frame::new().fill(t.tab_strip).inner_margin(8))
+                    .show(ui, |ui| window_controls::bare_bar(ui, layout));
+                window_controls::resize_edges(&ctx);
+            }
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(t.dock))
                 .show(ui, |ui| self.git_missing(ui, &err));
@@ -1257,6 +1278,9 @@ impl eframe::App for App {
             }
         }
         self.toasts_ui(&ctx);
+        if window_controls::layout().is_some() {
+            window_controls::resize_edges(&ctx);
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
