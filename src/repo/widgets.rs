@@ -179,6 +179,56 @@ pub struct FileRowResponse {
     pub row: Response,
     /// Index of the clicked hover button.
     pub button: Option<usize>,
+    /// The row's checkbox was clicked.
+    pub checked: bool,
+}
+
+/// A checkbox's look: empty, ticked, or a dash for a folder with some files ticked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Check {
+    Off,
+    On,
+    Some,
+}
+
+impl Check {
+    /// `picked` of `total` ticked.
+    pub fn of(picked: usize, total: usize) -> Self {
+        match picked {
+            0 => Check::Off,
+            n if n >= total => Check::On,
+            _ => Check::Some,
+        }
+    }
+}
+
+/// Width a row's checkbox takes on its left.
+pub const CHECK_W: f32 = 20.0;
+
+/// A small checkbox centred at `center`. Returns its response (click to toggle).
+pub fn check_box(ui: &mut Ui, center: egui::Pos2, id: egui::Id, state: Check) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let r = Rect::from_center_size(center, vec2(14.0, 14.0));
+    let resp = ui.interact(r.expand(3.0), id, Sense::click());
+    let p = ui.painter();
+    if state == Check::Off {
+        let color = if resp.hovered() {
+            t.text_dim
+        } else {
+            t.text_faint
+        };
+        p.rect_stroke(
+            r,
+            CornerRadius::same(3),
+            egui::Stroke::new(1.0, color),
+            egui::StrokeKind::Inside,
+        );
+    } else {
+        p.rect_filled(r, CornerRadius::same(3), t.accent);
+        let icon = if state == Check::On { "check" } else { "minus" };
+        icons::paint(ui, r, icon, 11.0, t.accent_text);
+    }
+    resp
 }
 
 /// One changed file: status letter, file name, its folder dimmed, and `extra` on the right.
@@ -190,21 +240,23 @@ pub fn file_row(
     selected: bool,
     extra: RowExtra<'_>,
 ) -> FileRowResponse {
-    file_row_in(ui, code, path, old_path, None, selected, extra)
+    file_row_in(ui, code, path, old_path, None, None, selected, extra)
 }
 
 /// [`file_row`] in a tree of folders, `indent` in: just the file's name, its folder being the
-/// rows above.
+/// rows above. With `check`, a checkbox comes first.
+#[allow(clippy::too_many_arguments)]
 pub fn file_row_in(
     ui: &mut Ui,
     code: char,
     path: &str,
     old_path: Option<&str>,
     indent: Option<f32>,
+    check: Option<Check>,
     selected: bool,
     extra: RowExtra<'_>,
 ) -> FileRowResponse {
-    let shift = indent.unwrap_or(0.0);
+    let shift = indent.unwrap_or(0.0) + if check.is_some() { CHECK_W } else { 0.0 };
     let t = Tokens::get(ui.ctx());
     let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     let hovered = ui.rect_contains_pointer(rect);
@@ -215,6 +267,10 @@ pub fn file_row_in(
         painter.rect_filled(rect, 0.0, t.hover);
     }
     let y = rect.center().y;
+    let checked = check.is_some_and(|state| {
+        let center = pos2(rect.left() + shift - CHECK_W / 2.0 + 8.0, y);
+        check_box(ui, center, row.id.with("check"), state).clicked()
+    });
 
     // Status letter in a small rounded square.
     let color = status_color(&t, code);
@@ -332,7 +388,11 @@ pub fn file_row_in(
         None if !dir.is_empty() => row.on_hover_text(path),
         None => row,
     };
-    FileRowResponse { row, button }
+    FileRowResponse {
+        row,
+        button,
+        checked,
+    }
 }
 
 /// A primary (accent-filled) button.
@@ -517,11 +577,26 @@ pub fn file_menu(
     ignorable: bool,
     acts: &mut Vec<super::Action>,
 ) {
+    file_menu_with(resp, path, rev, ignorable, acts, |_, _| false);
+}
+
+/// [`file_menu`] with `top` items first (and a separator after them).
+pub fn file_menu_with(
+    resp: &Response,
+    path: &str,
+    rev: Option<&str>,
+    ignorable: bool,
+    acts: &mut Vec<super::Action>,
+    top: impl FnOnce(&mut Ui, &mut Vec<super::Action>) -> bool,
+) {
     use super::Action;
     use super::file_view::FileTab;
     egui::Popup::context_menu(resp)
         .style(crate::theme::menu_style)
         .show(|ui| {
+            if top(ui, acts) {
+                ui.separator();
+            }
             let rel = std::path::PathBuf::from(path);
             if ui.button("Open file").clicked() {
                 acts.push(Action::OpenPath(rel.clone()));

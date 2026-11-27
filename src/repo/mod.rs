@@ -469,6 +469,9 @@ pub struct RepoTab {
     diff_ignore_ws: bool,
     conflict: Option<conflict::ConflictEditor>,
 
+    /// Files ticked in the Changes panel's lists.
+    picks_unstaged: detail::Picks,
+    picks_staged: detail::Picks,
     commit_summary: String,
     commit_body: String,
     amend: bool,
@@ -567,6 +570,8 @@ impl RepoTab {
             avatars_hinted: false,
             diff_ignore_ws: false,
             conflict: None,
+            picks_unstaged: Default::default(),
+            picks_staged: Default::default(),
             commit_summary: String::new(),
             commit_body: String::new(),
             amend: false,
