@@ -583,6 +583,18 @@ impl App {
                 } else if hovered {
                     p.rect_filled(rect, 0.0, t.hover.gamma_multiply(0.6));
                 }
+                // git is changing this repository: red, also while in the background.
+                if matches!(tab, Tab::Repo(r) if r.is_working()) {
+                    let base = if active { t.chrome } else { t.tab_strip };
+                    p.rect_filled(rect, 0.0, base.lerp_to_gamma(t.danger, 0.35));
+                    p.line_segment(
+                        [
+                            rect.left_top() + vec2(0.0, 1.0),
+                            rect.right_top() + vec2(0.0, 1.0),
+                        ],
+                        Stroke::new(2.0, t.danger),
+                    );
+                }
                 let y = rect.center().y;
                 let icon = match tab {
                     Tab::Home => "plus",

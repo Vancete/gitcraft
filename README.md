@@ -70,6 +70,9 @@ so your config, credentials and hooks apply as usual.
   create a pull request, rename, delete…
 - Update a branch you're not on in one click (the ⟳ on its row, or Update and merge into the
   current branch from its menu): it's fetched and fast-forwarded without switching to it.
+- The right pane's Log tab shows every operation's git commands and their output live, progress
+  included (handy for big pushes, pulls and rebases). While one runs, the repository's tab and
+  window turn red: leave its files alone until it's done.
 - Remotes: add, edit (name and URL), fetch one, remove; their branches below each.
 - Worktrees: add (existing or new branch), open in a tab, open a terminal there, lock, remove,
   prune.

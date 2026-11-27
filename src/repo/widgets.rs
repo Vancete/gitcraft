@@ -34,41 +34,70 @@ pub fn chip(ui: &mut Ui, text: &str, color: Color32) -> Response {
 /// The strip at the top of a side panel, like PhotoCraft's panel tab strips: a tab with the
 /// title, and room on the right for buttons.
 pub fn panel_header(ui: &mut Ui, title: &str, add_buttons: impl FnOnce(&mut Ui)) {
+    panel_tabs(ui, &[(title, None)], 0, add_buttons);
+}
+
+/// [`panel_header`] with several tabs, `active` drawn raised; a tab can carry a coloured dot
+/// after its title. Returns the tab clicked, if another one was.
+pub fn panel_tabs(
+    ui: &mut Ui,
+    tabs: &[(&str, Option<Color32>)],
+    active: usize,
+    add_buttons: impl FnOnce(&mut Ui),
+) -> Option<usize> {
     let t = Tokens::get(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
-    let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, t.tab_strip);
+    let (rect, strip) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, t.tab_strip);
     let font = theme::semibold(11.5);
-    let galley = painter.layout_no_wrap(title.to_owned(), font, t.text);
-    let tab = Rect::from_min_size(
-        pos2(rect.left() + 4.0, rect.top() + 4.0),
-        vec2(galley.size().x + 24.0, rect.height() - 4.0),
-    );
-    painter.rect_filled(
-        tab,
-        CornerRadius {
+    let mut x = rect.left() + 4.0;
+    let mut clicked = None;
+    for (i, (title, dot)) in tabs.iter().enumerate() {
+        let on = i == active;
+        let color = if on { t.text } else { t.text_dim };
+        let galley = ui
+            .painter()
+            .layout_no_wrap((*title).to_owned(), font.clone(), color);
+        let dot_w = if dot.is_some() { 12.0 } else { 0.0 };
+        let tab = Rect::from_min_size(
+            pos2(x, rect.top() + 4.0),
+            vec2(galley.size().x + 24.0 + dot_w, rect.height() - 4.0),
+        );
+        x = tab.right() + 2.0;
+        let r = CornerRadius {
             nw: t.radius as u8,
             ne: t.radius as u8,
             sw: 0,
             se: 0,
-        },
-        t.card,
-    );
-    painter.galley(
-        pos2(tab.left() + 12.0, tab.center().y - galley.size().y / 2.0),
-        galley,
-        t.text,
-    );
-    let buttons = Rect::from_min_max(
-        pos2(tab.right() + 4.0, rect.top()),
-        rect.max - vec2(6.0, 0.0),
-    );
+        };
+        let resp = if tabs.len() > 1 {
+            ui.interact(tab, strip.id.with(("tab", i)), Sense::click())
+        } else {
+            ui.interact(tab, strip.id.with(("tab", i)), Sense::hover())
+        };
+        if on {
+            ui.painter().rect_filled(tab, r, t.card);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(tab, r, t.hover);
+        }
+        let text_pos = pos2(tab.left() + 12.0, tab.center().y - galley.size().y / 2.0);
+        let text_right = text_pos.x + galley.size().x;
+        ui.painter().galley(text_pos, galley, color);
+        if let Some(c) = dot {
+            ui.painter()
+                .circle_filled(pos2(text_right + 8.0, tab.center().y), 3.5, *c);
+        }
+        if !on && resp.clicked() {
+            clicked = Some(i);
+        }
+    }
+    let buttons = Rect::from_min_max(pos2(x + 2.0, rect.top()), rect.max - vec2(6.0, 0.0));
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(buttons)
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
     add_buttons(&mut child);
+    clicked
 }
 
 /// A collapsible section header (`▸ ICON TITLE  count`). Returns whether it is open.

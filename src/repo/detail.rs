@@ -12,7 +12,18 @@ use crate::theme::{self, Tokens};
 impl RepoTab {
     pub(super) fn detail_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
         let wip = self.selected.is_some_and(|r| self.is_wip(r));
-        if self.compare.is_some() {
+        if self.show_log {
+            let title = if self.compare.is_some() {
+                "Compare"
+            } else if wip {
+                "Changes"
+            } else if self.stash_view.is_some() {
+                "Stash"
+            } else {
+                "Commit"
+            };
+            self.log_panel(ui, acts, title);
+        } else if self.compare.is_some() {
             self.compare_panel(ui, acts);
         } else if wip {
             self.changes_panel(ui, acts);
@@ -30,7 +41,9 @@ impl RepoTab {
         let idle = self.busy_op.is_none();
         let stash = self.stash_view.and_then(|i| self.stashes.get(i)).cloned();
         let title = if stash.is_some() { "Stash" } else { "Commit" };
-        widgets::panel_header(ui, title, |ui| {
+        let mark = self.log_mark(ui.ctx());
+        let tabs = [(title, None), ("Log", mark)];
+        let to_log = widgets::panel_tabs(ui, &tabs, 0, |ui| {
             if let Some(stash) = &stash {
                 let more = icons::small_button(ui, "chevron-down", "Apply, pop or drop");
                 egui::Popup::menu(&more)
@@ -40,6 +53,9 @@ impl RepoTab {
                     });
             }
         });
+        if to_log.is_some() {
+            acts.push(Action::ShowLog(true));
+        }
         if let Some(stash) = &stash {
             egui::Frame::new()
                 .fill(t.accent.gamma_multiply(0.10))
@@ -343,11 +359,16 @@ impl RepoTab {
     fn compare_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
         let t = Tokens::get(ui.ctx());
         let Some(c) = &self.compare else { return };
-        widgets::panel_header(ui, "Compare", |ui| {
+        let mark = self.log_mark(ui.ctx());
+        let tabs = [("Compare", None), ("Log", mark)];
+        let to_log = widgets::panel_tabs(ui, &tabs, 0, |ui| {
             if icons::small_button(ui, "x", "Close (Esc)").clicked() {
                 acts.push(Action::CloseCompare);
             }
         });
+        if to_log.is_some() {
+            acts.push(Action::ShowLog(true));
+        }
         let data = c.data.as_ref().and_then(|d| d.as_ref().ok());
         let target_name = if c.target.is_some() {
             c.target_label.as_str()
@@ -461,7 +482,9 @@ impl RepoTab {
     fn changes_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
         let t = Tokens::get(ui.ctx());
         let idle = self.busy_op.is_none();
-        widgets::panel_header(ui, "Changes", |ui| {
+        let mark = self.log_mark(ui.ctx());
+        let tabs = [("Changes", None), ("Log", mark)];
+        let to_log = widgets::panel_tabs(ui, &tabs, 0, |ui| {
             let mut settings = Settings::get(ui.ctx());
             let (icon, tip) = if settings.files_as_tree {
                 ("list", "Show the files as a list of paths")
@@ -473,6 +496,9 @@ impl RepoTab {
                 settings.set(ui.ctx());
             }
         });
+        if to_log.is_some() {
+            acts.push(Action::ShowLog(true));
+        }
         // Ticks on files that are gone (staged, committed, discarded) go too.
         self.picks_unstaged.keep(&self.work.unstaged);
         self.picks_staged.keep(&self.work.staged);
