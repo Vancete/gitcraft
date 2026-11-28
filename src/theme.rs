@@ -296,8 +296,87 @@ pub fn mono(size: f32) -> FontId {
     FontId::monospace(size)
 }
 
-/// Inter and JetBrains Mono first; egui's default fonts stay last for symbols Inter lacks.
-pub fn install_fonts(ctx: &egui::Context) {
+/// One letter from each script that Inter and JetBrains Mono lack (they cover Latin, Greek and
+/// Cyrillic). Installed fonts that have these letters become fallbacks.
+const SCRIPT_SAMPLES: &[char] = &[
+    'ب', 'א', 'ܐ', 'ހ', 'ߊ', // Arabic, Hebrew, Syriac, Thaana, N'Ko
+    'क', 'ক', 'ਕ', 'ક', 'କ', 'க', 'క', 'ಕ', 'ക', 'ක', // Indic scripts and Sinhala
+    'ก', 'ກ', 'ក', 'က', 'ཀ', 'ꦄ', // Thai, Lao, Khmer, Myanmar, Tibetan, Javanese
+    'ა', 'ա', 'ሀ', 'Ꭰ', // Georgian, Armenian, Ethiopic, Cherokee
+    'ᐁ', 'ⴰ', 'ꔀ', 'ᠠ', // Canadian Syllabics, Tifinagh, Vai, Mongolian
+    '中', 'あ', 'ア', '한', 'ꀀ', // Han, Hiragana, Katakana, Hangul, Yi
+];
+
+/// Which of `SCRIPT_SAMPLES` the font face has.
+fn script_coverage(data: &[u8], index: u32) -> Vec<char> {
+    use skrifa::MetadataProvider;
+    let Ok(font) = skrifa::FontRef::from_index(data, index) else {
+        return Vec::new();
+    };
+    let charmap = font.charmap();
+    SCRIPT_SAMPLES
+        .iter()
+        .copied()
+        .filter(|&c| charmap.map(c).is_some())
+        .collect()
+}
+
+/// The fewest faces that together cover every letter any of them covers, widest first.
+fn pick_faces<T: Copy>(faces: &[(T, Vec<char>)]) -> Vec<T> {
+    let mut picked = Vec::new();
+    let mut covered: Vec<char> = Vec::new();
+    loop {
+        // `min_by_key` on the negated count keeps the first face on ties.
+        let best = faces
+            .iter()
+            .map(|(id, chars)| {
+                (
+                    id,
+                    chars,
+                    chars.iter().filter(|c| !covered.contains(c)).count(),
+                )
+            })
+            .min_by_key(|&(_, _, new)| std::cmp::Reverse(new));
+        match best {
+            Some((&id, chars, new)) if new > 0 => {
+                picked.push(id);
+                covered.extend(chars);
+            }
+            _ => return picked,
+        }
+    }
+}
+
+/// Fonts installed on this computer for the scripts the bundled fonts lack, each paired with
+/// a unique name for `FontDefinitions`. Empty when none is installed.
+fn system_fallback_fonts() -> Vec<(String, FontData)> {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    let faces: Vec<_> = db
+        .faces()
+        .filter(|f| {
+            f.style == fontdb::Style::Normal
+                && f.weight == fontdb::Weight::NORMAL
+                && f.stretch == fontdb::Stretch::Normal
+        })
+        .filter_map(|f| Some((f.id, db.with_face_data(f.id, script_coverage)?)))
+        .collect();
+    pick_faces(&faces)
+        .into_iter()
+        .filter_map(|id| {
+            let name = format!("system-{}", db.face(id)?.post_script_name);
+            let data = db.with_face_data(id, |bytes, index| FontData {
+                index,
+                ..FontData::from_owned(bytes.to_vec())
+            })?;
+            Some((name, data))
+        })
+        .collect()
+}
+
+/// Inter and JetBrains Mono first; egui's default fonts next for symbols Inter lacks; the
+/// system's fonts for other scripts (`system`) last.
+fn font_definitions(system: Vec<(String, FontData)>) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let mut add = |name: &str, bytes: &'static [u8]| {
         fonts
@@ -317,6 +396,12 @@ pub fn install_fonts(ctx: &egui::Context) {
         "JetBrainsMono",
         include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
     );
+    for (name, data) in system {
+        fonts.font_data.insert(name.clone(), Arc::new(data));
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            fonts.families.entry(family).or_default().push(name.clone());
+        }
+    }
     let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
     proportional.insert(0, "Inter".to_owned());
     let fallback = proportional.clone();
@@ -332,7 +417,21 @@ pub fn install_fonts(ctx: &egui::Context) {
             .families
             .insert(FontFamily::Name(family.into()), stack);
     }
-    ctx.set_fonts(fonts);
+    fonts
+}
+
+/// Bundled fonts now; the system's fonts for other scripts once found, because scanning the
+/// installed fonts takes up to a second and must not hold up the first frame.
+pub fn install_fonts(ctx: &egui::Context) {
+    ctx.set_fonts(font_definitions(Vec::new()));
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let system = system_fallback_fonts();
+        if !system.is_empty() {
+            ctx.set_fonts(font_definitions(system));
+            ctx.request_repaint();
+        }
+    });
 }
 
 /// Menus and context menus: no border, rows highlighted from edge to edge with room for the
@@ -445,4 +544,49 @@ pub fn apply(ctx: &egui::Context, t: Tokens) {
     let style = ctx.global_style();
     ctx.set_style_of(egui::Theme::Light, Arc::clone(&style));
     ctx.set_style_of(egui::Theme::Dark, style);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picks_the_fewest_faces_widest_first() {
+        let faces = [
+            (1, vec!['a']),
+            (2, vec!['a', 'b']),
+            (3, vec!['b']),
+            (4, vec!['c']),
+        ];
+        assert_eq!(pick_faces(&faces), vec![2, 4]);
+        assert_eq!(pick_faces::<u8>(&[]), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn system_fonts_reach_code_and_ui_text() {
+        let system = system_fallback_fonts();
+        // Skip letters a bundled font has: egui's `has_glyph` wrongly says no for letters from
+        // the font it takes the replacement glyph from (Hack has Georgian and Armenian).
+        let bundled: Vec<char> = font_definitions(Vec::new())
+            .font_data
+            .values()
+            .flat_map(|data| script_coverage(&data.font, data.index))
+            .collect();
+        let wanted: Vec<char> = system
+            .iter()
+            .flat_map(|(_, data)| script_coverage(&data.font, data.index))
+            .filter(|c| !bundled.contains(c))
+            .collect();
+        let ctx = egui::Context::default();
+        ctx.set_fonts(font_definitions(system));
+        ctx.run_ui(Default::default(), |_| {})
+            .drop_without_applying_deltas();
+        ctx.fonts_mut(|f| {
+            for font in [mono(12.0), FontId::proportional(12.0), semibold(12.0)] {
+                for &c in &wanted {
+                    assert!(f.has_glyph(&font, c), "{c} in {font:?}");
+                }
+            }
+        });
+    }
 }
