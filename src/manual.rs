@@ -21,7 +21,7 @@ const FEATURES: &[(&str, &[&str])] = &[
             "Open, create or clone a repository from the start page; recent ones are listed there.",
             "One tab per repository. Changes made elsewhere (editor, terminal) show up by themselves.",
             "Right-click a tab to give it its own icon and highlight colour.",
-            "Settings › Themes: four code styles, or a VS Code theme imported from your VS Code, which colours the whole window. The palette icon switches between Dark, Medium Gray and Light.",
+            "Settings › Themes: four code styles, or a VS Code theme imported from your VS Code, which colours the whole window. The palette icon switches between Dark, Medium Gray, Light and Classic.",
             "Drag a tab along the strip to reorder the tabs.",
         ],
     ),
@@ -52,6 +52,8 @@ const FEATURES: &[(&str, &[&str])] = &[
         "Changes and commits",
         &[
             "Stage, unstage or discard whole files from the right pane; double-click a file to stage or unstage it.",
+            "Tick files (their checkboxes, Ctrl+click, Shift+click for a range, or a folder's checkbox) to stage, unstage or discard only those; the changes row of the graph has Stage all and Unstage all on right-click, and stays pinned on top while you scroll the history.",
+            "The changes show as a list of paths or a tree of folders: the switch at the top of the pane.",
             "In a file's diff, stage, unstage or discard one hunk, or click the lines you want and act on only those.",
             "A diff shows only the changes or the whole file, unified or side by side, and remembers both. Drag over its lines to select text and Ctrl+C to copy it; the strip by the scrollbar marks where the changes are, and the arrows (Alt+Up / Alt+Down) jump between them.",
             "A commit's files as a list of paths or a tree of folders: the switch above them.",
@@ -64,7 +66,9 @@ const FEATURES: &[(&str, &[&str])] = &[
     (
         "Branches, remotes and more",
         &[
-            "Left pane: local branches with ahead / behind counts, remotes, worktrees, stashes, pull requests and tags.",
+            "Left pane: local branches with red badges for the commits to pull or push, remotes, worktrees, stashes, pull requests and tags.",
+            "Hover a branch you're not on for ⟳: it's brought up to date from its remote without switching to it. Its menu also has Update and merge into the current branch.",
+            "The Log tab next to Commit shows the git commands each operation runs and what they print, live. While one runs, the tab and the window turn red: leave the files alone until it's done.",
             "Conflicts open in a three-pane editor with Ours, Theirs and Both for each conflict.",
             "Right-click a file for its history and blame.",
             "A terminal panel with tabs, in the repository's folder.",

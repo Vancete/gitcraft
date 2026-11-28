@@ -34,41 +34,70 @@ pub fn chip(ui: &mut Ui, text: &str, color: Color32) -> Response {
 /// The strip at the top of a side panel, like PhotoCraft's panel tab strips: a tab with the
 /// title, and room on the right for buttons.
 pub fn panel_header(ui: &mut Ui, title: &str, add_buttons: impl FnOnce(&mut Ui)) {
+    panel_tabs(ui, &[(title, None)], 0, add_buttons);
+}
+
+/// [`panel_header`] with several tabs, `active` drawn raised; a tab can carry a coloured dot
+/// after its title. Returns the tab clicked, if another one was.
+pub fn panel_tabs(
+    ui: &mut Ui,
+    tabs: &[(&str, Option<Color32>)],
+    active: usize,
+    add_buttons: impl FnOnce(&mut Ui),
+) -> Option<usize> {
     let t = Tokens::get(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
-    let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, t.tab_strip);
+    let (rect, strip) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, t.tab_strip);
     let font = theme::semibold(11.5);
-    let galley = painter.layout_no_wrap(title.to_owned(), font, t.text);
-    let tab = Rect::from_min_size(
-        pos2(rect.left() + 4.0, rect.top() + 4.0),
-        vec2(galley.size().x + 24.0, rect.height() - 4.0),
-    );
-    painter.rect_filled(
-        tab,
-        CornerRadius {
+    let mut x = rect.left() + 4.0;
+    let mut clicked = None;
+    for (i, (title, dot)) in tabs.iter().enumerate() {
+        let on = i == active;
+        let color = if on { t.text } else { t.text_dim };
+        let galley = ui
+            .painter()
+            .layout_no_wrap((*title).to_owned(), font.clone(), color);
+        let dot_w = if dot.is_some() { 12.0 } else { 0.0 };
+        let tab = Rect::from_min_size(
+            pos2(x, rect.top() + 4.0),
+            vec2(galley.size().x + 24.0 + dot_w, rect.height() - 4.0),
+        );
+        x = tab.right() + 2.0;
+        let r = CornerRadius {
             nw: t.radius as u8,
             ne: t.radius as u8,
             sw: 0,
             se: 0,
-        },
-        t.card,
-    );
-    painter.galley(
-        pos2(tab.left() + 12.0, tab.center().y - galley.size().y / 2.0),
-        galley,
-        t.text,
-    );
-    let buttons = Rect::from_min_max(
-        pos2(tab.right() + 4.0, rect.top()),
-        rect.max - vec2(6.0, 0.0),
-    );
+        };
+        let resp = if tabs.len() > 1 {
+            ui.interact(tab, strip.id.with(("tab", i)), Sense::click())
+        } else {
+            ui.interact(tab, strip.id.with(("tab", i)), Sense::hover())
+        };
+        if on {
+            ui.painter().rect_filled(tab, r, t.card);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(tab, r, t.hover);
+        }
+        let text_pos = pos2(tab.left() + 12.0, tab.center().y - galley.size().y / 2.0);
+        let text_right = text_pos.x + galley.size().x;
+        ui.painter().galley(text_pos, galley, color);
+        if let Some(c) = dot {
+            ui.painter()
+                .circle_filled(pos2(text_right + 8.0, tab.center().y), 3.5, *c);
+        }
+        if !on && resp.clicked() {
+            clicked = Some(i);
+        }
+    }
+    let buttons = Rect::from_min_max(pos2(x + 2.0, rect.top()), rect.max - vec2(6.0, 0.0));
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(buttons)
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
     add_buttons(&mut child);
+    clicked
 }
 
 /// A collapsible section header (`▸ ICON TITLE  count`). Returns whether it is open.
@@ -179,6 +208,56 @@ pub struct FileRowResponse {
     pub row: Response,
     /// Index of the clicked hover button.
     pub button: Option<usize>,
+    /// The row's checkbox was clicked.
+    pub checked: bool,
+}
+
+/// A checkbox's look: empty, ticked, or a dash for a folder with some files ticked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Check {
+    Off,
+    On,
+    Some,
+}
+
+impl Check {
+    /// `picked` of `total` ticked.
+    pub fn of(picked: usize, total: usize) -> Self {
+        match picked {
+            0 => Check::Off,
+            n if n >= total => Check::On,
+            _ => Check::Some,
+        }
+    }
+}
+
+/// Width a row's checkbox takes on its left.
+pub const CHECK_W: f32 = 20.0;
+
+/// A small checkbox centred at `center`. Returns its response (click to toggle).
+pub fn check_box(ui: &mut Ui, center: egui::Pos2, id: egui::Id, state: Check) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let r = Rect::from_center_size(center, vec2(14.0, 14.0));
+    let resp = ui.interact(r.expand(3.0), id, Sense::click());
+    let p = ui.painter();
+    if state == Check::Off {
+        let color = if resp.hovered() {
+            t.text_dim
+        } else {
+            t.text_faint
+        };
+        p.rect_stroke(
+            r,
+            CornerRadius::same(3),
+            egui::Stroke::new(1.0, color),
+            egui::StrokeKind::Inside,
+        );
+    } else {
+        p.rect_filled(r, CornerRadius::same(3), t.accent);
+        let icon = if state == Check::On { "check" } else { "minus" };
+        icons::paint(ui, r, icon, 11.0, t.accent_text);
+    }
+    resp
 }
 
 /// One changed file: status letter, file name, its folder dimmed, and `extra` on the right.
@@ -190,21 +269,23 @@ pub fn file_row(
     selected: bool,
     extra: RowExtra<'_>,
 ) -> FileRowResponse {
-    file_row_in(ui, code, path, old_path, None, selected, extra)
+    file_row_in(ui, code, path, old_path, None, None, selected, extra)
 }
 
 /// [`file_row`] in a tree of folders, `indent` in: just the file's name, its folder being the
-/// rows above.
+/// rows above. With `check`, a checkbox comes first.
+#[allow(clippy::too_many_arguments)]
 pub fn file_row_in(
     ui: &mut Ui,
     code: char,
     path: &str,
     old_path: Option<&str>,
     indent: Option<f32>,
+    check: Option<Check>,
     selected: bool,
     extra: RowExtra<'_>,
 ) -> FileRowResponse {
-    let shift = indent.unwrap_or(0.0);
+    let shift = indent.unwrap_or(0.0) + if check.is_some() { CHECK_W } else { 0.0 };
     let t = Tokens::get(ui.ctx());
     let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     let hovered = ui.rect_contains_pointer(rect);
@@ -215,6 +296,10 @@ pub fn file_row_in(
         painter.rect_filled(rect, 0.0, t.hover);
     }
     let y = rect.center().y;
+    let checked = check.is_some_and(|state| {
+        let center = pos2(rect.left() + shift - CHECK_W / 2.0 + 8.0, y);
+        check_box(ui, center, row.id.with("check"), state).clicked()
+    });
 
     // Status letter in a small rounded square.
     let color = status_color(&t, code);
@@ -332,7 +417,11 @@ pub fn file_row_in(
         None if !dir.is_empty() => row.on_hover_text(path),
         None => row,
     };
-    FileRowResponse { row, button }
+    FileRowResponse {
+        row,
+        button,
+        checked,
+    }
 }
 
 /// A primary (accent-filled) button.
@@ -517,11 +606,26 @@ pub fn file_menu(
     ignorable: bool,
     acts: &mut Vec<super::Action>,
 ) {
+    file_menu_with(resp, path, rev, ignorable, acts, |_, _| false);
+}
+
+/// [`file_menu`] with `top` items first (and a separator after them).
+pub fn file_menu_with(
+    resp: &Response,
+    path: &str,
+    rev: Option<&str>,
+    ignorable: bool,
+    acts: &mut Vec<super::Action>,
+    top: impl FnOnce(&mut Ui, &mut Vec<super::Action>) -> bool,
+) {
     use super::Action;
     use super::file_view::FileTab;
     egui::Popup::context_menu(resp)
         .style(crate::theme::menu_style)
         .show(|ui| {
+            if top(ui, acts) {
+                ui.separator();
+            }
             let rel = std::path::PathBuf::from(path);
             if ui.button("Open file").clicked() {
                 acts.push(Action::OpenPath(rel.clone()));

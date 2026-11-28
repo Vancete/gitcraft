@@ -10,6 +10,7 @@ mod diff;
 mod file_view;
 mod graph_view;
 pub(crate) mod highlight;
+mod log_view;
 mod rebase;
 mod sidebar;
 pub(crate) mod widgets;
@@ -323,7 +324,17 @@ pub(crate) enum Action {
         branch: String,
         target: String,
     },
+    /// Brings local `branch` (not the checked-out one) up to date with its upstream without
+    /// switching to it (`git fetch <remote> <branch>:<branch>`, fast-forward only); with `merge`,
+    /// then merges it into the current branch.
+    UpdateBranch {
+        branch: String,
+        merge: bool,
+    },
     CheckoutRemote(String),
+    /// The right pane shows the operation log (true) or the commit / changes.
+    ShowLog(bool),
+    ClearLog,
     Dialog(Dialog),
     Commit,
     Fetch,
@@ -469,6 +480,9 @@ pub struct RepoTab {
     diff_ignore_ws: bool,
     conflict: Option<conflict::ConflictEditor>,
 
+    /// Files ticked in the Changes panel's lists.
+    picks_unstaged: detail::Picks,
+    picks_staged: detail::Picks,
     commit_summary: String,
     commit_body: String,
     amend: bool,
@@ -481,6 +495,12 @@ pub struct RepoTab {
     redo_stack: Vec<UndoEntry>,
 
     busy_op: Option<String>,
+    /// The running operation is one gitcraft started on its own (see [`RepoTab::is_working`]).
+    busy_quiet: bool,
+    /// What the operations ran and printed, live (the Log tab of the right pane).
+    op_log: git::OpLog,
+    /// The right pane shows the log instead of the commit / changes.
+    show_log: bool,
     op_started: Option<Instant>,
     status: Option<(String, bool)>,
     branch_filter: String,
@@ -567,6 +587,8 @@ impl RepoTab {
             avatars_hinted: false,
             diff_ignore_ws: false,
             conflict: None,
+            picks_unstaged: Default::default(),
+            picks_staged: Default::default(),
             commit_summary: String::new(),
             commit_body: String::new(),
             amend: false,
@@ -576,6 +598,9 @@ impl RepoTab {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             busy_op: None,
+            busy_quiet: false,
+            op_log: git::OpLog::default(),
+            show_log: false,
             op_started: None,
             status: None,
             branch_filter: String::new(),
@@ -598,6 +623,8 @@ impl RepoTab {
             finished: None,
         };
         tab.watch(ctx);
+        let waker = ctx.clone();
+        tab.op_log.set_waker(move || waker.request_repaint());
         tab.graph_filter = filter;
         tab.reload(ctx);
         tab
@@ -605,6 +632,12 @@ impl RepoTab {
 
     pub fn is_busy(&self) -> bool {
         self.loading || self.busy_op.is_some()
+    }
+
+    /// An operation the user started is running: the repository may change under them, so the
+    /// tab and its window turn red until it's over (the periodic fetch doesn't count).
+    pub fn is_working(&self) -> bool {
+        self.busy_op.is_some() && !self.busy_quiet
     }
 
     /// Queues an action from outside the tab (the command palette).
@@ -1134,10 +1167,13 @@ impl RepoTab {
         }
         self.prompt = None;
         self.busy_op = Some(label.to_owned());
+        self.busy_quiet = quiet;
         self.op_started = Some(Instant::now());
         if !quiet {
             self.status = None;
         }
+        let log = self.op_log.clone();
+        let log_id = log.begin(label, quiet);
         self.last_op = Some(PendingOp {
             label: label.to_owned(),
             ops: ops.clone(),
@@ -1152,8 +1188,11 @@ impl RepoTab {
         spawn(&self.tx, ctx, move || {
             let mut result = Ok(String::new());
             let mut stashed = false;
+            let git = |args: &[&str], creds: Option<&git::Credentials>| {
+                git::run_logged(Some(&path), args, creds, !quiet, &log, log_id)
+            };
             if autostash {
-                match git::run(Some(&path), &["stash", "push", "-m", AUTOSTASH]) {
+                match git(&["stash", "push", "-m", AUTOSTASH], None) {
                     Ok(out) => stashed = !out.contains("No local changes"),
                     Err(e) => result = Err(format!("could not stash your changes: {e}")),
                 }
@@ -1163,16 +1202,12 @@ impl RepoTab {
                     break;
                 }
                 let args: Vec<&str> = op.iter().map(String::as_str).collect();
-                result = if quiet {
-                    git::run_quiet_with(Some(&path), &args, creds.as_ref())
-                } else {
-                    git::run_with(Some(&path), &args, creds.as_ref())
-                };
+                result = git(&args, creds.as_ref());
             }
             // The changes come back however it went; staged ones staged again when possible.
             if stashed {
-                let pop = git::run(Some(&path), &["stash", "pop", "--index"])
-                    .or_else(|_| git::run(Some(&path), &["stash", "pop"]));
+                let pop = git(&["stash", "pop", "--index"], None)
+                    .or_else(|_| git(&["stash", "pop"], None));
                 if let Err(e) = pop {
                     result = Err(match result {
                         Ok(_) => format!("{AUTOSTASH_CONFLICT}: {e}"),
@@ -1180,6 +1215,7 @@ impl RepoTab {
                     });
                 }
             }
+            log.finish(log_id, result.is_ok());
             // For HEAD moves, the new HEAD is what redo goes back to.
             let kind = match kind {
                 OpKind::Normal(Undo::HeadMove { mode }, before) if result.is_ok() => {
@@ -1277,6 +1313,72 @@ impl RepoTab {
             )
         };
         self.run_undoable_autostash(&label, run, undo, ctx);
+    }
+
+    /// Fast-forwards a local branch that isn't checked out to its upstream, fetched fresh,
+    /// without touching the working tree; `merge` then merges it into the current branch.
+    fn update_branch(&mut self, branch: &str, merge: bool, ctx: &egui::Context) {
+        let Some(b) = self.refs.local.iter().find(|b| b.name == branch).cloned() else {
+            return;
+        };
+        if b.is_head {
+            return self.apply_pull(ctx);
+        }
+        let Some((remote, remote_branch)) = self.split_upstream(&b.upstream) else {
+            self.status = Some((format!("{branch} doesn't track a remote branch"), true));
+            return;
+        };
+        // `+` is left off on purpose: git refuses anything but a fast-forward.
+        let refspec = format!("refs/heads/{remote_branch}:refs/heads/{branch}");
+        let mut run = ops(&[&["fetch", &remote, &refspec]]);
+        let mut undo = vec![vec![
+            "branch".to_owned(),
+            "-f".to_owned(),
+            branch.to_owned(),
+            b.target.clone(),
+        ]];
+        let label = match (merge, self.refs.current.clone()) {
+            (true, Some(current)) => {
+                run.push(vec!["merge".into(), "--no-edit".into(), branch.to_owned()]);
+                undo.insert(
+                    0,
+                    vec!["reset".into(), "--keep".into(), self.refs.head.clone()],
+                );
+                format!("Update {branch} and merge it into {current}")
+            }
+            _ => format!("Update {branch} from {}", b.upstream),
+        };
+        let undo = Undo::Custom {
+            undo,
+            redo: run.clone(),
+        };
+        if merge {
+            self.run_undoable_autostash(&label, run, undo, ctx);
+        } else {
+            self.run_undoable(&label, run, Refresh::All, undo, ctx);
+        }
+    }
+
+    fn apply_pull(&mut self, ctx: &egui::Context) {
+        self.run_undoable(
+            "Pull",
+            ops(&[&["pull", "--ff-only", "--autostash"]]),
+            Refresh::All,
+            Undo::HeadMove { mode: "--keep" },
+            ctx,
+        )
+    }
+
+    /// `origin/feature/x` → (`origin`, `feature/x`), against the known remotes (whose names
+    /// can hold slashes too); the longest matching remote wins.
+    pub(super) fn split_upstream(&self, upstream: &str) -> Option<(String, String)> {
+        self.remotes
+            .iter()
+            .filter_map(|r| {
+                let rest = upstream.strip_prefix(&r.name)?.strip_prefix('/')?;
+                (!rest.is_empty()).then(|| (r.name.clone(), rest.to_owned()))
+            })
+            .max_by_key(|(r, _)| r.len())
     }
 
     /// Undoing a move of `branch` that checked it out: back to the branch before, and
@@ -2120,7 +2222,10 @@ impl RepoTab {
                 self.graph_filter.apply(change);
                 self.reload(ctx);
             }
+            Action::UpdateBranch { branch, merge } => self.update_branch(&branch, merge, ctx),
             Action::CheckoutRemote(name) => self.checkout_remote(&name, ctx),
+            Action::ShowLog(on) => self.show_log = on,
+            Action::ClearLog => self.op_log.clear(),
             Action::Dialog(dialog) => self.dialog = Some(dialog),
             Action::Commit => self.commit(ctx),
             Action::Fetch => {
@@ -2133,13 +2238,7 @@ impl RepoTab {
                     ctx,
                 )
             }
-            Action::Pull => self.run_undoable(
-                "Pull",
-                ops(&[&["pull", "--ff-only", "--autostash"]]),
-                Refresh::All,
-                Undo::HeadMove { mode: "--keep" },
-                ctx,
-            ),
+            Action::Pull => self.apply_pull(ctx),
             Action::Push => self.push(ctx),
             Action::Reload => self.reload(ctx),
             Action::LoadMore => self.load_more(ctx),
@@ -2189,14 +2288,26 @@ impl RepoTab {
                 }
                 let label = format!("Create {}", forge.noun());
                 self.busy_op = Some(label.clone());
+                self.busy_quiet = false;
                 self.op_started = Some(Instant::now());
                 let path = self.path.clone();
+                let log = self.op_log.clone();
+                let log_id = log.begin(&label, false);
                 spawn(&self.tx, ctx, move || {
                     // Publish the branch first, so the forge can see it.
-                    let pushed = git::run(Some(&path), &["push", "-u", "origin", &branch]);
+                    let pushed = git::run_logged(
+                        Some(&path),
+                        &["push", "-u", "origin", &branch],
+                        None,
+                        true,
+                        &log,
+                        log_id,
+                    );
                     let result = pushed.and_then(|_| {
                         forge::create(&path, forge, &branch, &base, &title, &body, draft)
+                            .inspect_err(|e| log.line(log_id, git::LogKind::Err, e.clone(), false))
                     });
+                    log.finish(log_id, result.is_ok());
                     Msg::OpDone {
                         label,
                         result,
@@ -2453,6 +2564,8 @@ impl RepoTab {
         self.poll(&ctx);
         let t = Tokens::get(&ctx);
         let mut acts: Vec<Action> = std::mem::take(&mut self.queued);
+        let whole = ui.max_rect();
+        let working = self.is_working();
 
         let free_keys =
             self.dialog.is_none() && !self.keys_blocked && !ctx.egui_wants_keyboard_input();
@@ -2494,7 +2607,11 @@ impl RepoTab {
         egui::Panel::top("repo_toolbar")
             .frame(
                 egui::Frame::new()
-                    .fill(t.chrome)
+                    .fill(if working {
+                        t.chrome.lerp_to_gamma(t.danger, 0.35)
+                    } else {
+                        t.chrome
+                    })
                     .inner_margin(egui::Margin::symmetric(8, 4))
                     .stroke(egui::Stroke::new(1.0, t.separator)),
             )
@@ -2535,6 +2652,20 @@ impl RepoTab {
                     self.graph_view(ui, &mut acts);
                 }
             });
+
+        // While git works on the repository, a red frame round all of it: hands off the files.
+        if working {
+            ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new(("repo-working", &self.path)),
+            ))
+            .rect_stroke(
+                whole,
+                0.0,
+                egui::Stroke::new(3.0, t.danger),
+                egui::StrokeKind::Inside,
+            );
+        }
 
         self.dialogs(&ctx, &mut acts);
         for action in acts {
@@ -2728,7 +2859,23 @@ impl RepoTab {
                     .on_hover_text(msg.as_str());
                 }
                 if let Some(op) = &self.busy_op {
-                    ui.label(egui::RichText::new(format!("{op}…")).color(t.text_dim));
+                    let text = if self.is_working() {
+                        egui::RichText::new(format!("{op}… don't touch the files"))
+                            .font(crate::theme::semibold(12.5))
+                            .color(t.text)
+                    } else {
+                        egui::RichText::new(format!("{op}…")).color(t.text_dim)
+                    };
+                    if ui
+                        .add(egui::Label::new(text).sense(egui::Sense::click()))
+                        .on_hover_text(
+                            "git is changing the repository: leave its files alone until it's \
+                             done.\nClick to follow it in the Log tab.",
+                        )
+                        .clicked()
+                    {
+                        acts.push(Action::ShowLog(true));
+                    }
                     ui.spinner();
                 } else if self.loading {
                     ui.spinner();

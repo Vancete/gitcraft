@@ -23,16 +23,25 @@ pub enum ThemeKind {
     MediumGray,
     /// Light panels (PhotoCraft's "Pro (Light)").
     Light,
+    /// Warm grey button-face panels and a navy accent: the "Classic" theme of CyfrowyNomada's
+    /// raylib bootstrap (raystrap), after the Windows 2000 / XP classic desktop.
+    Classic,
 }
 
 impl ThemeKind {
-    pub const ALL: [ThemeKind; 3] = [ThemeKind::Dark, ThemeKind::MediumGray, ThemeKind::Light];
+    pub const ALL: [ThemeKind; 4] = [
+        ThemeKind::Dark,
+        ThemeKind::MediumGray,
+        ThemeKind::Light,
+        ThemeKind::Classic,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             ThemeKind::Dark => "Dark",
             ThemeKind::MediumGray => "Medium Gray",
             ThemeKind::Light => "Light",
+            ThemeKind::Classic => "Classic",
         }
     }
 }
@@ -147,6 +156,38 @@ impl Tokens {
                 diff_del_bg: Color32::from_rgba_unmultiplied(220, 50, 60, 36),
                 ..Tokens::for_kind(ThemeKind::Dark)
             },
+            // raystrap's theme_classic.c, token for token where gitcraft has one.
+            ThemeKind::Classic => Tokens {
+                kind,
+                // chrome: menu bar, status bar (#D4D0C8).
+                chrome: Color32::from_rgb(212, 208, 200),
+                // bg: the work area, a warm off-white.
+                dock: Color32::from_rgb(243, 241, 236),
+                // panel: columns, dialogs, cards.
+                card: Color32::from_rgb(228, 225, 218),
+                field: Color32::WHITE,
+                field_border: Color32::from_rgb(160, 156, 148),
+                hover: Color32::from_rgb(220, 228, 241),
+                pressed: Color32::from_rgb(204, 200, 192),
+                text: Color32::from_rgb(22, 22, 22),
+                text_dim: Color32::from_rgb(70, 70, 70),
+                text_faint: Color32::from_rgb(122, 120, 114),
+                icon: Color32::from_rgb(36, 36, 36),
+                accent: Color32::from_rgb(0, 84, 200),
+                accent_text: Color32::WHITE,
+                separator: Color32::from_rgb(194, 190, 181),
+                shadow: Color32::from_black_alpha(60),
+                danger: Color32::from_rgb(192, 24, 24),
+                warning: Color32::from_rgb(204, 128, 0),
+                success: Color32::from_rgb(0, 128, 64),
+                tab_strip: Color32::from_rgb(204, 200, 192),
+                // Selection: pale navy.
+                row_selected: Color32::from_rgb(196, 211, 236),
+                radius_sm: 2.0,
+                radius: 2.0,
+                radius_lg: 3.0,
+                ..Tokens::for_kind(ThemeKind::Light)
+            },
         }
     }
 
@@ -234,7 +275,7 @@ impl Tokens {
     }
 
     pub fn dark(&self) -> bool {
-        self.kind != ThemeKind::Light
+        matches!(self.kind, ThemeKind::Dark | ThemeKind::MediumGray)
     }
 
     pub fn get(ctx: &egui::Context) -> Tokens {

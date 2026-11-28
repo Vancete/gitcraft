@@ -275,51 +275,99 @@ impl RepoTab {
                     );
                     continue;
                 }
-                let resp = self.commit_row(ui, i, cols, lanes, now, acts);
-                if resp.clicked() {
-                    // Ctrl+click: compare the selected commit with this one.
-                    let compare = ui
-                        .input(|inp| inp.modifiers.command)
-                        .then(|| self.compare_rows(self.selected?, i))
-                        .flatten();
-                    acts.push(compare.unwrap_or(Action::Select(i)));
-                }
-                let Some(commit) = self.commits.get(i) else {
-                    continue;
-                };
-                if commit.hash == WIP_HASH {
-                    egui::Popup::context_menu(&resp)
-                        .style(crate::theme::menu_style)
-                        .show(|ui| {
-                            if ui
-                                .add_enabled(idle, egui::Button::new("Stage all changes"))
-                                .clicked()
-                            {
-                                acts.push(Action::Ops {
-                                    label: "Stage all".into(),
-                                    ops: ops(&[&["add", "-A"]]),
-                                    refresh: Refresh::Status,
-                                });
-                            }
-                            if ui
-                                .add_enabled(idle, egui::Button::new("Stash changes…"))
-                                .clicked()
-                            {
-                                acts.push(Action::Dialog(Dialog::stash()));
-                            }
-                        });
-                    continue;
-                }
-                if let Some(stash) = self.stash_at(i).and_then(|s| self.stashes.get(s)) {
-                    egui::Popup::context_menu(&resp)
-                        .style(crate::theme::menu_style)
-                        .show(|ui| super::sidebar::stash_menu_items(ui, acts, &stash.name, idle));
-                    continue;
-                }
-                self.commit_menu(&resp, i, idle, acts);
+                self.graph_row(ui, i, cols, lanes, now, idle, acts);
             }
         });
         ui.data_mut(|d| d.insert_temp(offset_id, out.state.offset.y));
+
+        // Scrolled down, the changes row stays on top of the history, so it's always a click
+        // away.
+        if self.is_wip(0) && out.state.offset.y > 0.5 {
+            let view = out.inner_rect;
+            let width = view.width() - ui.spacing().scroll.bar_width;
+            let rect = Rect::from_min_size(view.min, vec2(width, ROW_PITCH));
+            ui.painter().rect_filled(rect, 0.0, t.dock);
+            let mut pinned = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("pinned_wip")
+                    .max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            pinned.spacing_mut().item_spacing.y = 0.0;
+            self.graph_row(&mut pinned, 0, cols, lanes, now, idle, acts);
+            ui.painter().line_segment(
+                [rect.left_bottom(), rect.right_bottom()],
+                Stroke::new(1.0, t.separator),
+            );
+        }
+    }
+
+    /// Graph row `i` with its clicks (Ctrl+click compares) and right-click menu.
+    #[allow(clippy::too_many_arguments)]
+    fn graph_row(
+        &self,
+        ui: &mut Ui,
+        i: usize,
+        cols: Cols,
+        lanes: usize,
+        now: i64,
+        idle: bool,
+        acts: &mut Vec<Action>,
+    ) {
+        let resp = self.commit_row(ui, i, cols, lanes, now, acts);
+        if resp.clicked() {
+            // Ctrl+click: compare the selected commit with this one.
+            let compare = ui
+                .input(|inp| inp.modifiers.command)
+                .then(|| self.compare_rows(self.selected?, i))
+                .flatten();
+            acts.push(compare.unwrap_or(Action::Select(i)));
+        }
+        let Some(commit) = self.commits.get(i) else {
+            return;
+        };
+        if commit.hash == WIP_HASH {
+            egui::Popup::context_menu(&resp)
+                .style(crate::theme::menu_style)
+                .show(|ui| {
+                    if ui
+                        .add_enabled(idle, egui::Button::new("Stage all changes"))
+                        .clicked()
+                    {
+                        acts.push(Action::Ops {
+                            label: "Stage all".into(),
+                            ops: ops(&[&["add", "-A"]]),
+                            refresh: Refresh::Status,
+                        });
+                    }
+                    let staged = !self.work.staged.is_empty();
+                    if ui
+                        .add_enabled(idle && staged, egui::Button::new("Unstage all changes"))
+                        .clicked()
+                    {
+                        let all = super::detail::unstage_all_args(&self.refs.head);
+                        acts.push(Action::Ops {
+                            label: "Unstage all".into(),
+                            ops: ops(&[&all]),
+                            refresh: Refresh::Status,
+                        });
+                    }
+                    if ui
+                        .add_enabled(idle, egui::Button::new("Stash changes…"))
+                        .clicked()
+                    {
+                        acts.push(Action::Dialog(Dialog::stash()));
+                    }
+                });
+            return;
+        }
+        if let Some(stash) = self.stash_at(i).and_then(|s| self.stashes.get(s)) {
+            egui::Popup::context_menu(&resp)
+                .style(crate::theme::menu_style)
+                .show(|ui| super::sidebar::stash_menu_items(ui, acts, &stash.name, idle));
+            return;
+        }
+        self.commit_menu(&resp, i, idle, acts);
     }
 
     /// Compares two rows of the graph, the older one first; the changes row stands for the

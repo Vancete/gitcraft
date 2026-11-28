@@ -43,7 +43,8 @@ so your config, credentials and hooks apply as usual.
   click. Kept per repository.
 - Stashes in the graph, above the commit they were made on, marked with their icon.
 - Each commit's summary, followed by the rest of its message, faded and cut to fit.
-- An _Uncommitted changes_ row on top while the working tree is dirty.
+- An _Uncommitted changes_ row on top while the working tree is dirty; it stays pinned there
+  while you scroll down the history.
 - Search (Ctrl+F) through messages, authors and hashes of all history, or switch to _Code_ to
   find the commits that added or removed a piece of text in a file (`git log -S`); Enter /
   Shift+Enter jump between results, loading older history when needed.
@@ -64,9 +65,14 @@ so your config, credentials and hooks apply as usual.
 
 **Branches, remotes, worktrees, stashes, tags** (left)
 
-- Local branches with ahead/behind; right-click: check out (or in a new worktree), fast-forward,
-  merge into / (interactively) rebase onto the current branch, push, create a pull request,
-  rename, delete…
+- Local branches with commits to pull / push as red badges; right-click: check out (or in a new
+  worktree), fast-forward, merge into / (interactively) rebase onto the current branch, push,
+  create a pull request, rename, delete…
+- Update a branch you're not on in one click (the ⟳ on its row, or Update and merge into the
+  current branch from its menu): it's fetched and fast-forwarded without switching to it.
+- The right pane's Log tab shows every operation's git commands and their output live, progress
+  included (handy for big pushes, pulls and rebases). While one runs, the repository's tab and
+  window turn red: leave its files alone until it's done.
 - Remotes: add, edit (name and URL), fetch one, remove; their branches below each.
 - Worktrees: add (existing or new branch), open in a tab, open a terminal there, lock, remove,
   prune.
@@ -79,7 +85,10 @@ so your config, credentials and hooks apply as usual.
 **Changes and commits** (right)
 
 - Conflicted / unstaged / staged lists with stage, unstage, discard and mark-resolved buttons,
-  _Stage all_ / _Unstage all_; right-click a file to open it, open it in your editor, show it in
+  _Stage all_ / _Unstage all_ (also on the changes row of the graph). Tick files to stage or
+  unstage just those (_Stage selected_), or discard them (_Discard…_): their checkboxes, Ctrl+click, Shift+click for a range, a
+  folder's checkbox for all its files, the list's for every file. The lists show as paths or a
+  tree of folders (the switch at the top of the pane). Right-click a file to open it, open it in your editor, show it in
   its folder, see its history or blame, or ignore it (the file, its extension or its folder go
   into `.gitignore`; a tracked file stops being tracked).
 - Part of a file: _Stage hunk_, _Discard hunk_ and _Unstage hunk_ on each hunk of its diff, or
@@ -138,7 +147,8 @@ so your config, credentials and hooks apply as usual.
   off).
 - Toasts, and a desktop notification when a long operation ends while the window is in the
   background.
-- Themes: Dark, Medium Gray and Light, from PhotoCraft's Pro palettes.
+- Themes: Dark, Medium Gray and Light, from PhotoCraft's Pro palettes, and Classic (warm grey
+  panels, a navy accent), from the Classic theme of CyfrowyNomada's raylib bootstrap (raystrap).
 
 ## Download
 

@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 
 /// Field and record separators for `--format` strings (unit/record separator control chars).
 const FS: char = '\x1f';
@@ -78,16 +79,6 @@ pub fn run_with(
     run_inner(dir, args, &[0], creds, true)
 }
 
-/// [`run_with`] for work in the background (the periodic fetch): ssh asks the user nothing and
-/// fails instead, as it can't be answered by someone who didn't start it.
-pub fn run_quiet_with(
-    dir: Option<&Path>,
-    args: &[&str],
-    creds: Option<&Credentials>,
-) -> Result<String, String> {
-    run_inner(dir, args, &[0], creds, false)
-}
-
 /// Whether `err` says git needed a username / password it couldn't get or that were refused.
 pub fn is_auth_error(err: &str) -> bool {
     let e = err.to_lowercase();
@@ -142,6 +133,266 @@ fn run_inner(
         };
         Err(err)
     }
+}
+
+/// What a line of the operation log is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogKind {
+    /// The `git …` command about to run.
+    Command,
+    Out,
+    Err,
+}
+
+#[derive(Clone, Debug)]
+pub struct LogLine {
+    pub kind: LogKind,
+    pub text: String,
+}
+
+/// One operation (a push, a pull, a merge…): its commands and everything they printed.
+#[derive(Clone, Debug)]
+pub struct LogEntry {
+    pub id: u64,
+    pub label: String,
+    /// Started at, in seconds since the epoch.
+    pub time: i64,
+    pub started: std::time::Instant,
+    /// Started by gitcraft itself (the periodic fetch), not by the user.
+    pub background: bool,
+    pub lines: Vec<LogLine>,
+    /// Whether it worked and how long it took, once it's over.
+    pub done: Option<(bool, std::time::Duration)>,
+}
+
+type Waker = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Default)]
+struct LogInner {
+    entries: std::collections::VecDeque<LogEntry>,
+    next_id: u64,
+    waker: Option<Waker>,
+}
+
+/// A repository's operation log, written by the threads running git and read by the UI.
+#[derive(Clone, Default)]
+pub struct OpLog(Arc<Mutex<LogInner>>);
+
+const LOG_ENTRIES: usize = 200;
+const LOG_LINES: usize = 5000;
+
+impl OpLog {
+    /// Called whenever something is written (the UI repaints).
+    pub fn set_waker(&self, waker: impl Fn() + Send + Sync + 'static) {
+        self.lock().waker = Some(Arc::new(waker));
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, LogInner> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn edit(&self, id: u64, f: impl FnOnce(&mut LogEntry)) {
+        let waker = {
+            let mut inner = self.lock();
+            if let Some(e) = inner.entries.iter_mut().rev().find(|e| e.id == id) {
+                f(e);
+            }
+            inner.waker.clone()
+        };
+        if let Some(w) = waker {
+            w();
+        }
+    }
+
+    /// Starts an entry; returns its id for [`line`](Self::line) and [`finish`](Self::finish).
+    pub fn begin(&self, label: &str, background: bool) -> u64 {
+        let mut inner = self.lock();
+        let id = inner.next_id;
+        inner.next_id += 1;
+        inner.entries.push_back(LogEntry {
+            id,
+            label: label.to_owned(),
+            time: now(),
+            started: std::time::Instant::now(),
+            background,
+            lines: Vec::new(),
+            done: None,
+        });
+        while inner.entries.len() > LOG_ENTRIES {
+            inner.entries.pop_front();
+        }
+        id
+    }
+
+    /// Adds a line; `replace` overwrites the last one (progress git redraws with `\r`).
+    pub fn line(&self, id: u64, kind: LogKind, text: String, replace: bool) {
+        self.edit(id, |e| {
+            if replace
+                && let Some(last) = e.lines.last_mut()
+                && last.kind == kind
+            {
+                last.text = text;
+                return;
+            }
+            e.lines.push(LogLine { kind, text });
+            if e.lines.len() > LOG_LINES {
+                e.lines.drain(..e.lines.len() - LOG_LINES);
+            }
+        });
+    }
+
+    pub fn finish(&self, id: u64, ok: bool) {
+        self.edit(id, |e| e.done = Some((ok, e.started.elapsed())));
+    }
+
+    /// Drops the finished entries.
+    pub fn clear(&self) {
+        self.lock().entries.retain(|e| e.done.is_none());
+    }
+
+    /// A copy of the entries, oldest first.
+    pub fn entries(&self) -> Vec<LogEntry> {
+        self.lock().entries.iter().cloned().collect()
+    }
+
+    /// Whether the newest entry the user started failed.
+    pub fn last_failed(&self) -> bool {
+        self.lock()
+            .entries
+            .iter()
+            .rev()
+            .find(|e| !e.background)
+            .is_some_and(|e| matches!(e.done, Some((false, _))))
+    }
+}
+
+/// Progress git prints while counting, compressing, receiving or writing objects.
+fn is_progress(line: &str) -> bool {
+    let l = line.strip_prefix("remote: ").unwrap_or(line).trim();
+    l.contains("% (") || l.ends_with(", done.") || l.ends_with(", done")
+}
+
+/// Reads `r` to the end into `keep`, writing each line to the log as it comes.
+fn pump(mut r: impl std::io::Read, log: &OpLog, id: u64, kind: LogKind, keep: &mut Vec<u8>) {
+    let mut buf = [0u8; 4096];
+    let mut line = Vec::new();
+    // The line before ended with `\r`: this one is drawn over it.
+    let mut over = false;
+    loop {
+        let n = match r.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        keep.extend_from_slice(&buf[..n]);
+        for &b in &buf[..n] {
+            match b {
+                b'\n' | b'\r' => {
+                    if !line.is_empty() {
+                        let text = String::from_utf8_lossy(&line).into_owned();
+                        log.line(id, kind, text, over);
+                    }
+                    // `\r\n` ends the line like `\n` does.
+                    if !line.is_empty() || b == b'\n' {
+                        over = b == b'\r';
+                    }
+                    line.clear();
+                }
+                _ => line.push(b),
+            }
+        }
+    }
+    if !line.is_empty() {
+        log.line(id, kind, String::from_utf8_lossy(&line).into_owned(), over);
+    }
+}
+
+/// [`run_with`] that writes the command and its output to `log` as they happen; pushes, pulls
+/// and fetches report their progress there too. `ask` false: ssh asks nothing and fails instead
+/// (the periodic fetch: nobody is there to answer).
+pub fn run_logged(
+    dir: Option<&Path>,
+    args: &[&str],
+    creds: Option<&Credentials>,
+    ask: bool,
+    log: &OpLog,
+    id: u64,
+) -> Result<String, String> {
+    use std::process::Stdio;
+    let mut args: Vec<&str> = args.to_vec();
+    let progress = matches!(args.first(), Some(&("push" | "pull" | "fetch")))
+        && !args
+            .iter()
+            .any(|a| matches!(*a, "--quiet" | "-q" | "--progress"));
+    if progress {
+        args.insert(1, "--progress");
+    }
+    log.line(
+        id,
+        LogKind::Command,
+        format!("git {}", args.join(" ")),
+        false,
+    );
+
+    let mut cmd = git_cmd();
+    if ask {
+        crate::askpass::apply(&mut cmd);
+    }
+    if let Some(dir) = dir {
+        cmd.arg("-C").arg(dir);
+    }
+    if let Some(c) = creds {
+        cmd.args(["-c", ENV_HELPER]);
+        cmd.env("GITCRAFT_GIT_USERNAME", &c.username);
+        cmd.env("GITCRAFT_GIT_PASSWORD", &c.password);
+    }
+    cmd.args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let e = format!("could not run git: {e}");
+            log.line(id, LogKind::Err, e.clone(), false);
+            return Err(e);
+        }
+    };
+    let stdout = child.stdout.take();
+    let out_log = log.clone();
+    let reader = std::thread::spawn(move || {
+        let mut keep = Vec::new();
+        if let Some(r) = stdout {
+            pump(r, &out_log, id, LogKind::Out, &mut keep);
+        }
+        keep
+    });
+    let mut err_bytes = Vec::new();
+    if let Some(r) = child.stderr.take() {
+        pump(r, log, id, LogKind::Err, &mut err_bytes);
+    }
+    let out_bytes = reader.join().unwrap_or_default();
+    let status = child
+        .wait()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    if status.success() {
+        return Ok(String::from_utf8_lossy(&out_bytes).into_owned());
+    }
+    // The error as `run` gives it: without the progress lines.
+    let stderr = String::from_utf8_lossy(&err_bytes)
+        .lines()
+        .filter_map(|l| l.rsplit('\r').find(|s| !s.is_empty()))
+        .filter(|l| !(progress && is_progress(l)))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned();
+    let stdout = String::from_utf8_lossy(&out_bytes).trim().to_owned();
+    Err(match (stderr.is_empty(), stdout.is_empty()) {
+        (true, true) => format!("git {} failed ({status})", args.join(" ")),
+        (false, true) => stderr,
+        (true, false) => stdout,
+        (false, false) => format!("{stderr}\n{stdout}"),
+    })
 }
 
 /// `git clone url dest`, run from `dest`'s parent.
@@ -1260,6 +1511,33 @@ pub fn now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_redraws_progress_lines() {
+        let log = OpLog::default();
+        let id = log.begin("Push", false);
+        let out =
+            b"Counting: 10% (1/10)\rCounting: 100% (10/10), done.\r\nTo origin\n  a..b  x -> x\n";
+        let mut keep = Vec::new();
+        pump(&out[..], &log, id, LogKind::Err, &mut keep);
+        log.finish(id, true);
+        let e = &log.entries()[0];
+        let lines: Vec<&str> = e.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            lines,
+            [
+                "Counting: 100% (10/10), done.",
+                "To origin",
+                "  a..b  x -> x"
+            ]
+        );
+        assert_eq!(keep, out);
+        assert!(matches!(e.done, Some((true, _))));
+        assert!(is_progress(
+            "remote: Compressing objects: 100% (3/3), done."
+        ));
+        assert!(!is_progress("! [rejected] main -> main (fetch first)"));
+    }
 
     #[test]
     fn gitignore_lines() {
