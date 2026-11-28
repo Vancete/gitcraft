@@ -7,6 +7,7 @@ use crate::code_theme::SyntaxStyle;
 use crate::repo::widgets::{SliderUnit, slider};
 use crate::theme::{self, Tokens};
 use crate::vscode;
+use crate::workspace::{self, Workspace};
 
 /// The code each theme is shown with.
 const SAMPLE: &str = "/// Opens the server on `port`.
@@ -71,6 +72,8 @@ pub struct Settings {
     /// VS Code colour themes imported into the settings.
     pub imported_themes: Vec<vscode::ThemeInfo>,
     pub profiles: Vec<Profile>,
+    /// Profiles with their own tabs, folder, identity and accounts (see [`workspace`]).
+    pub workspaces: Vec<Workspace>,
 }
 
 impl Default for Settings {
@@ -100,6 +103,7 @@ impl Default for Settings {
             theme: CodeTheme::default(),
             imported_themes: Vec::new(),
             profiles: Vec::new(),
+            workspaces: Vec::new(),
         }
     }
 }
@@ -116,6 +120,11 @@ impl Default for CodeTheme {
     fn default() -> Self {
         CodeTheme::Builtin(SyntaxStyle::default())
     }
+}
+
+/// Makes the settings page scroll to its PROFILES section next time it's drawn.
+pub fn show_profiles(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("gitcraft-show-profiles"), true));
 }
 
 fn id() -> egui::Id {
@@ -260,6 +269,8 @@ impl Settings {
                 ui.end_row();
             });
 
+        self.workspaces_ui(ui, &section);
+
         section(ui, "IDENTITIES");
         ui.label(
             RichText::new(
@@ -302,6 +313,144 @@ impl Settings {
 }
 
 impl Settings {
+    /// PROFILES: each with its tabs and recent list (kept by the app), folder, identity,
+    /// GitHub account and environment.
+    fn workspaces_ui(&mut self, ui: &mut Ui, section: &dyn Fn(&mut Ui, &str)) {
+        let t = Tokens::get(ui.ctx());
+        let scroll_id = egui::Id::new("gitcraft-show-profiles");
+        if ui
+            .data_mut(|d| d.remove_temp::<bool>(scroll_id))
+            .unwrap_or(false)
+        {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+        }
+        section(ui, "PROFILES");
+        ui.label(
+            RichText::new(
+                "Each profile has its own open tabs and recent repositories; switch between them from the button at the left of the tabs. Empty fields leave your git setup as it is.",
+            )
+            .color(t.text_dim)
+            .small(),
+        );
+        ui.add_space(4.0);
+        let mut remove = None;
+        for (i, ws) in self.workspaces.iter_mut().enumerate() {
+            egui::Frame::new()
+                .stroke(egui::Stroke::new(1.0, t.field_border))
+                .corner_radius(t.radius)
+                .inner_margin(egui::Margin::same(10))
+                .show(ui, |ui| {
+                    egui::Grid::new(("workspace", ws.id))
+                        .num_columns(2)
+                        .spacing([12.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label("Name");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut ws.name)
+                                        .hint_text("Work")
+                                        .desired_width(200.0),
+                                );
+                                if crate::icons::small_button(ui, "x", "Remove this profile")
+                                    .clicked()
+                                {
+                                    remove = Some(i);
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Projects folder");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut ws.folder)
+                                        .hint_text("~/projects/work (optional)")
+                                        .desired_width(300.0),
+                                );
+                                if ui.button("Browse…").clicked()
+                                    && let Some(dir) = rfd::FileDialog::new()
+                                        .set_title("Projects folder")
+                                        .pick_folder()
+                                {
+                                    ws.folder = dir.display().to_string();
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Commit as");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut ws.git_name)
+                                        .hint_text("Name")
+                                        .desired_width(140.0),
+                                );
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut ws.git_email)
+                                        .hint_text("email@example.com")
+                                        .desired_width(200.0),
+                                );
+                            });
+                            ui.end_row();
+
+                            ui.label("GitHub account");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut ws.github_user)
+                                        .hint_text("login (gh auth status)")
+                                        .desired_width(160.0),
+                                );
+                                let id = ui.id().with(("gh-check", ws.id));
+                                let user = ws.github_user.trim().to_owned();
+                                if ui
+                                    .add_enabled(!user.is_empty(), egui::Button::new("Check"))
+                                    .on_hover_text("Asks gh for this account's token")
+                                    .clicked()
+                                {
+                                    let result = workspace::github_token(&user)
+                                        .map(|_| format!("gh is signed in as {user}"));
+                                    ui.data_mut(|d| d.insert_temp(id, (user.clone(), result)));
+                                }
+                                if let Some((checked, result)) =
+                                    ui.data(|d| d.get_temp::<(String, Result<String, String>)>(id))
+                                    && checked == user
+                                {
+                                    match result {
+                                        Ok(msg) => ui.colored_label(t.success, msg),
+                                        Err(e) => ui.colored_label(t.danger, e),
+                                    };
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Environment").on_hover_text(
+                                "KEY=VALUE per line, for git, gh and terminals of this profile",
+                            );
+                            ui.add(
+                                egui::TextEdit::multiline(&mut ws.env)
+                                    .hint_text(
+                                        "GIT_SSH_COMMAND=ssh -i ~/.ssh/id_work\nAZURE_CONFIG_DIR=~/.azure-work",
+                                    )
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_rows(2)
+                                    .desired_width(360.0),
+                            );
+                            ui.end_row();
+                        });
+                });
+            ui.add_space(6.0);
+        }
+        if let Some(i) = remove {
+            self.workspaces.remove(i);
+        }
+        if ui.button("Add profile").clicked() {
+            let id = workspace::next_id(&self.workspaces);
+            self.workspaces.push(Workspace {
+                id,
+                name: format!("Profile {id}"),
+                ..Default::default()
+            });
+        }
+    }
+
     /// The zoom slider and its Apply button: the zoom changes once applied, not while the
     /// slider moves (the slider would move under the pointer as the window rescales).
     fn zoom(&mut self, ui: &mut Ui) {

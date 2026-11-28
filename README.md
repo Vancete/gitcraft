@@ -18,6 +18,10 @@ so your config, credentials and hooks apply as usual.
 - Browser-like tabs, one per repository (Ctrl+T, Ctrl+W, middle-click; Ctrl+Shift+T reopens the
   one closed last). Open tabs, recents, theme and settings are remembered.
 - Changes made elsewhere (editor, terminal) show up by themselves: the folder is watched.
+- Profiles (the button left of the tabs): work, a client, personal… each with its own open tabs
+  and recent repositories, and optionally a projects folder (clones go there, the start page
+  lists its repositories), a commit identity, a `gh` account and environment variables for git,
+  `gh` and the terminal. Set up in Settings › Profiles.
 
 **Graph**
 
@@ -224,6 +228,7 @@ was made this way, on a demo repository.
 | `src/repo/file_view.rs`  | a file's history and blame                                                         |
 | `src/repo/dialogs.rs`    | branch, tag, stash, remote, worktree, pull request and confirm dialogs             |
 | `src/repo/widgets.rs`    | shared painted widgets (panel headers, file rows, avatars, tabs)                   |
+| `src/workspace.rs`       | profiles: their settings, and what the processes they start are given              |
 | `src/app.rs`             | window shell: tabs, start page, cloning, palette, settings, toasts                 |
 
 Assets and their licences: [ATTRIBUTION.md](ATTRIBUTION.md).

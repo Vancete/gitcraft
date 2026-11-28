@@ -41,6 +41,7 @@ pub fn run_bytes(dir: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, String> {
     if let Some(dir) = dir {
         cmd.arg("-C").arg(dir);
     }
+    crate::workspace::apply_git(&mut cmd, dir, args);
     cmd.args(args);
     let out = cmd
         .output()
@@ -119,6 +120,7 @@ fn run_inner(
     if let Some(dir) = dir {
         cmd.arg("-C").arg(dir);
     }
+    crate::workspace::apply_git(&mut cmd, dir, args);
     if let Some(c) = creds {
         cmd.args(["-c", ENV_HELPER]);
         cmd.env("GITCRAFT_GIT_USERNAME", &c.username);
